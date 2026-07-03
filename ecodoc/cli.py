@@ -349,7 +349,19 @@ def main(argv=None):
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    if not (argv if argv is not None else sys.argv[1:]):
+        # запуск без команды — показать справку, а не ошибку
+        print(f"ЭКО.DOC {__version__} — генератор экологических документов\n")
+        parser.print_help()
+        print("\nТиповой сценарий:\n"
+              "  ecodoc org add \"ООО Ромашка\" --inn 780...   (один раз)\n"
+              "  ecodoc site add \"ООО Ромашка\" \"Площадка 1\"\n"
+              "  ecodoc intake справка.pdf --org \"ООО Ромашка\" --site \"Площадка 1\" --ai\n"
+              "  ecodoc generate declaration-nvos --org \"ООО Ромашка\" --site \"Площадка 1\" --pdf\n"
+              "\nВсе формы и модули:  ecodoc list")
+        return
+    args = parser.parse_args(argv)
     args.func(args)
 
 
