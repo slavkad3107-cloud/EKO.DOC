@@ -17,6 +17,9 @@ context.json
 # локальный индекс эталонов (клиентские названия и пути F:\ — не публикуем)
 data/etalon_index.json
 
+# zip-релизы живут в OneDrive\II\ЭКОДОК\releases, не в репозитории
+releases/
+
 # офисные временные
 ~$*
 *.tmp

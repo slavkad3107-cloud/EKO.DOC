@@ -1,7 +1,7 @@
 # ЭКО.DOC
 
-**Версия: 0.4.0** · [github.com/slavkad3107-cloud/EKO.DOC](https://github.com/slavkad3107-cloud/EKO.DOC) ·
-готовый архив: [releases/EKO.DOC-v0.4.0.zip](releases/) (номер версии — в имени файла)
+**Версия: 0.4.0** · [github.com/slavkad3107-cloud/EKO.DOC](https://github.com/slavkad3107-cloud/EKO.DOC)
+· zip-архив каждой версии собирается `release.ps1` (номер версии — в имени файла)
 
 Генератор экологических документов с подключаемыми модулями. Каждая форма
 выдаёт **XML** для загрузки в ЛКПП / Модуль природопользователя
