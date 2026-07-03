@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>ЭКО.DOC</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{
+  --bg:#f4f6f8; --panel:#fff; --line:#dde3ea; --text:#1c2733; --mut:#66788c;
+  --acc:#1d7a4f; --acc2:#e8f5ee; --err:#c0392b; --warn:#b07d10;
+  font-family:"Segoe UI",system-ui,sans-serif;
+}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text)}
+header{display:flex;align-items:center;gap:14px;padding:10px 18px;
+  background:#173d2b;color:#fff}
+header h1{font-size:18px;margin:0;font-weight:600}
+header .v{opacity:.7;font-size:13px}
+header .ai{margin-left:auto;font-size:13px;opacity:.9}
+.layout{display:flex;min-height:calc(100vh - 46px)}
+aside{width:270px;min-width:270px;background:var(--panel);
+  border-right:1px solid var(--line);padding:12px}
+aside h3{font-size:13px;color:var(--mut);text-transform:uppercase;
+  letter-spacing:.4px;margin:8px 0 6px}
+.org{margin:2px 0}
+.org>.name{font-weight:600;padding:5px 8px;border-radius:6px;cursor:default}
+.site{padding:5px 8px 5px 22px;border-radius:6px;cursor:pointer;font-size:14px}
+.site:hover{background:var(--acc2)}
+.site.sel{background:var(--acc);color:#fff}
+.addrow{display:flex;gap:6px;margin-top:8px}
+main{flex:1;padding:14px 18px;max-width:1100px}
+.tabs{display:flex;gap:4px;border-bottom:2px solid var(--line);margin-bottom:14px;
+  flex-wrap:wrap}
+.tabs button{border:0;background:none;padding:9px 14px;font-size:14px;
+  cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--mut)}
+.tabs button.on{color:var(--acc);border-color:var(--acc);font-weight:600}
+.tab{display:none}.tab.on{display:block}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:14px 16px;margin-bottom:12px}
+.card h2{font-size:15px;margin:0 0 10px}
+button.b{background:var(--acc);color:#fff;border:0;border-radius:7px;
+  padding:8px 16px;font-size:14px;cursor:pointer}
+button.b:disabled{opacity:.5;cursor:default}
+button.b.sec{background:#fff;color:var(--acc);border:1px solid var(--acc)}
+input[type=text],input[type=number],select{border:1px solid var(--line);
+  border-radius:7px;padding:7px 10px;font-size:14px;width:100%}
+textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:10px;
+  font:13px/1.45 Consolas,monospace;min-height:320px}
+pre.out{background:#0f1a14;color:#d7e8dc;border-radius:8px;padding:12px;
+  font:13px/1.5 Consolas,monospace;white-space:pre-wrap;max-height:480px;
+  overflow:auto;margin:10px 0 0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:6px 0}
+.row label{font-size:14px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:10px}
+.form-card{border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.form-card .t{font-weight:600;font-size:14px;margin-bottom:2px}
+.form-card .c{color:var(--mut);font-size:12px;margin-bottom:8px}
+.badge{font-size:11px;border-radius:10px;padding:2px 8px;background:var(--acc2);
+  color:var(--acc);margin-left:6px}
+.badge.dev{background:#fdf3e0;color:var(--warn)}
+.issue{font-size:13px;margin:3px 0}
+.issue.error{color:var(--err)} .issue.warning{color:var(--warn)}
+.spin{display:none;color:var(--mut);font-size:13px}
+.spin.on{display:inline}
+a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
+.hint{color:var(--mut);font-size:13px;margin:4px 0}
+.filelist{font-size:13px;color:var(--mut);margin:6px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>ЭКО.DOC</h1><span class="v" id="ver"></span>
+  <span class="ai" id="aibox">ИИ: …</span>
+</header>
+<div class="layout">
+<aside>
+  <h3>Организации и площадки</h3>
+  <div id="tree" class="hint">загрузка…</div>
+  <div class="addrow"><input type="text" id="neworg" placeholder="новая организация">
+    <button class="b sec" onclick="addOrg()">+</button></div>
+  <div class="addrow"><input type="text" id="newsite" placeholder="новая площадка">
+    <button class="b sec" onclick="addSite()">+</button></div>
+  <div class="hint" id="wsroot" style="margin-top:10px"></div>
+</aside>
+<main>
+  <div class="hint" id="selinfo">← выберите площадку слева (или создайте организацию и площадку)</div>
+  <div class="tabs" id="tabs">
+    <button data-t="intake" class="on">Приём документов</button>
+    <button data-t="data">Данные</button>
+    <button data-t="gen">Генерация</button>
+    <button data-t="cal">Календарь</button>
+    <button data-t="disp">Рассеивание</button>
+    <button data-t="svc">Сервис</button>
+  </div>
+
+  <div class="tab on" id="tab-intake">
+    <div class="card">
+      <h2>Загрузить документы (справки, акты, протоколы, договоры — pdf/doc/jpg/xml)</h2>
+      <div class="row">
+        <input type="file" id="files" multiple>
+        <label><input type="checkbox" id="useai" checked> ИИ-анализ (значения с цитатами)</label>
+        <button class="b" id="btn-intake" onclick="doIntake()">Принять</button>
+        <span class="spin" id="sp-intake">обработка… (ИИ-анализ может занять минуты)</span>
+      </div>
+      <div class="filelist" id="filelist"></div>
+      <pre class="out" id="out-intake" style="display:none"></pre>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-data">
+    <div class="card">
+      <h2>Данные площадки (context.json) — проверьте и дозаполните</h2>
+      <div class="row">
+        <button class="b" onclick="saveCtx()">Сохранить</button>
+        <button class="b sec" onclick="loadCtx()">Перечитать</button>
+        <button class="b sec" onclick="openWs()">Открыть папку площадки</button>
+        <span class="spin" id="sp-data">…</span><span id="data-msg" class="hint"></span>
+      </div>
+      <textarea id="ctx" spellcheck="false"></textarea>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-gen">
+    <div class="card">
+      <h2>Генерация форм</h2>
+      <div class="row">
+        <label><input type="checkbox" id="genpdf" checked> также PDF</label>
+        <label><input type="checkbox" id="genforce"> принудительно (при ошибках)</label>
+        <span class="spin" id="sp-gen">генерация…</span>
+      </div>
+      <div class="grid" id="forms"></div>
+      <pre class="out" id="out-gen" style="display:none"></pre>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-cal">
+    <div class="card">
+      <h2>Календарь подачи отчётности и платежей</h2>
+      <div class="row">
+        <label>Год <input type="number" id="calyear" style="width:110px"></label>
+        <button class="b" onclick="doCal()">Показать</button>
+        <span class="spin" id="sp-cal">…</span>
+      </div>
+      <pre class="out" id="out-cal" style="display:none"></pre>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-disp">
+    <div class="card">
+      <h2>Экспресс-расчёт рассеивания (МРР-2017, экспериментальный)</h2>
+      <div class="hint">Точечные источники: cм, xм, uм, профиль по оси, доля ПДК.
+        Для экспертизы используйте аттестованную УПРЗА.</div>
+      <textarea id="dispsrc" style="min-height:220px"></textarea>
+      <div class="row"><button class="b" onclick="doDisp()">Рассчитать</button>
+        <span class="spin" id="sp-disp">…</span></div>
+      <pre class="out" id="out-disp" style="display:none"></pre>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-svc">
+    <div class="card">
+      <h2>ИИ-анализ</h2>
+      <div class="row">
+        <button class="b sec" onclick="aiSetup()">Найти ИИ заново (Ollama / ключи API)</button>
+        <button class="b sec" onclick="aiTest()">Проверить ответом</button>
+        <span class="spin" id="sp-ai">…</span>
+      </div>
+      <pre class="out" id="out-ai" style="display:none"></pre>
+    </div>
+    <div class="card">
+      <h2>Сторож форм — изменения федеральных/региональных требований</h2>
+      <div class="row">
+        <button class="b sec" onclick="doWatch()">Проверить изменения</button>
+        <span class="spin" id="sp-watch">опрос источников…</span>
+      </div>
+      <pre class="out" id="out-watch" style="display:none"></pre>
+    </div>
+  </div>
+</main>
+</div>
+
+<script>
+let ORG = "", SITE = "", META = null;
+
+const $ = id => document.getElementById(id);
+const api = async (name, opts) => {
+  const r = await fetch("/api/" + name, opts);
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+};
+const get = (name, params) => api(name + "?" + new URLSearchParams(params));
+const post = (name, body) => api(name, {method:"POST",
+  headers:{"Content-Type":"application/json"}, body:JSON.stringify(body||{})});
+const show = (id, text) => { const el=$(id); el.style.display="block"; el.textContent=text; };
+const spin = (id, on) => $(id).classList.toggle("on", !!on);
+const needSite = () => { if(!ORG||!SITE){alert("Сначала выберите площадку слева");
+  throw new Error("нет площадки");} };
+
+// ── вкладки ──
+$("tabs").addEventListener("click", e => {
+  if (e.target.tagName !== "BUTTON") return;
+  document.querySelectorAll(".tabs button").forEach(b=>b.classList.remove("on"));
+  document.querySelectorAll(".tab").forEach(t=>t.classList.remove("on"));
+  e.target.classList.add("on");
+  $("tab-" + e.target.dataset.t).classList.add("on");
+});
+
+// ── дерево организаций ──
+async function loadTree(){
+  const j = await get("orgs", {});
+  const tree = $("tree"); tree.innerHTML = "";
+  const orgs = Object.keys(j.orgs);
+  if (!orgs.length) tree.innerHTML = '<div class="hint">пусто — создайте организацию ниже</div>';
+  for (const org of orgs){
+    const d = document.createElement("div"); d.className = "org";
+    const n = document.createElement("div"); n.className = "name";
+    n.textContent = "● " + org;               // textContent: имя — не HTML
+    n.onclick = () => { ORG = org; };
+    d.appendChild(n);
+    for (const site of j.orgs[org]){
+      const s = document.createElement("div");
+      s.className = "site" + (org===ORG && site===SITE ? " sel":"");
+      s.textContent = site;
+      s.onclick = () => { ORG=org; SITE=site; onSelect(); loadTree(); };
+      d.appendChild(s);
+    }
+    tree.appendChild(d);
+  }
+}
+function onSelect(){
+  $("selinfo").textContent = `Площадка: ${ORG} / ${SITE}`;
+  loadCtx().catch(()=>{});
+}
+async function addOrg(){
+  const name = $("neworg").value.trim(); if(!name) return;
+  await post("org_add", {name}).catch(e=>alert(e.message));
+  $("neworg").value=""; loadTree();
+}
+async function addSite(){
+  const name = $("newsite").value.trim();
+  if(!name) return;
+  // организация: выбранная в дереве, иначе единственная существующая
+  let org = ORG;
+  if(!org){
+    const all = Object.keys((await get("orgs",{})).orgs);
+    if(all.length === 1) org = all[0];
+    else { alert(all.length ? "Кликните организацию в дереве, затем добавьте площадку"
+                            : "Сначала создайте организацию"); return; }
+  }
+  try{ await post("site_add", {org, name}); }
+  catch(e){ alert(e.message); return; }
+  $("newsite").value=""; ORG=org; SITE=name; onSelect(); loadTree();
+}
+
+// ── приём ──
+$("files").addEventListener("change", () => {
+  $("filelist").textContent = [...$("files").files].map(f=>f.name).join(" · ");
+});
+const b64 = f => new Promise((res,rej)=>{ const r=new FileReader();
+  r.onload=()=>res(r.result.split(",")[1]); r.onerror=rej; r.readAsDataURL(f); });
+async function doIntake(){
+  needSite();
+  const fs = [...$("files").files];
+  if(!fs.length){ alert("Выберите файлы"); return; }
+  $("btn-intake").disabled = true; spin("sp-intake", 1);
+  try{
+    const files = [];
+    for (const f of fs) files.push({name:f.name, b64: await b64(f)});
+    const j = await post("intake", {org:ORG, site:SITE, files, ai:$("useai").checked});
+    show("out-intake", j.report);
+    loadCtx().catch(()=>{});
+  }catch(e){ show("out-intake", "Ошибка: " + e.message); }
+  $("btn-intake").disabled = false; spin("sp-intake", 0);
+}
+
+// ── данные ──
+async function loadCtx(){
+  needSite();
+  const j = await get("context", {org:ORG, site:SITE});
+  $("ctx").value = JSON.stringify(j.context, null, 2);
+  $("data-msg").textContent = j.path;
+}
+async function saveCtx(){
+  needSite(); spin("sp-data",1);
+  try{
+    const context = JSON.parse($("ctx").value);
+    await post("context_save", {org:ORG, site:SITE, context});
+    $("data-msg").textContent = "Сохранено ✓";
+  }catch(e){ $("data-msg").textContent = "Ошибка: " + e.message; }
+  spin("sp-data",0);
+}
+async function openWs(){
+  needSite();
+  const j = await get("context", {org:ORG, site:SITE});
+  await post("open", {path: j.path}).catch(e=>alert(e.message));
+}
+
+// ── генерация ──
+function renderForms(){
+  const box = $("forms"); box.innerHTML = "";
+  for (const f of META.forms){
+    const card = document.createElement("div"); card.className = "form-card";
+    const badge = f.domain==="development" ? '<span class="badge dev">разработка</span>'
+                                           : '<span class="badge">отчётность</span>';
+    const btns = f.implemented
+      ? `<button class="b sec" onclick="doValidate('${f.code}')">Проверить</button>
+         <button class="b" onclick="doGenerate('${f.code}')">Сгенерировать</button>`
+      : '<span class="hint">каркас — генерация в следующих версиях</span>';
+    card.innerHTML = `<div class="t">${f.title}${badge}</div>
+      <div class="c">${f.code}</div><div class="row">${btns}</div>
+      <div id="iss-${f.code}"></div>`;
+    box.appendChild(card);
+  }
+}
+function renderIssues(code, issues){
+  $("iss-"+code).innerHTML = (issues||[]).map(i =>
+    `<div class="issue ${i.level}">${i.level==="error"?"✖":"⚠"} [${i.field}] ${i.message}</div>`
+  ).join("") || '<div class="issue" style="color:var(--acc)">✓ замечаний нет</div>';
+}
+async function doValidate(code){
+  needSite();
+  try{ const j = await post("validate", {org:ORG, site:SITE, form:code});
+       renderIssues(code, j.issues);
+  }catch(e){ alert(e.message); }
+}
+async function doGenerate(code){
+  needSite(); spin("sp-gen",1);
+  try{
+    const j = await post("generate", {org:ORG, site:SITE, form:code,
+      pdf:$("genpdf").checked, force:$("genforce").checked});
+    renderIssues(code, j.issues);
+    let t = "";
+    if (j.xml)   t += "XML:    " + j.xml + "\n";
+    if (j.print) t += "Печать: " + j.print + "\n";
+    if (j.pdf)   t += "PDF:    " + j.pdf + "\n";
+    if (j.pdf_error) t += "PDF:    не удалось — " + j.pdf_error + "\n";
+    show("out-gen", t || "Готово");
+    if (j.xml) post("open", {path:j.xml}).catch(()=>{});
+  }catch(e){ show("out-gen", "Ошибка: " + e.message); }
+  spin("sp-gen",0);
+}
+
+// ── календарь ──
+async function doCal(){
+  needSite(); spin("sp-cal",1);
+  try{
+    const j = await get("calendar", {org:ORG, site:SITE, year:$("calyear").value||""});
+    show("out-cal", j.text); $("calyear").value = j.year;
+  }catch(e){ show("out-cal", "Ошибка: " + e.message); }
+  spin("sp-cal",0);
+}
+
+// ── рассеивание ──
+$("dispsrc").value = JSON.stringify({
+  sources:[{name:"Котельная (NO2)", H:18, D:0.6, w0:8.5, Tg:140, Tv:25.2, M:0.35, F:1, A:160}],
+  pdk:{"Котельная (NO2)":0.2}}, null, 2);
+async function doDisp(){
+  spin("sp-disp",1);
+  try{
+    const data = JSON.parse($("dispsrc").value);
+    const j = await post("dispersion", {data});
+    show("out-disp", j.text);
+  }catch(e){ show("out-disp", "Ошибка: " + e.message); }
+  spin("sp-disp",0);
+}
+
+// ── сервис ──
+async function aiSetup(){ spin("sp-ai",1);
+  try{ const j = await post("ai_setup", {}); show("out-ai", j.text); refreshMeta(); }
+  catch(e){ show("out-ai", "Ошибка: " + e.message); } spin("sp-ai",0); }
+async function aiTest(){ spin("sp-ai",1);
+  try{ const j = await post("ai_test", {});
+       show("out-ai", `[${j.model}]\n${j.answer}`); }
+  catch(e){ show("out-ai", "Ошибка: " + e.message); } spin("sp-ai",0); }
+async function doWatch(){ spin("sp-watch",1);
+  try{ const j = await post("watch", {}); show("out-watch", j.text); }
+  catch(e){ show("out-watch", "Ошибка: " + e.message); } spin("sp-watch",0); }
+
+// ── старт ──
+async function refreshMeta(){
+  META = await get("meta", {});
+  $("ver").textContent = "v" + META.version;
+  $("aibox").textContent = META.ai.provider
+    ? `ИИ: ${META.ai.provider}/${META.ai.model}` : "ИИ: не настроен (Сервис → Найти ИИ)";
+  $("wsroot").textContent = "Рабочее пространство: " + META.workspace;
+  renderForms();
+}
+$("calyear").value = new Date().getFullYear();
+refreshMeta().then(loadTree).catch(e => $("selinfo").textContent = "Ошибка: " + e.message);
+</script>
+</body>
+</html>

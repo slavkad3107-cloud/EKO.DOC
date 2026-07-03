@@ -245,6 +245,12 @@ def _cmd_dispersion(args):
     print(dp.report(sources, pdk))
 
 
+def _cmd_gui(args):
+    from ecodoc.gui import server
+
+    server.run(port=args.port, open_browser=not args.no_browser)
+
+
 def _target_args(sub):
     """Общие аргументы выбора цели: -i контекст ИЛИ --org/--site."""
     sub.add_argument("-i", "--input", help="context.json (или используйте --org/--site)")
@@ -341,6 +347,11 @@ def build_parser() -> argparse.ArgumentParser:
     dpp = sub.add_parser("dispersion", help="экспресс-расчёт рассеивания (МРР-2017)")
     dpp.add_argument("sources", help="JSON с источниками (см. samples/dispersion_sources.json)")
     dpp.set_defaults(func=_cmd_dispersion)
+
+    gu = sub.add_parser("gui", help="графический интерфейс (локально, в браузере)")
+    gu.add_argument("--port", type=int, default=8737)
+    gu.add_argument("--no-browser", action="store_true")
+    gu.set_defaults(func=_cmd_gui)
     return p
 
 

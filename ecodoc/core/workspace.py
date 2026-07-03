@@ -26,7 +26,19 @@ from ecodoc.core.models import Organization, ReportContext
 
 
 def root() -> Path:
-    return Path(os.environ.get("ECODOC_WORKSPACE", "ecodoc_workspace"))
+    """Корень рабочего пространства.
+
+    Приоритет: $ECODOC_WORKSPACE → ./ecodoc_workspace (если уже создан,
+    обратная совместимость) → ~/ЭКО.DOC (стабильный путь: GUI и команда
+    ecodoc запускаются из любой папки, данные — всегда в одном месте).
+    """
+    env = os.environ.get("ECODOC_WORKSPACE")
+    if env:
+        return Path(env)
+    local = Path("ecodoc_workspace")
+    if local.is_dir():
+        return local
+    return Path.home() / "ЭКО.DOC"
 
 
 def _slug(name: str) -> str:
