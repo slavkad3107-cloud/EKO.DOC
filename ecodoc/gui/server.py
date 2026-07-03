@@ -54,16 +54,40 @@ def api_orgs(params, body):
     return {"orgs": workspace.list_tree()}
 
 
+def api_org_lookup(params, body):
+    """Реквизиты по ИНН из ЕГРЮЛ (открытый сервис ФНС)."""
+    from ecodoc.parsers.egrul import lookup
+    return {"requisites": lookup(body["inn"])}
+
+
 def api_org_add(params, body):
-    known = ("inn", "kpp", "ogrn", "oktmo", "address")
-    path = workspace.add_org(body["name"],
-                             **{k: body.get(k, "") for k in known})
-    return {"ok": True, "path": str(path)}
+    known = ("short_name", "inn", "kpp", "ogrn", "oktmo", "address",
+             "director_name", "director_position")
+    name = (body.get("name") or "").strip()
+    req = {k: body.get(k, "") for k in known}
+    if not name and body.get("inn"):
+        # только ИНН — подтягиваем реквизиты из ЕГРЮЛ
+        from ecodoc.parsers.egrul import lookup
+        found = lookup(body["inn"])
+        name = found.get("short_name") or found.get("name", "")
+        for k in known:
+            req[k] = req[k] or found.get(k, "")
+    if not name:
+        return {"error": "Укажите название или ИНН."}
+    path = workspace.add_org(name, **req)
+    # сразу создаём площадку — без неё работать нельзя
+    site = (body.get("site") or "Основная").strip() or "Основная"
+    workspace.add_site(name, site)
+    # интерфейсу возвращаем имена как на диске (слаги) — для выбора в дереве
+    return {"ok": True, "path": str(path),
+            "org": workspace._slug(name), "site": workspace._slug(site)}
 
 
 def api_site_add(params, body):
     path = workspace.add_site(body["org"], body["name"])
-    return {"ok": True, "path": str(path)}
+    return {"ok": True, "path": str(path),
+            "org": workspace._slug(body["org"]),
+            "site": workspace._slug(body["name"])}
 
 
 def api_context_get(params, body):
@@ -199,7 +223,8 @@ def api_open(params, body):
 
 GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "context": api_context_get, "calendar": api_calendar}
-POST_ROUTES = {"org_add": api_org_add, "site_add": api_site_add,
+POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
+               "site_add": api_site_add,
                "context_save": api_context_save, "intake": api_intake,
                "validate": api_validate, "generate": api_generate,
                "watch": api_watch, "ai_setup": api_ai_setup,

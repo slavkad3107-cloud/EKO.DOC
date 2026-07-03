@@ -151,12 +151,22 @@ def _cmd_volume(args):
 
 def _cmd_org(args):
     if args.action == "add":
-        if not args.name:
-            sys.exit("Укажите наименование: python -m ecodoc org add \"ООО Ромашка\" --inn ...")
         req = {k: getattr(args, k) or "" for k in ("inn", "kpp", "ogrn", "oktmo", "address")}
-        path = workspace.add_org(args.name, **req)
+        name = args.name
+        if not name and req["inn"]:
+            # только ИНН — реквизиты из ЕГРЮЛ (открытый сервис ФНС)
+            from ecodoc.parsers.egrul import lookup
+            found = lookup(req["inn"])
+            name = found.get("short_name") or found.get("name", "")
+            for k in req:
+                req[k] = req[k] or found.get(k, "")
+            print(f"ЕГРЮЛ: {found.get('name', '')} (ОГРН {found.get('ogrn', '—')})")
+        if not name:
+            sys.exit("Укажите наименование или --inn: "
+                     "python -m ecodoc org add \"ООО Ромашка\" | org add --inn 780...")
+        path = workspace.add_org(name, **req)
         print(f"Организация создана: {path}")
-        print(f"→ добавьте площадку: python -m ecodoc site add \"{args.name}\" \"<площадка>\"")
+        print(f"→ добавьте площадку: python -m ecodoc site add \"{name}\" \"<площадка>\"")
     else:  # list
         tree = workspace.list_tree()
         if not tree:

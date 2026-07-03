@@ -85,6 +85,10 @@ def run(files: list[str], org: str = "", site: str = "",
             lines.append(f"✖ не читается {p.name}: {e}")
     for doc in docs:
         extractor._fill_from_doc(ctx, doc)
+    if docs:
+        from ecodoc.intake import classify
+        lines.append("")
+        lines.append(classify.render(docs))
     lines.append("")
     lines.append(extractor.summary(ctx))
 
