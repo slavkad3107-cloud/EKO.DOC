@@ -1,4 +1,4 @@
-# ЭКО.DOC — релиз: zip с номером версии в OneDrive + документация + пуш.
+﻿# ЭКО.DOC — релиз: zip с номером версии в OneDrive + документация + пуш.
 # Хранилище релизов и документации: C:\Users\veter\OneDrive\II\ЭКОДОК
 # Запуск после изменения версии в ecodoc/__init__.py:
 #   powershell -ExecutionPolicy Bypass -File release.ps1
