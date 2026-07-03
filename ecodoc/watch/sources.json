@@ -1,0 +1,64 @@
+{
+  "_комментарий": "Реестр отслеживаемых источников. Правьте свободно: id — любой уникальный, url — страница с формой/приказом/XSD, forms — какие формы затрагивает. `ecodoc watch check` скачивает страницы, сравнивает с прошлым снимком и сообщает об изменениях.",
+  "sources": [
+    {
+      "id": "rpn-lk-main",
+      "name": "Личный кабинет природопользователя (новости/схемы загрузки)",
+      "url": "https://lk.rpn.gov.ru/",
+      "allow_insecure": true,
+      "scope": "federal",
+      "forms": ["declaration-nvos", "pek", "2tp-waste", "2tp-air", "waste-report-iii"]
+    },
+    {
+      "id": "pravo-mpr-1043",
+      "name": "Приказ МПР № 1043 — форма декларации о плате за НВОС",
+      "url": "http://publication.pravo.gov.ru/search?pageSize=30&index=1&SignatoryAuthorityId=e14f242b-3a04-4cea-a1fa-8b1e37b2a527&text=%D0%B4%D0%B5%D0%BA%D0%BB%D0%B0%D1%80%D0%B0%D1%86%D0%B8%D1%8F%20%D0%BF%D0%BB%D0%B0%D1%82%D0%B0",
+      "scope": "federal",
+      "forms": ["declaration-nvos"]
+    },
+    {
+      "id": "rosstat-2tp",
+      "name": "Росстат — альбом форм (2-ТП отходы/воздух/водхоз)",
+      "url": "https://rosstat.gov.ru/monitoring",
+      "scope": "federal",
+      "forms": ["2tp-waste", "2tp-air", "2tp-water"]
+    },
+    {
+      "id": "rpn-pek",
+      "name": "РПН — отчёт об организации ПЭК (приказ № 109/74)",
+      "url": "https://rpn.gov.ru/activity/regulation/kseb/",
+      "allow_insecure": true,
+      "scope": "federal",
+      "forms": ["pek"]
+    },
+    {
+      "id": "spb-kadastr",
+      "name": "Экологический портал СПб (Комитет по природопользованию) — кадастр отходов",
+      "url": "http://www.infoeco.ru/",
+      "scope": "regional-78",
+      "forms": ["cadastre-spb"]
+    },
+    {
+      "id": "lo-kadastr",
+      "name": "Комитет по обращению с отходами ЛО — кадастр",
+      "url": "https://waste.lenobl.ru/",
+      "scope": "regional-47",
+      "forms": ["cadastre-spb"]
+    },
+    {
+      "id": "fkko",
+      "name": "ФККО (классификационный каталог отходов)",
+      "url": "https://rpn.gov.ru/fkko/",
+      "allow_insecure": true,
+      "scope": "federal",
+      "forms": ["waste-movement", "waste-report-iii", "cadastre-spb"]
+    },
+    {
+      "id": "nvos-rates",
+      "name": "Ставки платы за НВОС / коэффициент индексации (ПП РФ 913 + ежегодное ПП)",
+      "url": "http://publication.pravo.gov.ru/search?pageSize=30&index=1&text=%D1%81%D1%82%D0%B0%D0%B2%D0%BA%D0%B8%20%D0%BF%D0%BB%D0%B0%D1%82%D1%8B%20%D0%BD%D0%B5%D0%B3%D0%B0%D1%82%D0%B8%D0%B2%D0%BD%D0%BE%D0%B5%20%D0%B2%D0%BE%D0%B7%D0%B4%D0%B5%D0%B9%D1%81%D1%82%D0%B2%D0%B8%D0%B5",
+      "scope": "federal",
+      "forms": ["declaration-nvos"]
+    }
+  ]
+}

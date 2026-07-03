@@ -1,0 +1,62 @@
+{
+  "organization": {
+    "name": "ООО «Пример-Эко»",
+    "short_name": "ООО «Пример-Эко»",
+    "inn": "7801234567",
+    "kpp": "780101001",
+    "ogrn": "1127847123456",
+    "okpo": "12345678",
+    "okved": "38.11",
+    "address": "191119, г. Санкт-Петербург, ул. Примерная, д. 1",
+    "oktmo": "40908000",
+    "director_name": "Иванов Иван Иванович",
+    "director_position": "Генеральный директор",
+    "phone": "+7 (812) 000-00-00",
+    "email": "eco@example.ru"
+  },
+  "objects": [
+    {"code": "40-0178-001234-П", "name": "Производственная площадка №1",
+     "category": "III", "address": "СПб, ул. Примерная, 1", "oktmo": "40908000", "region_code": "40"}
+  ],
+  "period": {"year": 2025, "quarter": null},
+  "pollutants": [
+    {"name": "Азота диоксид", "code": "0301", "medium": "air",
+     "mass_norm": "1.2", "mass_limit": "0", "mass_over": "0"},
+    {"name": "Сера диоксид", "code": "0330", "medium": "air",
+     "mass_norm": "0.8", "mass_limit": "0.1", "mass_over": "0"},
+    {"name": "Углерода оксид", "code": "0337", "medium": "air",
+     "mass_norm": "3.5", "mass_limit": "0", "mass_over": "0.2"}
+  ],
+  "wastes": [
+    {"fkko_code": "40211001515", "name": "Мусор от офисных помещений",
+     "hazard_class": 5, "accumulated_start": "0", "generated": "12.0",
+     "received": "0", "used": "0", "neutralized": "0", "transferred": "0",
+     "placed_norm": "12.0", "placed_over": "0", "accumulated_end": "0",
+     "is_mining": false},
+    {"fkko_code": "47110101521", "name": "Лампы ртутные отработанные",
+     "hazard_class": 1, "accumulated_start": "0", "generated": "0.05",
+     "received": "0", "used": "0", "neutralized": "0", "transferred": "0.05",
+     "placed_norm": "0", "placed_over": "0", "accumulated_end": "0",
+     "is_mining": false}
+  ],
+  "extra": {
+    "profile": {"is_msp": true},
+    "pek": {
+      "program_number": "1-ПЭК/2024",
+      "program_date": "15.01.2024",
+      "lab": "ООО «Эко-Лаб» (аттестат RA.RU.21XX99)",
+      "results": [
+        {"point": "ист. №0001 (котельная)", "substance": "0301 Азота диоксид",
+         "plan": 4, "fact": 4, "exceed": false},
+        {"point": "ист. №0001 (котельная)", "substance": "0337 Углерода оксид",
+         "plan": 4, "fact": 4, "exceed": false}
+      ]
+    },
+    "waste_receivers": [
+      {"fkko": "47110101521", "receiver": "ООО «Меркурий-Утилизация»",
+       "inn": "7807654321", "license": "№078-00123 от 12.03.2023",
+       "operation": "передача на обезвреживание"}
+    ]
+  },
+  "provenance": {}
+}

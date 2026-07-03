@@ -1,0 +1,357 @@
+"""ЭкоДок — командная строка.
+
+    python -m ecodoc list
+    python -m ecodoc analyze <файлы...> [-o context.json]
+    python -m ecodoc generate <форма> -i context.json [-o out_dir]
+    python -m ecodoc validate <форма> -i context.json
+
+Типовой сценарий (гибрид):
+    1) analyze  — распознать реквизиты из приложенных doc/pdf/jpg в context.json
+    2) (вручную) — открыть context.json, проверить и дозаполнить массы/объёмы
+    3) generate — получить XML (для ЛКПП) и .xlsx (печатная форма)
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+from ecodoc import __version__
+from ecodoc.core import registry, serialize, workspace
+
+
+def _cmd_list(args):
+    registry.load_all()
+    print(f"ЭкоДок {__version__} — модули и формы:\n")
+    reports = registry.all_reports()
+    print("КОНТУР «ОТЧЁТНОСТЬ» (формы для генерации):")
+    for code, cls in reports.items():
+        if getattr(cls, "domain", "reporting") != "reporting":
+            continue
+        mark = "✓" if getattr(cls, "implemented", True) else "○ каркас"
+        print(f"  {code:<20} {mark:<10} {cls.title}")
+    print("\nКОНТУР «РАЗРАБОТКА» (документы):")
+    print(f"  {'waste-passport':<20} {'✓':<10} Паспорта отходов I–IV класса  (команда: passport)")
+    print(f"  {'volume:ndv|nds|szz':<20} {'○ каркас':<10} Тома НДВ/НДС/СЗЗ  (команда: volume)")
+    print(f"  {'dispersion':<20} {'✓ эксп.':<10} Расчёт рассеивания МРР-2017  (команда: dispersion)")
+    for code, cls in reports.items():
+        if getattr(cls, "domain", "") != "development":
+            continue
+        mark = "✓" if getattr(cls, "implemented", True) else "○ каркас"
+        print(f"  {code:<20} {mark:<10} {cls.title}")
+    print("\nМОДУЛИ: calendar (календарь) · intake (приём документов) · "
+          "ai (ИИ-анализ) · watch (сторож форм) · org/site (организации) · "
+          "pdf (экспорт PDF)")
+
+
+def _cmd_analyze(args):
+    from ecodoc.parsers.extractor import parse_files, summary
+
+    ctx = parse_files(args.files, ocr=not args.no_ocr)
+    print(summary(ctx))
+    out = Path(args.output)
+    serialize.to_json(ctx, out)
+    print(f"\nКонтекст сохранён: {out}")
+    print("→ Проверьте и дозаполните его, затем: python -m ecodoc generate <форма> -i", out)
+
+
+def _load_report(code: str, args):
+    registry.load_all()
+    try:
+        cls = registry.get(code)
+    except KeyError:
+        sys.exit(f"Неизвестная форма: {code}. Список: python -m ecodoc list")
+    return cls(workspace.resolve(args))
+
+
+def _print_issues(issues) -> bool:
+    if not issues:
+        print("Валидация: замечаний нет.")
+        return True
+    errors = [i for i in issues if i.level == "error"]
+    for i in issues:
+        print(" ", i)
+    return not errors
+
+
+def _cmd_validate(args):
+    report = _load_report(args.form, args)
+    ok = _print_issues(report.validate())
+    sys.exit(0 if ok else 1)
+
+
+def _cmd_generate(args):
+    report = _load_report(args.form, args)
+    if not getattr(report, "implemented", True):
+        sys.exit(f"Форма «{report.title}» — каркас, генерация пока недоступна.")
+    issues = report.validate()
+    ok = _print_issues(issues)
+    if not ok and not args.force:
+        sys.exit("\nЕсть ошибки. Исправьте context.json или запустите с --force.")
+    out_dir = workspace.out_dir(args)
+    stem = f"{args.form}_{report.ctx.period.year or 'XXXX'}"
+    xml_path = report.render_xml(out_dir / f"{stem}.xml")
+    print(f"XML:    {xml_path}")
+    try:
+        print_path = report.render_print(out_dir / f"{stem}.xlsx")
+        print(f"Печать: {print_path}")
+        if args.pdf:
+            from ecodoc.render.pdf import to_pdf
+            try:
+                print(f"PDF:    {to_pdf(print_path)}")
+            except RuntimeError as e:
+                print(f"PDF:    не удалось ({e})")
+    except NotImplementedError:
+        print("Печать: (для этой формы не реализована)")
+
+
+def _cmd_calendar(args):
+    from ecodoc.calendar import engine
+
+    ctx = workspace.resolve(args)
+    year = args.year or (ctx.period.year + 1 if ctx.period.year else 0)
+    if not year:
+        sys.exit("Укажите --year или заполните period.year в context.json")
+    print(engine.render_console(ctx, year))
+    if args.xlsx:
+        path = engine.export_xlsx(ctx, year, Path(args.xlsx))
+        print(f"\nExcel: {path}")
+
+
+def _cmd_passport(args):
+    from ecodoc.development import waste_passport
+
+    ctx = workspace.resolve(args)
+    paths = waste_passport.generate(ctx, args.outdir)
+    if not paths:
+        print("Отходов I–IV класса в контексте нет — паспорта не требуются.")
+        return
+    print(f"Сгенерировано паспортов: {len(paths)}")
+    for p in paths:
+        print("  ", p)
+
+
+def _cmd_volume(args):
+    from ecodoc.development import volume_builder as vb
+
+    ctx = workspace.resolve(args)
+    src = vb.VolumeSources()
+    if args.sources_xlsx:
+        src.sources_header, src.sources_table = vb.ingest_excel(args.sources_xlsx)
+    if args.dispersion_xlsx:
+        src.dispersion_header, src.dispersion_table = vb.ingest_excel(args.dispersion_xlsx)
+    if args.appendix:
+        src.appendices = vb.collect_appendices(args.appendix)
+    out = Path(args.outdir) / f"том_{args.type}.docx"
+    path = vb.build(args.type, ctx, src, out)
+    print(f"Том собран: {path}")
+    print("⚠ Каркас тома: разделы и реквизиты сгенерированы; таблицы источников и "
+          "результаты рассеивания импортируйте из «Эколога» (--sources-xlsx/--dispersion-xlsx).")
+
+
+def _cmd_org(args):
+    if args.action == "add":
+        if not args.name:
+            sys.exit("Укажите наименование: python -m ecodoc org add \"ООО Ромашка\" --inn ...")
+        req = {k: getattr(args, k) or "" for k in ("inn", "kpp", "ogrn", "oktmo", "address")}
+        path = workspace.add_org(args.name, **req)
+        print(f"Организация создана: {path}")
+        print(f"→ добавьте площадку: python -m ecodoc site add \"{args.name}\" \"<площадка>\"")
+    else:  # list
+        tree = workspace.list_tree()
+        if not tree:
+            print(f"Рабочее пространство пусто ({workspace.root()}). "
+                  f"Создайте: python -m ecodoc org add \"ООО Ромашка\" --inn ...")
+        for org, sites in tree.items():
+            print(f"● {org}")
+            for s in sites:
+                print(f"    └ {s}")
+
+
+def _cmd_site(args):
+    path = workspace.add_site(args.org, args.name)
+    print(f"Площадка создана: {path.parent}")
+    print(f"→ принесите документы: python -m ecodoc intake <файлы> "
+          f"--org \"{args.org}\" --site \"{args.name}\"")
+
+
+def _cmd_intake(args):
+    from ecodoc.intake import intake
+
+    ctx = None
+    if args.input:
+        ctx = serialize.from_json(args.input)
+    print(intake.run(args.files, org=args.org or "", site=args.site or "",
+                     ctx=ctx, use_ai=args.ai, forms=args.form,
+                     ocr=not args.no_ocr))
+    if args.input and ctx is not None:
+        serialize.to_json(ctx, args.input)
+        print(f"Контекст обновлён: {args.input}")
+
+
+def _cmd_ai(args):
+    from ecodoc.ai import detect, load_config
+
+    if args.action == "setup":
+        cfg = detect.setup(prefer=args.provider or "")
+        print("── Настройка ИИ ──")
+        print(detect.describe(cfg))
+        if not cfg.provider:
+            print("\nЛокальных ИИ не найдено и ключей внешних API нет.\n"
+                  "Варианты: установите Ollama (https://ollama.com) и модель\n"
+                  "  `ollama pull qwen2.5:7b`, либо задайте ключ, например\n"
+                  "  ANTHROPIC_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY,\n"
+                  "  затем повторите `ecodoc ai setup`.")
+    elif args.action == "status":
+        print(detect.describe(load_config()))
+    else:  # test
+        from ecodoc.ai.providers import chat_with_fallback
+        cfg = load_config()
+        answer, model = chat_with_fallback(
+            cfg, "Отвечай кратко, по-русски.",
+            args.prompt or "Назови класс опасности отработанных ртутных ламп.")
+        print(f"[{model}] {answer}")
+
+
+def _cmd_watch(args):
+    from ecodoc.watch import watcher
+
+    print(watcher.run_check(xsd_dir=args.xsd))
+
+
+def _cmd_pdf(args):
+    from ecodoc.render.pdf import to_pdf
+
+    for f in args.files:
+        print(f"PDF: {to_pdf(f)}")
+
+
+def _cmd_dispersion(args):
+    import json as _json
+
+    from ecodoc.development import dispersion as dp
+
+    # utf-8-sig: Блокнот и пр. сохраняют JSON с BOM
+    data = _json.loads(Path(args.sources).read_text(encoding="utf-8-sig"))
+    raw = (data if isinstance(data, list)
+           else data.get("sources", []) if isinstance(data, dict) else [])
+    known = dp.PointSource.__dataclass_fields__
+    sources = [dp.PointSource(**{k: v for k, v in s.items() if k in known})
+               for s in raw]
+    if not sources:
+        sys.exit("В файле нет источников. Формат: {\"sources\": [{\"name\":..., "
+                 "\"H\":10, \"D\":0.5, \"w0\":5, \"Tg\":120, \"Tv\":25, \"M\":1.0}]}")
+    pdk = data.get("pdk") if isinstance(data, dict) else None
+    print(dp.report(sources, pdk))
+
+
+def _target_args(sub):
+    """Общие аргументы выбора цели: -i контекст ИЛИ --org/--site."""
+    sub.add_argument("-i", "--input", help="context.json (или используйте --org/--site)")
+    sub.add_argument("--org", help="организация из рабочего пространства")
+    sub.add_argument("--site", help="площадка организации")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="ecodoc", description="ЭкоДок — экологическая отчётность")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("list", help="список форм").set_defaults(func=_cmd_list)
+
+    a = sub.add_parser("analyze", help="разобрать приложенные документы в context.json")
+    a.add_argument("files", nargs="+", help="doc/pdf/jpg/png/docx")
+    a.add_argument("-o", "--output", default="context.json")
+    a.add_argument("--no-ocr", action="store_true", help="не запускать OCR для сканов")
+    a.set_defaults(func=_cmd_analyze)
+
+    v = sub.add_parser("validate", help="проверить контекст под форму")
+    v.add_argument("form")
+    _target_args(v)
+    v.set_defaults(func=_cmd_validate)
+
+    g = sub.add_parser("generate", help="сгенерировать XML + печатную форму [+PDF]")
+    g.add_argument("form")
+    _target_args(g)
+    g.add_argument("-o", "--outdir", default="out")
+    g.add_argument("--force", action="store_true", help="генерировать несмотря на ошибки")
+    g.add_argument("--pdf", action="store_true", help="также сконвертировать печать в PDF")
+    g.set_defaults(func=_cmd_generate)
+
+    c = sub.add_parser("calendar", help="календарь подачи + чек-лист документов по категории")
+    _target_args(c)
+    c.add_argument("--year", type=int, help="календарный год (по умолч. period.year+1)")
+    c.add_argument("--xlsx", help="экспортировать в Excel по этому пути")
+    c.set_defaults(func=_cmd_calendar)
+
+    pa = sub.add_parser("passport", help="паспорта отходов I–IV класса (.docx)")
+    _target_args(pa)
+    pa.add_argument("-o", "--outdir", default="out/passports")
+    pa.set_defaults(func=_cmd_passport)
+
+    vo = sub.add_parser("volume", help="том НДВ/НДС/СЗЗ (.docx) с импортом из «Эколога»")
+    vo.add_argument("type", choices=["ndv", "nds", "szz"])
+    _target_args(vo)
+    vo.add_argument("-o", "--outdir", default="out")
+    vo.add_argument("--sources-xlsx", help="выгрузка таблицы источников из «Эколога»")
+    vo.add_argument("--dispersion-xlsx", help="выгрузка результатов рассеивания из «Эколога»")
+    vo.add_argument("--appendix", nargs="*", help="файлы-исходники в приложения (КХА и т.п.)")
+    vo.set_defaults(func=_cmd_volume)
+
+    # ── рабочее пространство: организации и площадки ──
+    og = sub.add_parser("org", help="организации рабочего пространства")
+    og.add_argument("action", choices=["add", "list"])
+    og.add_argument("name", nargs="?", help="наименование организации (для add)")
+    for req in ("inn", "kpp", "ogrn", "oktmo", "address"):
+        og.add_argument(f"--{req}")
+    og.set_defaults(func=_cmd_org)
+
+    st = sub.add_parser("site", help="площадки организации")
+    st.add_argument("action", choices=["add"])
+    st.add_argument("org", help="организация")
+    st.add_argument("name", help="название площадки")
+    st.set_defaults(func=_cmd_site)
+
+    # ── приём документов ──
+    ik = sub.add_parser("intake", help="принять документы: что распознано, чего не хватает")
+    ik.add_argument("files", nargs="+", help="doc/pdf/jpg/xml/xlsx — справки, акты, протоколы")
+    _target_args(ik)
+    ik.add_argument("--ai", action="store_true", help="дополнительно ИИ-анализ (см. ai setup)")
+    ik.add_argument("--form", action="append", help="проверять полноту только этих форм")
+    ik.add_argument("--no-ocr", action="store_true")
+    ik.set_defaults(func=_cmd_intake)
+
+    # ── ИИ ──
+    ai = sub.add_parser("ai", help="настройка и проверка ИИ-анализа")
+    ai.add_argument("action", choices=["setup", "status", "test"])
+    ai.add_argument("prompt", nargs="?", help="вопрос для action=test")
+    ai.add_argument("--provider", help="принудительный провайдер (ollama, anthropic, ...)")
+    ai.set_defaults(func=_cmd_ai)
+
+    # ── сторож форм ──
+    w = sub.add_parser("watch", help="проверить изменения форм/ставок/схем загрузки")
+    w.add_argument("action", choices=["check"])
+    w.add_argument("--xsd", help="папка с локальными XSD ЛКПП для слежения")
+    w.set_defaults(func=_cmd_watch)
+
+    # ── PDF и рассеивание ──
+    pf = sub.add_parser("pdf", help="сконвертировать .xlsx/.docx в PDF")
+    pf.add_argument("files", nargs="+")
+    pf.set_defaults(func=_cmd_pdf)
+
+    dpp = sub.add_parser("dispersion", help="экспресс-расчёт рассеивания (МРР-2017)")
+    dpp.add_argument("sources", help="JSON с источниками (см. samples/dispersion_sources.json)")
+    dpp.set_defaults(func=_cmd_dispersion)
+    return p
+
+
+def main(argv=None):
+    # консоль Windows по умолчанию cp1251/cp866 — не печатает ✓/⚠
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    args = build_parser().parse_args(argv)
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
