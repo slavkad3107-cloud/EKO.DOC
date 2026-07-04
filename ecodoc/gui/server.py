@@ -80,14 +80,14 @@ def api_org_add(params, body):
     workspace.add_site(name, site)
     # интерфейсу возвращаем имена как на диске (слаги) — для выбора в дереве
     return {"ok": True, "path": str(path),
-            "org": workspace._slug(name), "site": workspace._slug(site)}
+            "org": workspace.slug(name), "site": workspace.slug(site)}
 
 
 def api_site_add(params, body):
     path = workspace.add_site(body["org"], body["name"])
     return {"ok": True, "path": str(path),
-            "org": workspace._slug(body["org"]),
-            "site": workspace._slug(body["name"])}
+            "org": workspace.slug(body["org"]),
+            "site": workspace.slug(body["name"])}
 
 
 def api_context_get(params, body):
@@ -109,33 +109,64 @@ def api_context_save(params, body):
 
 def api_intake(params, body):
     """Файлы приходят base64 (браузер) → временная папка → intake.run."""
+    import shutil
+    from datetime import datetime
+
     from ecodoc.intake import intake
     tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_upload_"))
-    paths = []
-    for i, f in enumerate(body.get("files", [])):
-        name = Path(str(f["name"]).replace("\\", "/")).name  # только имя
-        if not name or name in (".", ".."):
-            name = f"файл_{i + 1}"
-        p = tmpdir / name
-        p.write_bytes(base64.b64decode(f["b64"]))
-        paths.append(str(p))
-    report = intake.run(paths, org=body["org"], site=body["site"],
-                        use_ai=bool(body.get("ai")))
+    try:
+        paths = []
+        for i, f in enumerate(body.get("files", [])):
+            name = Path(str(f["name"]).replace("\\", "/")).name  # только имя
+            if not name or name in (".", ".."):
+                name = f"файл_{i + 1}"
+            p = tmpdir / name
+            p.write_bytes(base64.b64decode(f["b64"]))
+            paths.append(str(p))
+        report = intake.run(paths, org=body["org"], site=body["site"],
+                            use_ai=bool(body.get("ai")))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    # отчёт приёма — в архив площадки (история: что и когда приносили)
+    rep_dir = workspace.site_dir(body["org"], body["site"]) / "attachments"
+    rep_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    (rep_dir / f"приём_{stamp}.txt").write_text(report, encoding="utf-8")
     return {"report": report}
 
 
-def api_validate(params, body):
+def _get_form(code: str):
     registry.load_all()
-    cls = registry.get(body["form"])
+    try:
+        return registry.get(code)
+    except KeyError:
+        raise ValueError(f"Неизвестная форма: {code}")
+
+
+def api_validate(params, body):
+    cls = _get_form(body["form"])
     ctx = workspace.load_context(body["org"], body["site"])
     issues = cls(ctx).validate()
     return {"issues": [{"level": i.level, "field": i.field, "message": i.message}
                        for i in issues]}
 
 
-def api_generate(params, body):
+def api_validate_all(params, body):
+    """Проверить контекст сразу под все реализованные формы."""
     registry.load_all()
-    cls = registry.get(body["form"])
+    ctx = workspace.load_context(body["org"], body["site"])
+    out = {}
+    for code, cls in registry.all_reports().items():
+        if not getattr(cls, "implemented", True):
+            continue
+        issues = cls(ctx).validate()
+        out[code] = [{"level": i.level, "field": i.field, "message": i.message}
+                     for i in issues]
+    return {"results": out}
+
+
+def api_generate(params, body):
+    cls = _get_form(body["form"])
     ctx = workspace.load_context(body["org"], body["site"])
     report = cls(ctx)
     if not getattr(report, "implemented", True):
@@ -171,7 +202,10 @@ def api_calendar(params, body):
         (ctx.period.year + 1 if ctx.period.year else 0)
     if not year:
         return {"error": "Укажите год (или заполните period.year в данных)."}
-    return {"text": engine.render_console(ctx, year), "year": year}
+    out = {"text": engine.render_console(ctx, year), "year": year}
+    if params.get("ics"):
+        out["ics"] = engine.export_ics_text(ctx, year)
+    return out
 
 
 def api_watch(params, body):
@@ -217,6 +251,8 @@ def api_open(params, body):
         return {"error": "Путь вне рабочего пространства."}
     if not target.exists():
         return {"error": "Не существует."}
+    if not hasattr(os, "startfile"):  # не-Windows
+        return {"error": f"Откройте вручную: {target}"}
     os.startfile(target if target.is_dir() else target.parent)  # noqa: S606
     return {"ok": True}
 
@@ -226,7 +262,8 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
 POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add,
                "context_save": api_context_save, "intake": api_intake,
-               "validate": api_validate, "generate": api_generate,
+               "validate": api_validate, "validate_all": api_validate_all,
+               "generate": api_generate,
                "watch": api_watch, "ai_setup": api_ai_setup,
                "ai_test": api_ai_test, "dispersion": api_dispersion,
                "open": api_open}
@@ -280,6 +317,8 @@ class Handler(BaseHTTPRequestHandler):
         if not ctype.startswith("application/json"):
             return self._json({"error": "нужен Content-Type: application/json"}, 415)
         length = int(self.headers.get("Content-Length") or 0)
+        if length > 512 * 1024 * 1024:  # base64-пакет папки; больше — явно не то
+            return self._json({"error": "запрос больше 512 МБ — загрузите частями"}, 413)
         raw = self.rfile.read(length) if length else b"{}"
         try:
             body = json.loads(raw.decode("utf-8")) if raw.strip() else {}

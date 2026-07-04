@@ -41,10 +41,14 @@ def root() -> Path:
     return Path.home() / "ЭКО.DOC"
 
 
-def _slug(name: str) -> str:
+def slug(name: str) -> str:
+    """Имя организации/площадки → имя каталога на диске (публичный API)."""
     s = re.sub(r"[\\/:*?\"<>|]+", "", name).strip()
     s = re.sub(r"\s+", "_", s).strip(". ")  # «..» и трейлинг-точки — не имя
     return s or "org"
+
+
+_slug = slug  # обратная совместимость
 
 
 def org_dir(org: str) -> Path:

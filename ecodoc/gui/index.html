@@ -79,7 +79,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
   <div id="tree" class="hint">загрузка…</div>
   <h3 style="margin-top:14px">Новая организация</h3>
   <div class="addrow"><input type="text" id="newinn" placeholder="ИНН — данные из ЕГРЮЛ" maxlength="12"></div>
-  <div class="addrow"><button class="b" style="width:100%" id="btn-bylnn"
+  <div class="addrow"><button class="b" style="width:100%" id="btn-byinn"
     onclick="addOrgByInn()">Создать по ИНН (ФНС)</button></div>
   <div class="hint" id="innmsg"></div>
   <div class="addrow"><input type="text" id="neworg" placeholder="или название вручную">
@@ -135,6 +135,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
     <div class="card">
       <h2>Генерация форм</h2>
       <div class="row">
+        <button class="b sec" onclick="validateAll()">Проверить всё</button>
         <label><input type="checkbox" id="genpdf" checked> также PDF</label>
         <label><input type="checkbox" id="genforce"> принудительно (при ошибках)</label>
         <span class="spin" id="sp-gen">генерация…</span>
@@ -150,6 +151,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <div class="row">
         <label>Год <input type="number" id="calyear" style="width:110px"></label>
         <button class="b" onclick="doCal()">Показать</button>
+        <button class="b sec" onclick="downloadIcs()">Скачать .ics (Outlook/Google)</button>
         <span class="spin" id="sp-cal">…</span>
       </div>
       <pre class="out" id="out-cal" style="display:none"></pre>
@@ -194,15 +196,24 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 let ORG = "", SITE = "", META = null;
 
 const $ = id => document.getElementById(id);
-const api = async (name, opts) => {
-  const r = await fetch("/api/" + name, opts);
-  const j = await r.json();
-  if (j.error) throw new Error(j.error);
-  return j;
+// timeoutMs=0 — без таймаута (долгие операции: ИИ-интейк, сторож, генерация)
+const api = async (name, opts, timeoutMs=90000) => {
+  const ctrl = new AbortController();
+  const t = timeoutMs ? setTimeout(()=>ctrl.abort(), timeoutMs) : null;
+  try{
+    const r = await fetch("/api/" + name, {...opts, signal: ctrl.signal});
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    return j;
+  }catch(e){
+    if (e.name === "AbortError")
+      throw new Error("сервер не ответил за " + timeoutMs/1000 + " с");
+    throw e;
+  }finally{ if (t) clearTimeout(t); }
 };
-const get = (name, params) => api(name + "?" + new URLSearchParams(params));
-const post = (name, body) => api(name, {method:"POST",
-  headers:{"Content-Type":"application/json"}, body:JSON.stringify(body||{})});
+const get = (name, params, tm) => api(name + "?" + new URLSearchParams(params), {}, tm);
+const post = (name, body, tm) => api(name, {method:"POST",
+  headers:{"Content-Type":"application/json"}, body:JSON.stringify(body||{})}, tm);
 const show = (id, text) => { const el=$(id); el.style.display="block"; el.textContent=text; };
 const spin = (id, on) => $(id).classList.toggle("on", !!on);
 const needSite = () => { if(!ORG||!SITE){alert("Сначала выберите площадку слева");
@@ -268,14 +279,14 @@ async function addOrgByInn(){
   if(inn.length !== 10 && inn.length !== 12){
     $("innmsg").textContent = "ИНН — 10 цифр (юрлицо) или 12 (ИП)"; return;
   }
-  $("btn-bylnn").disabled = true;
+  $("btn-byinn").disabled = true;
   $("innmsg").textContent = "запрос в ЕГРЮЛ (ФНС)…";
   try{
     const j = await post("org_add", {inn});
     $("innmsg").textContent = "Создано: " + j.org;
     $("newinn").value = ""; ORG = j.org; SITE = j.site; onSelect(); loadTree();
   }catch(e){ $("innmsg").textContent = "Ошибка: " + e.message; }
-  $("btn-bylnn").disabled = false;
+  $("btn-byinn").disabled = false;
 }
 async function addSite(){
   const name = $("newsite").value.trim();
@@ -330,7 +341,7 @@ async function doIntake(){
   try{
     const files = [];
     for (const f of fs) files.push({name:f.name, b64: await b64(f)});
-    const j = await post("intake", {org:ORG, site:SITE, files, ai:$("useai").checked});
+    const j = await post("intake", {org:ORG, site:SITE, files, ai:$("useai").checked}, 0);
     let rep = j.report;
     if (SKIPPED.length) rep += "\n\n── Пропущено при загрузке ──\n  " + SKIPPED.join("\n  ");
     show("out-intake", rep);
@@ -390,11 +401,19 @@ async function doValidate(code){
        renderIssues(code, j.issues);
   }catch(e){ alert(e.message); }
 }
+async function validateAll(){
+  needSite(); spin("sp-gen",1);
+  try{
+    const j = await post("validate_all", {org:ORG, site:SITE}, 0);
+    for (const [code, issues] of Object.entries(j.results)) renderIssues(code, issues);
+  }catch(e){ alert(e.message); }
+  spin("sp-gen",0);
+}
 async function doGenerate(code){
   needSite(); spin("sp-gen",1);
   try{
     const j = await post("generate", {org:ORG, site:SITE, form:code,
-      pdf:$("genpdf").checked, force:$("genforce").checked});
+      pdf:$("genpdf").checked, force:$("genforce").checked}, 0);
     renderIssues(code, j.issues);
     let t = "";
     if (j.xml)   t += "XML:    " + j.xml + "\n";
@@ -416,6 +435,18 @@ async function doCal(){
   }catch(e){ show("out-cal", "Ошибка: " + e.message); }
   spin("sp-cal",0);
 }
+async function downloadIcs(){
+  needSite();
+  try{
+    const j = await get("calendar", {org:ORG, site:SITE,
+      year:$("calyear").value||"", ics:"1"});
+    const blob = new Blob([j.ics], {type:"text/calendar;charset=utf-8"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `экоотчётность_${j.year}.ics`;
+    a.click(); URL.revokeObjectURL(a.href);
+  }catch(e){ alert(e.message); }
+}
 
 // ── рассеивание ──
 $("dispsrc").value = JSON.stringify({
@@ -433,14 +464,14 @@ async function doDisp(){
 
 // ── сервис ──
 async function aiSetup(){ spin("sp-ai",1);
-  try{ const j = await post("ai_setup", {}); show("out-ai", j.text); refreshMeta(); }
+  try{ const j = await post("ai_setup", {}, 0); show("out-ai", j.text); refreshMeta(); }
   catch(e){ show("out-ai", "Ошибка: " + e.message); } spin("sp-ai",0); }
 async function aiTest(){ spin("sp-ai",1);
-  try{ const j = await post("ai_test", {});
+  try{ const j = await post("ai_test", {}, 0);
        show("out-ai", `[${j.model}]\n${j.answer}`); }
   catch(e){ show("out-ai", "Ошибка: " + e.message); } spin("sp-ai",0); }
 async function doWatch(){ spin("sp-watch",1);
-  try{ const j = await post("watch", {}); show("out-watch", j.text); }
+  try{ const j = await post("watch", {}, 0); show("out-watch", j.text); }
   catch(e){ show("out-watch", "Ошибка: " + e.message); } spin("sp-watch",0); }
 
 // ── старт ──

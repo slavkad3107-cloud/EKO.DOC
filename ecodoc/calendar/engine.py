@@ -109,6 +109,42 @@ def render_console(ctx: ReportContext, year: int) -> str:
     return "\n".join(lines)
 
 
+def export_ics_text(ctx: ReportContext, year: int) -> str:
+    """Календарь сроков в формате iCalendar (Outlook/Google/Яндекс).
+
+    Каждый срок — событие на весь день с напоминанием за 7 дней.
+    """
+    periodic, _ = build_calendar(ctx, year)
+    org = ctx.organization.short_name or ctx.organization.name or "ЭКО.DOC"
+
+    def esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace(",", "\\,").replace(";", "\\;")
+
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0",
+             "PRODID:-//EKO.DOC//calendar//RU",
+             "CALSCALE:GREGORIAN", f"X-WR-CALNAME:{esc('Экоотчётность ' + org)}"]
+    for e in periodic:
+        d = e.due.strftime("%Y%m%d")
+        lines += ["BEGIN:VEVENT",
+                  f"UID:ecodoc-{e.code}-{d}@ekodoc",
+                  f"DTSTART;VALUE=DATE:{d}",
+                  f"SUMMARY:{esc(e.title)}",
+                  f"DESCRIPTION:{esc(f'{e.coverage} · {e.where} · осн.: {e.basis}')}",
+                  "BEGIN:VALARM", "ACTION:DISPLAY",
+                  f"DESCRIPTION:{esc('Через 7 дней срок: ' + e.title)}",
+                  "TRIGGER:-P7D", "END:VALARM",
+                  "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(lines) + "\r\n"
+
+
+def export_ics(ctx: ReportContext, year: int, out_path: Path) -> Path:
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(export_ics_text(ctx, year), encoding="utf-8")
+    return out_path
+
+
 def export_xlsx(ctx: ReportContext, year: int, out_path: Path) -> Path:
     from ecodoc.render import xlsx
 

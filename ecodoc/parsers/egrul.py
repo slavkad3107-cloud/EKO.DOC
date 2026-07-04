@@ -47,13 +47,48 @@ def _get_rows(token: str, timeout: int) -> list[dict]:
     return out.get("rows") or []
 
 
+def _cache_path():
+    from ecodoc.ai.config import CONFIG_DIR
+    return CONFIG_DIR / "egrul_cache.json"
+
+
+def _cache_get(inn: str) -> dict | None:
+    p = _cache_path()
+    if not p.exists():
+        return None
+    try:
+        row = json.loads(p.read_text(encoding="utf-8")).get(inn)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if row and time.time() - row.get("_ts", 0) < 30 * 86400:  # 30 дней
+        return {k: v for k, v in row.items() if not k.startswith("_")}
+    return None
+
+
+def _cache_put(inn: str, data: dict) -> None:
+    p = _cache_path()
+    try:
+        cache = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        cache = {}
+    cache[inn] = {**data, "_ts": time.time()}
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(cache, ensure_ascii=False, indent=1),
+                 encoding="utf-8")
+
+
 def lookup(inn: str, timeout: int = 20) -> dict:
     """Вернуть реквизиты по ИНН: name, short_name, inn, kpp, ogrn, address,
     director_name (что нашлось). EgrulError — если не нашли/сервис недоступен.
+    Ответы кэшируются на 30 дней (~/.ecodoc/egrul_cache.json) — сервис ФНС
+    нестабилен, а реквизиты меняются редко.
     """
     inn = "".join(ch for ch in str(inn) if ch.isdigit())
     if len(inn) not in (10, 12):
         raise EgrulError("ИНН должен содержать 10 (юрлицо) или 12 (ИП) цифр")
+    cached = _cache_get(inn)
+    if cached:
+        return cached
     try:
         rows = _get_rows(_post_query(inn, timeout), timeout)
         # результат бывает не мгновенным — одна повторная попытка
@@ -71,7 +106,7 @@ def lookup(inn: str, timeout: int = 20) -> dict:
     g = row.get("g") or ""
     if ":" in g:
         position, director = (s.strip() for s in g.split(":", 1))
-    return {k: v for k, v in {
+    result = {k: v for k, v in {
         "name": row.get("n", ""),
         "short_name": row.get("c", ""),
         "inn": row.get("i", inn),
@@ -81,3 +116,5 @@ def lookup(inn: str, timeout: int = 20) -> dict:
         "director_name": director,
         "director_position": position,
     }.items() if v}
+    _cache_put(inn, result)
+    return result
