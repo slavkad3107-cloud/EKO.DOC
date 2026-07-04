@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ecodoc"
-version = "0.5.2"
+version = "0.6.0"
 description = "ЭКО.DOC — генератор экологических документов РФ: отчётность, разработка, ИИ-анализ входящих, календарь, сторож форм"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,3 +34,6 @@ include = ["ecodoc*"]
 [tool.setuptools.package-data]
 "ecodoc.watch" = ["sources.json"]
 "ecodoc.gui" = ["index.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

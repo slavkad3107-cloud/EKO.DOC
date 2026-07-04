@@ -160,17 +160,35 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 
   <div class="tab" id="tab-disp">
     <div class="card">
-      <h2>Экспресс-расчёт рассеивания (МРР-2017, экспериментальный)</h2>
-      <div class="hint">Точечные источники: cм, xм, uм, профиль по оси, доля ПДК.
-        Для экспертизы используйте аттестованную УПРЗА.</div>
-      <textarea id="dispsrc" style="min-height:220px"></textarea>
-      <div class="row"><button class="b" onclick="doDisp()">Рассчитать</button>
-        <span class="spin" id="sp-disp">…</span></div>
+      <h2>Расчёт рассеивания (МРР-2017) — свой расчёт без УПРЗА</h2>
+      <div class="hint">Источники с координатами x,y и веществом. Профиль —
+        по оси факела; Карта — суммарное поле максимальных концентраций
+        (перебор направлений и скоростей ветра) с изолинией ПДК.
+        Для госэкспертизы используйте аттестованную УПРЗА; выгрузка данных — ниже.</div>
+      <textarea id="dispsrc" style="min-height:200px"></textarea>
+      <div class="row">
+        <button class="b sec" onclick="doDisp()">Профиль по оси</button>
+        <button class="b" onclick="doMap()">Карта рассеивания</button>
+        <button class="b sec" onclick="doUpraza()">Выгрузить для УПРЗА (Excel+JSON)</button>
+        <span class="spin" id="sp-disp">расчёт…</span>
+      </div>
+      <div id="mapbox" style="margin-top:10px;overflow:auto"></div>
       <pre class="out" id="out-disp" style="display:none"></pre>
     </div>
   </div>
 
   <div class="tab" id="tab-svc">
+    <div class="card">
+      <h2>Проверка контрагента (получателя отходов) по ИНН</h2>
+      <div class="row">
+        <input type="text" id="cp-inn" placeholder="ИНН контрагента" maxlength="12" style="max-width:220px">
+        <button class="b" onclick="doCounterparty()">Проверить</button>
+        <span class="spin" id="sp-cp">…</span>
+      </div>
+      <div class="hint">Статус юрлица — из ЕГРЮЛ; лицензию на отходы I–IV класса
+        проверьте по ссылке (открытого API лицензий нет).</div>
+      <pre class="out" id="out-cp" style="display:none"></pre>
+    </div>
     <div class="card">
       <h2>ИИ-анализ</h2>
       <div class="row">
@@ -450,14 +468,42 @@ async function downloadIcs(){
 
 // ── рассеивание ──
 $("dispsrc").value = JSON.stringify({
-  sources:[{name:"Котельная (NO2)", H:18, D:0.6, w0:8.5, Tg:140, Tv:25.2, M:0.35, F:1, A:160}],
-  pdk:{"Котельная (NO2)":0.2}}, null, 2);
+  sources:[
+    {name:"Котельная", x:0, y:0, H:18, D:0.6, w0:8.5, Tg:140, Tv:25.2, M:0.35,
+     F:1, A:160, substance:"NO2", code:"0301", pdk:0.2},
+    {name:"ДГУ", x:120, y:40, H:6, D:0.2, w0:18, Tg:400, Tv:25.2, M:0.5,
+     F:1, A:160, substance:"NO2", code:"0301", pdk:0.2}
+  ]}, null, 2);
+function dispData(){ return JSON.parse($("dispsrc").value); }
 async function doDisp(){
+  spin("sp-disp",1); $("mapbox").innerHTML="";
+  try{
+    // профиль по оси — старый расчёт по точечным (координаты игнорируются)
+    const j = await post("dispersion", {data: dispData()});
+    show("out-disp", j.text);
+  }catch(e){ show("out-disp", "Ошибка: " + e.message); }
+  spin("sp-disp",0);
+}
+async function doMap(){
+  spin("sp-disp",1); $("mapbox").innerHTML="";
+  try{
+    const j = await post("dispersion_map", {data: dispData()}, 0);
+    $("mapbox").innerHTML = j.svg;
+    show("out-disp", j.summary);
+  }catch(e){ show("out-disp", "Ошибка: " + e.message); }
+  spin("sp-disp",0);
+}
+async function doUpraza(){
   spin("sp-disp",1);
   try{
-    const data = JSON.parse($("dispsrc").value);
-    const j = await post("dispersion", {data});
-    show("out-disp", j.text);
+    const body = {data: dispData()};
+    if (ORG && SITE){ body.org = ORG; body.site = SITE; }
+    const j = await post("upraza_export", body);
+    show("out-disp", "Выгружено для загрузки в УПРЗА:\n  Excel: " + j.excel +
+         "\n  JSON:  " + j.json +
+         "\n\nВ «Экологе»: Импорт из Excel; сопоставьте колонки листов " +
+         "«Источники»/«Выбросы» (лист «Инструкция» внутри файла).");
+    post("open", {path: j.excel}).catch(()=>{});
   }catch(e){ show("out-disp", "Ошибка: " + e.message); }
   spin("sp-disp",0);
 }
@@ -473,6 +519,12 @@ async function aiTest(){ spin("sp-ai",1);
 async function doWatch(){ spin("sp-watch",1);
   try{ const j = await post("watch", {}, 0); show("out-watch", j.text); }
   catch(e){ show("out-watch", "Ошибка: " + e.message); } spin("sp-watch",0); }
+async function doCounterparty(){
+  const inn = $("cp-inn").value.replace(/\D/g,"");
+  if(inn.length!==10 && inn.length!==12){ alert("ИНН 10 или 12 цифр"); return; }
+  spin("sp-cp",1);
+  try{ const j = await post("counterparty", {inn}, 0); show("out-cp", j.text); }
+  catch(e){ show("out-cp", "Ошибка: " + e.message); } spin("sp-cp",0); }
 
 // ── старт ──
 async function refreshMeta(){

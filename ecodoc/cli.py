@@ -255,6 +255,45 @@ def _cmd_dispersion(args):
     print(dp.report(sources, pdk))
 
 
+def _load_sources_json(path):
+    import json as _json
+    from ecodoc.development.dispersion_map import MapSource
+
+    data = _json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    raw = data if isinstance(data, list) else data.get("sources", [])
+    known = MapSource.__dataclass_fields__
+    return [MapSource(**{k: v for k, v in s.items() if k in known}) for s in raw]
+
+
+def _cmd_dispersion_map(args):
+    from ecodoc.development import dispersion_map as dm
+
+    sources = _load_sources_json(args.sources)
+    if not sources:
+        sys.exit("В файле нет источников.")
+    grid = dm.compute_grid(sources, substance=args.substance)
+    print(dm.summary(grid))
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(dm.render_svg(grid), encoding="utf-8")
+    print(f"Карта: {out}")
+
+
+def _cmd_upraza_export(args):
+    from ecodoc.development import dispersion_export as ex
+
+    sources = _load_sources_json(args.sources)
+    if not sources:
+        sys.exit("В файле нет источников.")
+    outdir = Path(args.outdir)
+    xl = ex.to_excel(sources, outdir / "upraza_sources.xlsx")
+    js = ex.to_json(sources, outdir / "upraza_sources.json")
+    print(f"Для УПРЗА (Excel): {xl}")
+    print(f"Машиночитаемо (JSON): {js}")
+    print("→ В «Экологе»: Импорт из Excel; сопоставьте колонки листов "
+          "«Источники»/«Выбросы» (см. лист «Инструкция»).")
+
+
 def _cmd_gui(args):
     from ecodoc.gui import server
 
@@ -357,6 +396,19 @@ def build_parser() -> argparse.ArgumentParser:
     dpp = sub.add_parser("dispersion", help="экспресс-расчёт рассеивания (МРР-2017)")
     dpp.add_argument("sources", help="JSON с источниками (см. samples/dispersion_sources.json)")
     dpp.set_defaults(func=_cmd_dispersion)
+
+    dm = sub.add_parser("dispersion-map",
+                        help="карта рассеивания (суммация источников, SVG)")
+    dm.add_argument("sources", help="JSON с источниками (x,y,substance,pdk)")
+    dm.add_argument("-o", "--out", default="out/map.svg")
+    dm.add_argument("--substance", help="вещество (если в файле несколько)")
+    dm.set_defaults(func=_cmd_dispersion_map)
+
+    ue = sub.add_parser("upraza-export",
+                        help="выгрузить источники для загрузки в УПРЗА (Excel+JSON)")
+    ue.add_argument("sources", help="JSON с источниками")
+    ue.add_argument("-o", "--outdir", default="out")
+    ue.set_defaults(func=_cmd_upraza_export)
 
     gu = sub.add_parser("gui", help="графический интерфейс (локально, в браузере)")
     gu.add_argument("--port", type=int, default=8737)

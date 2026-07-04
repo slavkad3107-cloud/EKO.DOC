@@ -72,6 +72,13 @@ def api_org_add(params, body):
         name = found.get("short_name") or found.get("name", "")
         for k in known:
             req[k] = req[k] or found.get(k, "")
+        # ОКТМО по адресу (если есть токен DaData) — иначе тихо пропускаем
+        if req.get("address") and not req.get("oktmo"):
+            try:
+                from ecodoc.parsers.oktmo import by_address
+                req["oktmo"] = by_address(req["address"]).get("oktmo", "")
+            except Exception:
+                pass
     if not name:
         return {"error": "Укажите название или ИНН."}
     path = workspace.add_org(name, **req)
@@ -241,6 +248,48 @@ def api_dispersion(params, body):
     return {"text": dp.report(sources, pdk)}
 
 
+def _map_sources(body):
+    from ecodoc.development.dispersion_map import MapSource
+    data = body.get("data") or {}
+    raw = data.get("sources", []) if isinstance(data, dict) else data
+    known = MapSource.__dataclass_fields__
+    return [MapSource(**{k: v for k, v in s.items() if k in known}) for s in raw]
+
+
+def api_dispersion_map(params, body):
+    from ecodoc.development import dispersion_map as dm
+    sources = _map_sources(body)
+    if not sources:
+        return {"error": "Нет источников."}
+    grid = dm.compute_grid(sources, substance=body.get("substance"),
+                           n=int(body.get("n", 50)))
+    return {"svg": dm.render_svg(grid), "summary": dm.summary(grid),
+            "share_max": grid.share_max, "cmax": grid.cmax}
+
+
+def api_upraza_export(params, body):
+    from ecodoc.development import dispersion_export as ex
+    sources = _map_sources(body)
+    if not sources:
+        return {"error": "Нет источников."}
+    org, site = body.get("org"), body.get("site")
+    out_dir = (workspace.site_dir(org, site) / "out") if org and site \
+        else Path("out")
+    xl = ex.to_excel(sources, out_dir / "upraza_sources.xlsx")
+    js = ex.to_json(sources, out_dir / "upraza_sources.json")
+    return {"excel": str(xl), "json": str(js)}
+
+
+def api_counterparty(params, body):
+    from ecodoc.parsers import counterparty
+    return {"text": counterparty.render(body["inn"])}
+
+
+def api_oktmo(params, body):
+    from ecodoc.parsers.oktmo import by_address
+    return {"result": by_address(body["address"])}
+
+
 def api_open(params, body):
     """Открыть папку/файл в проводнике — только внутри workspace."""
     target = Path(body["path"]).resolve()
@@ -266,6 +315,9 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "generate": api_generate,
                "watch": api_watch, "ai_setup": api_ai_setup,
                "ai_test": api_ai_test, "dispersion": api_dispersion,
+               "dispersion_map": api_dispersion_map,
+               "upraza_export": api_upraza_export,
+               "counterparty": api_counterparty, "oktmo": api_oktmo,
                "open": api_open}
 
 
