@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ecodoc"
-version = "0.6.0"
-description = "ЭКО.DOC — генератор экологических документов РФ: отчётность, разработка, ИИ-анализ входящих, календарь, сторож форм"
+version = "0.6.1"
+description = "ЭКО.DOC (продукт «ЭКО Проект») — генератор экологических документов РФ: отчётность, разработка, ИИ-анализ входящих, календарь, сторож форм"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "sdushnikovich" }]
+authors = [{ name = "ЭКО Проект" }]
 keywords = ["экология", "НВОС", "отчётность", "ПЭК", "2-ТП", "отходы", "РПН"]
 
 dependencies = [

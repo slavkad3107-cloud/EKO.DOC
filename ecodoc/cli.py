@@ -22,7 +22,7 @@ from ecodoc.core import registry, serialize, workspace
 
 def _cmd_list(args):
     registry.load_all()
-    print(f"ЭкоДок {__version__} — модули и формы:\n")
+    print(f"ЭКО.DOC {__version__} (продукт «ЭКО Проект») — модули и формы:\n")
     reports = registry.all_reports()
     print("КОНТУР «ОТЧЁТНОСТЬ» (формы для генерации):")
     for code, cls in reports.items():
@@ -425,7 +425,8 @@ def main(argv=None):
     parser = build_parser()
     if not (argv if argv is not None else sys.argv[1:]):
         # запуск без команды — показать справку, а не ошибку
-        print(f"ЭКО.DOC {__version__} — генератор экологических документов\n")
+        print(f"ЭКО.DOC {__version__} (продукт «ЭКО Проект») — "
+              f"генератор экологических документов\n")
         parser.print_help()
         print("\nТиповой сценарий:\n"
               "  ecodoc org add \"ООО Ромашка\" --inn 780...   (один раз)\n"
