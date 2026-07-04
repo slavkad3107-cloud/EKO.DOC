@@ -82,12 +82,15 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
   <div id="tree" class="hint">загрузка…</div>
   <h3 style="margin-top:14px">Новая организация</h3>
   <div class="addrow"><input type="text" id="newinn" placeholder="ИНН — данные из ЕГРЮЛ" maxlength="12"></div>
+  <div class="addrow"><input type="text" id="newsiteaddr"
+    placeholder="полный адрес площадки (или юрадрес из ЕГРЮЛ)"></div>
   <div class="addrow"><button class="b" style="width:100%" id="btn-byinn"
     onclick="addOrgByInn()">Создать по ИНН (ФНС)</button></div>
   <div class="hint" id="innmsg"></div>
   <div class="addrow"><input type="text" id="neworg" placeholder="или название вручную">
     <button class="b sec" onclick="addOrg()">+</button></div>
-  <div class="addrow"><input type="text" id="newsite" placeholder="ещё площадка к выбранной">
+  <div class="addrow"><input type="text" id="newsite"
+    placeholder="ещё площадка: полный адрес">
     <button class="b sec" onclick="addSite()">+</button></div>
   <div class="hint" id="wsroot" style="margin-top:10px"></div>
 </aside>
@@ -143,7 +146,10 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
         <label><input type="checkbox" id="genforce"> принудительно (при ошибках)</label>
         <span class="spin" id="sp-gen">генерация…</span>
       </div>
-      <div class="grid" id="forms"></div>
+      <h3 style="margin:8px 0 6px;color:var(--acc)">Контур «Отчётность» — формы для сдачи (XML для ЛКПП + печать)</h3>
+      <div class="grid" id="forms-rep"></div>
+      <h3 style="margin:16px 0 6px;color:var(--warn)">Контур «Разработка» — проекты и документы</h3>
+      <div class="grid" id="forms-dev"></div>
       <pre class="out" id="out-gen" style="display:none"></pre>
     </div>
   </div>
@@ -284,15 +290,30 @@ async function loadTree(){
     tree.appendChild(d);
   }
 }
+let SITE_ADDR = "";
 function onSelect(){
   $("selinfo").textContent = `Площадка: ${ORG} / ${SITE}`;
-  loadCtx().catch(()=>{});
+  SITE_ADDR = "";
+  loadCtx().then(()=>{
+    if (SITE_ADDR){
+      const el = $("selinfo");
+      el.textContent = `Площадка: ${ORG} — ${SITE_ADDR} `;
+      const a = document.createElement("a");
+      a.className = "link"; a.textContent = "🗺 на карте";
+      a.href = "https://yandex.ru/maps/?text=" + encodeURIComponent(SITE_ADDR);
+      a.target = "_blank";
+      el.appendChild(a);
+    }
+  }).catch(()=>{});
 }
 async function addOrg(){
   const name = $("neworg").value.trim(); if(!name) return;
+  const site_address = $("newsiteaddr").value.trim();
+  if(!site_address){ alert("Укажите полный адрес площадки"); return; }
   try{
-    const j = await post("org_add", {name});
-    $("neworg").value=""; ORG=j.org; SITE=j.site; onSelect(); loadTree();
+    const j = await post("org_add", {name, site_address});
+    $("neworg").value=""; $("newsiteaddr").value="";
+    ORG=j.org; SITE=j.site; onSelect(); loadTree();
   }catch(e){ alert(e.message); }
 }
 async function addOrgByInn(){
@@ -303,15 +324,19 @@ async function addOrgByInn(){
   $("btn-byinn").disabled = true;
   $("innmsg").textContent = "запрос в ЕГРЮЛ (ФНС)…";
   try{
-    const j = await post("org_add", {inn});
-    $("innmsg").textContent = "Создано: " + j.org;
-    $("newinn").value = ""; ORG = j.org; SITE = j.site; onSelect(); loadTree();
+    const j = await post("org_add", {inn,
+      site_address: $("newsiteaddr").value.trim()});
+    $("innmsg").textContent = "Создано: " + j.org +
+      (j.note ? " — " + j.note : "");
+    $("newinn").value = ""; $("newsiteaddr").value = "";
+    ORG = j.org; SITE = j.site || "";
+    if (SITE) onSelect(); loadTree();
   }catch(e){ $("innmsg").textContent = "Ошибка: " + e.message; }
   $("btn-byinn").disabled = false;
 }
 async function addSite(){
-  const name = $("newsite").value.trim();
-  if(!name) return;
+  const address = $("newsite").value.trim();
+  if(!address) return;
   // организация: выбранная в дереве, иначе единственная существующая
   let org = ORG;
   if(!org){
@@ -320,9 +345,10 @@ async function addSite(){
     else { alert(all.length ? "Кликните организацию в дереве, затем добавьте площадку"
                             : "Сначала создайте организацию"); return; }
   }
-  try{ await post("site_add", {org, name}); }
+  let j;
+  try{ j = await post("site_add", {org, address}); }
   catch(e){ alert(e.message); return; }
-  $("newsite").value=""; ORG=org; SITE=name; onSelect(); loadTree();
+  $("newsite").value=""; ORG=j.org; SITE=j.site; onSelect(); loadTree();
 }
 
 // ── приём ──
@@ -354,18 +380,70 @@ $("files").addEventListener("change", showPicked);
 $("folder").addEventListener("change", showPicked);
 const b64 = f => new Promise((res,rej)=>{ const r=new FileReader();
   r.onload=()=>res(r.result.split(",")[1]); r.onerror=rej; r.readAsDataURL(f); });
+const BATCH_BYTES = 20 * 1024 * 1024;   // ~20 МБ исходных файлов на запрос
+function makeBatches(fs){
+  const batches = [[]]; let size = 0;
+  for (const f of fs){
+    if (batches.at(-1).length && size + f.size > BATCH_BYTES){
+      batches.push([]); size = 0;
+    }
+    batches.at(-1).push(f); size += f.size;
+  }
+  return batches;
+}
+function renderReport(text){
+  // отчёт → раскрывающиеся секции по заголовкам «── … ──»
+  const box = $("out-intake"); box.style.display = "block"; box.innerHTML = "";
+  const parts = text.split(/\n(?=── )/);
+  const openByDefault = ["Полнота данных", "Распознано", "ИИ-анализ",
+                         "Какие документы"];
+  for (const part of parts){
+    const m = part.match(/^── (.+?) ──/);
+    if (!m){
+      const pre = document.createElement("div");
+      pre.textContent = part.trim(); box.appendChild(pre); continue;
+    }
+    const det = document.createElement("details");
+    det.open = openByDefault.some(k => m[1].startsWith(k));
+    const sum = document.createElement("summary");
+    sum.textContent = m[1];
+    sum.style.cssText = "cursor:pointer;font-weight:600;color:#9fd4b4;margin:6px 0";
+    det.appendChild(sum);
+    const body = document.createElement("div");
+    body.textContent = part.replace(/^── .+? ──\n?/, "");
+    det.appendChild(body);
+    box.appendChild(det);
+  }
+}
 async function doIntake(){
   needSite();
   const fs = pickedFiles();
   if(!fs.length){ alert("Выберите файлы или папку"); return; }
+  let useAi = $("useai").checked;
+  if (useAi && fs.length > 25 &&
+      !confirm(`ИИ-анализ ${fs.length} файлов может занять очень долго ` +
+               `(минуты на файл). Продолжить С ИИ?\nОтмена = принять без ИИ ` +
+               `(быстрое распознавание всё равно выполняется).`)) useAi = false;
   $("btn-intake").disabled = true; spin("sp-intake", 1);
   try{
-    const files = [];
-    for (const f of fs) files.push({name:f.name, b64: await b64(f)});
-    const j = await post("intake", {org:ORG, site:SITE, files, ai:$("useai").checked}, 0);
+    const batches = makeBatches(fs);
+    const stored = [];
+    for (let i = 0; i < batches.length; i++){
+      $("filelist").textContent =
+        `Загрузка: партия ${i+1}/${batches.length} · принято файлов: ${stored.length}/${fs.length}`;
+      const files = [];
+      for (const f of batches[i]) files.push({name:f.name, b64: await b64(f)});
+      const j = await post("intake_upload", {org:ORG, site:SITE, files}, 0);
+      stored.push(...j.stored);
+    }
+    $("filelist").textContent =
+      `Загружено ${stored.length}/${fs.length}. Анализ (распознавание` +
+      (useAi ? " + ИИ" : "") + ")…";
+    const j = await post("intake_run", {org:ORG, site:SITE, names:stored, ai:useAi}, 0);
     let rep = j.report;
-    if (SKIPPED.length) rep += "\n\n── Пропущено при загрузке ──\n  " + SKIPPED.join("\n  ");
-    show("out-intake", rep);
+    if (SKIPPED.length) rep += "\n── Пропущено при загрузке ──\n  " + SKIPPED.join("\n  ");
+    renderReport(rep);
+    $("filelist").textContent = `Готово: принято ${stored.length} файл(ов).`;
     $("files").value = ""; $("folder").value = "";
     loadCtx().catch(()=>{});
   }catch(e){ show("out-intake", "Ошибка: " + e.message); }
@@ -378,6 +456,7 @@ async function loadCtx(){
   const j = await get("context", {org:ORG, site:SITE});
   $("ctx").value = JSON.stringify(j.context, null, 2);
   $("data-msg").textContent = j.path;
+  SITE_ADDR = (j.context.extra || {}).site_address || "";
 }
 async function saveCtx(){
   needSite(); spin("sp-data",1);
@@ -396,19 +475,18 @@ async function openWs(){
 
 // ── генерация ──
 function renderForms(){
-  const box = $("forms"); box.innerHTML = "";
+  $("forms-rep").innerHTML = ""; $("forms-dev").innerHTML = "";
   for (const f of META.forms){
+    const dev = f.domain === "development";
     const card = document.createElement("div"); card.className = "form-card";
-    const badge = f.domain==="development" ? '<span class="badge dev">разработка</span>'
-                                           : '<span class="badge">отчётность</span>';
     const btns = f.implemented
       ? `<button class="b sec" onclick="doValidate('${f.code}')">Проверить</button>
          <button class="b" onclick="doGenerate('${f.code}')">Сгенерировать</button>`
       : '<span class="hint">каркас — генерация в следующих версиях</span>';
-    card.innerHTML = `<div class="t">${f.title}${badge}</div>
+    card.innerHTML = `<div class="t">${f.title}</div>
       <div class="c">${f.code}</div><div class="row">${btns}</div>
       <div id="iss-${f.code}"></div>`;
-    box.appendChild(card);
+    $(dev ? "forms-dev" : "forms-rep").appendChild(card);
   }
 }
 function renderIssues(code, issues){

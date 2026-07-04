@@ -82,19 +82,28 @@ def api_org_add(params, body):
     if not name:
         return {"error": "Укажите название или ИНН."}
     path = workspace.add_org(name, **req)
-    # сразу создаём площадку — без неё работать нельзя
-    site = (body.get("site") or "Основная").strip() or "Основная"
-    workspace.add_site(name, site)
-    # интерфейсу возвращаем имена как на диске (слаги) — для выбора в дереве
-    return {"ok": True, "path": str(path),
-            "org": workspace.slug(name), "site": workspace.slug(site)}
+    # площадка — по полному адресу (свой ввод или юрадрес из ЕГРЮЛ)
+    site_addr = (body.get("site_address") or "").strip() or req.get("address", "")
+    out = {"ok": True, "path": str(path), "org": workspace.slug(name), "site": ""}
+    if site_addr:
+        site_name = (body.get("site_name") or "").strip() or site_addr
+        workspace.add_site(name, site_name, address=site_addr)
+        out["site"] = workspace.slug(site_name)
+    else:
+        out["note"] = ("Площадка не создана: укажите полный адрес площадки "
+                       "(поле «адрес площадки»).")
+    return out
 
 
 def api_site_add(params, body):
-    path = workspace.add_site(body["org"], body["name"])
+    address = (body.get("address") or "").strip()
+    name = (body.get("name") or "").strip() or address
+    if not name:
+        return {"error": "Укажите полный адрес площадки."}
+    path = workspace.add_site(body["org"], name, address=address or name)
     return {"ok": True, "path": str(path),
             "org": workspace.slug(body["org"]),
-            "site": workspace.slug(body["name"])}
+            "site": workspace.slug(name)}
 
 
 def api_context_get(params, body):
@@ -114,31 +123,63 @@ def api_context_save(params, body):
     return {"ok": True}
 
 
-def api_intake(params, body):
-    """Файлы приходят base64 (браузер) → временная папка → intake.run."""
-    import shutil
+def _decode_to_tmp(files: list[dict], tmpdir: Path) -> list[str]:
+    paths = []
+    for i, f in enumerate(files):
+        name = Path(str(f["name"]).replace("\\", "/")).name  # только имя
+        if not name or name in (".", ".."):
+            name = f"файл_{i + 1}"
+        p = tmpdir / name
+        p.write_bytes(base64.b64decode(f["b64"]))
+        paths.append(str(p))
+    return paths
+
+
+def _save_report(org: str, site: str, report: str) -> None:
     from datetime import datetime
+    rep_dir = workspace.site_dir(org, site) / "attachments"
+    rep_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    (rep_dir / f"приём_{stamp}.txt").write_text(report, encoding="utf-8")
+
+
+def api_intake(params, body):
+    """Небольшой пакет файлов: сохранить + сразу проанализировать."""
+    import shutil
 
     from ecodoc.intake import intake
     tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_upload_"))
     try:
-        paths = []
-        for i, f in enumerate(body.get("files", [])):
-            name = Path(str(f["name"]).replace("\\", "/")).name  # только имя
-            if not name or name in (".", ".."):
-                name = f"файл_{i + 1}"
-            p = tmpdir / name
-            p.write_bytes(base64.b64decode(f["b64"]))
-            paths.append(str(p))
+        paths = _decode_to_tmp(body.get("files", []), tmpdir)
         report = intake.run(paths, org=body["org"], site=body["site"],
                             use_ai=bool(body.get("ai")))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
-    # отчёт приёма — в архив площадки (история: что и когда приносили)
-    rep_dir = workspace.site_dir(body["org"], body["site"]) / "attachments"
-    rep_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-    (rep_dir / f"приём_{stamp}.txt").write_text(report, encoding="utf-8")
+    _save_report(body["org"], body["site"], report)
+    return {"report": report}
+
+
+def api_intake_upload(params, body):
+    """Партия файлов большой папки: только сохранить в attachments."""
+    import shutil
+
+    from ecodoc.intake import intake
+    tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_upload_"))
+    try:
+        paths = _decode_to_tmp(body.get("files", []), tmpdir)
+        names, log = intake.store(paths, body["org"], body["site"])
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return {"stored": names, "log": log}
+
+
+def api_intake_run(params, body):
+    """Анализ ранее сохранённых файлов (после всех партий)."""
+    from ecodoc.intake import intake
+    report = intake.analyze_stored(body.get("names", []),
+                                   body["org"], body["site"],
+                                   use_ai=bool(body.get("ai")))
+    _save_report(body["org"], body["site"], report)
     return {"report": report}
 
 
@@ -311,6 +352,7 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
 POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add,
                "context_save": api_context_save, "intake": api_intake,
+               "intake_upload": api_intake_upload, "intake_run": api_intake_run,
                "validate": api_validate, "validate_all": api_validate_all,
                "generate": api_generate,
                "watch": api_watch, "ai_setup": api_ai_setup,

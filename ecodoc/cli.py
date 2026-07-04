@@ -179,7 +179,8 @@ def _cmd_org(args):
 
 
 def _cmd_site(args):
-    path = workspace.add_site(args.org, args.name)
+    path = workspace.add_site(args.org, args.name,
+                              address=args.address or args.name)
     print(f"Площадка создана: {path.parent}")
     print(f"→ принесите документы: python -m ecodoc intake <файлы> "
           f"--org \"{args.org}\" --site \"{args.name}\"")
@@ -363,7 +364,8 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("site", help="площадки организации")
     st.add_argument("action", choices=["add"])
     st.add_argument("org", help="организация")
-    st.add_argument("name", help="название площадки")
+    st.add_argument("name", help="название/полный адрес площадки")
+    st.add_argument("--address", help="полный адрес площадки (если name — короткое имя)")
     st.set_defaults(func=_cmd_site)
 
     # ── приём документов ──

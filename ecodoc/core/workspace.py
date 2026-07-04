@@ -72,7 +72,8 @@ def add_org(name: str, **requisites) -> Path:
     return path
 
 
-def add_site(org: str, site: str) -> Path:
+def add_site(org: str, site: str, address: str = "") -> Path:
+    """Создать площадку. site — название, address — полный адрес площадки."""
     if not (org_dir(org) / "org.json").exists():
         raise FileNotFoundError(f"Сначала создайте организацию: ecodoc org add \"{org}\"")
     d = site_dir(org, site)
@@ -82,7 +83,13 @@ def add_site(org: str, site: str) -> Path:
     if not ctx_path.exists():
         ctx = ReportContext()
         ctx.extra["site_name"] = site
+        ctx.extra["site_address"] = address
         serialize.to_json(ctx, ctx_path)
+    elif address:
+        ctx = serialize.from_json(ctx_path)
+        if not ctx.extra.get("site_address"):
+            ctx.extra["site_address"] = address
+            serialize.to_json(ctx, ctx_path)
     return ctx_path
 
 

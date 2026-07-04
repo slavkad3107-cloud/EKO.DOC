@@ -52,6 +52,37 @@ def _register(att_dir: Path, src: Path) -> tuple[Path, bool]:
     return dest, True
 
 
+def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
+    """Сохранить файлы в attachments площадки (без анализа).
+
+    Возвращает (имена сохранённых файлов, строки лога). Позволяет грузить
+    большие папки партиями, а анализ запускать один раз в конце.
+    """
+    att = workspace.site_dir(org, site) / "attachments"
+    names, lines = [], []
+    for f in files:
+        src = Path(f)
+        if not src.exists():
+            lines.append(f"✖ нет файла: {src}")
+            continue
+        dest, is_new = _register(att, src)
+        lines.append(f"{'＋ принят' if is_new else '= уже был'}: {dest.name}")
+        names.append(dest.name)
+    return names, lines
+
+
+def analyze_stored(names: list[str], org: str, site: str,
+                   use_ai: bool = False, forms: list[str] | None = None,
+                   ocr: bool = True) -> str:
+    """Проанализировать уже сохранённые в attachments файлы (по именам)."""
+    att = workspace.site_dir(org, site) / "attachments"
+    ctx = workspace.load_context(org, site)
+    paths = [att / n for n in names if (att / n).exists()]
+    return _analyze(paths, ctx, org=org, site=site, use_ai=use_ai,
+                    forms=forms, ocr=ocr,
+                    lines=[f"Файлов к анализу: {len(paths)}"])
+
+
 def run(files: list[str], org: str = "", site: str = "",
         ctx: ReportContext | None = None, use_ai: bool = False,
         forms: list[str] | None = None, ocr: bool = True) -> str:
@@ -63,19 +94,24 @@ def run(files: list[str], org: str = "", site: str = "",
 
     # 1. регистрация файлов
     stored: list[Path] = []
-    for f in files:
-        src = Path(f)
-        if not src.exists():
-            lines.append(f"✖ нет файла: {src}")
-            continue
-        if in_workspace:
-            dest, is_new = _register(
-                workspace.site_dir(org, site) / "attachments", src)
-            lines.append(f"{'＋ принят' if is_new else '= уже был'}: {dest.name}")
-            stored.append(dest)
-        else:
-            stored.append(src)
+    if in_workspace:
+        names, log = store(files, org, site)
+        lines += log
+        att = workspace.site_dir(org, site) / "attachments"
+        stored = [att / n for n in names]
+        ctx = workspace.load_context(org, site)
+    else:
+        stored = [Path(f) for f in files if Path(f).exists()]
+        lines += [f"✖ нет файла: {f}" for f in files if not Path(f).exists()]
+    return _analyze(stored, ctx, org=org if in_workspace else "",
+                    site=site if in_workspace else "", use_ai=use_ai,
+                    forms=forms, ocr=ocr, lines=lines)
 
+
+def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
+             use_ai: bool, forms: list[str] | None, ocr: bool,
+             lines: list[str]) -> str:
+    in_workspace = bool(org and site)
     # 2. извлечение текста + regex-парсер (быстрый, консервативный)
     docs = []
     for p in stored:
