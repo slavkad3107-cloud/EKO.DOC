@@ -34,10 +34,18 @@ class DeclarationNVOS(Report):
 
     # ------------------------------------------------------------------ #
     def validate(self) -> list[Issue]:
+        from ecodoc.core.validators import inn_valid, ogrn_valid
         issues: list[Issue] = []
         o = self.ctx.organization
         if not o.inn:
             issues.append(Issue("error", "ИНН", "не указан ИНН плательщика"))
+        elif not inn_valid(o.inn):
+            issues.append(Issue("error", "ИНН",
+                                f"ИНН {o.inn} не проходит проверку контрольной "
+                                f"суммы — вероятна опечатка"))
+        if o.ogrn and not ogrn_valid(o.ogrn):
+            issues.append(Issue("warning", "ОГРН",
+                                f"ОГРН {o.ogrn} не проходит проверку — сверьте"))
         if not o.name:
             issues.append(Issue("error", "наименование", "не указано наименование организации"))
         if not o.oktmo:

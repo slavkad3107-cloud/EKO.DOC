@@ -109,6 +109,33 @@ def render_console(ctx: ReportContext, year: int) -> str:
     return "\n".join(lines)
 
 
+def deadline_note(form_code: str, report_year: int,
+                  today: date | None = None) -> str:
+    """Подсказка о сроке сдачи формы за report_year (пусто, если срока нет).
+
+    Срок берётся из реестра обязанностей (год отчёта + 1). Возвращает
+    предупреждение о просрочке или напоминание, если срок близко.
+    """
+    if not report_year:
+        return ""
+    today = today or date.today()
+    obl = next((o for o in OBLIGATIONS
+                if o.code == form_code and o.kind == "periodic" and o.due), None)
+    if not obl:
+        return ""
+    due_year = report_year + 1
+    nearest = min((date(due_year, m, d) for (m, d) in obl.due),
+                  key=lambda dd: abs((dd - today).days))
+    delta = (nearest - today).days
+    when = nearest.strftime("%d.%m.%Y")
+    if delta < 0:
+        return (f"⚠ Срок сдачи «{obl.title}» за {report_year} год истёк "
+                f"{-delta} дн. назад ({when}). Возможен штраф по ст. 8.5 КоАП.")
+    if delta <= 30:
+        return f"⏰ До срока сдачи «{obl.title}» за {report_year} год — {delta} дн. ({when})."
+    return ""
+
+
 def export_ics_text(ctx: ReportContext, year: int) -> str:
     """Календарь сроков в формате iCalendar (Outlook/Google/Яндекс).
 

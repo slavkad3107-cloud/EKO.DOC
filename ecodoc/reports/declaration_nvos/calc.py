@@ -55,12 +55,24 @@ def calculate(ctx: ReportContext) -> PaymentResult:
     k_ind = D(rates.get("indexation", 1))
     res = PaymentResult()
 
+    # ставки в справочнике могут относиться к конкретному году — если он задан
+    # и не совпадает с отчётным, есть риск двойной/неверной индексации
+    rates_year = rates.get("rates_year") or rates.get("year")
+    if rates_year and ctx.period.year and int(rates_year) != int(ctx.period.year):
+        res.warnings.append(
+            f"Ставки в справочнике за {rates_year}, отчётный год {ctx.period.year} "
+            f"— проверьте ставки и коэффициент индексации (data/rates_nvos.json)")
+
     # --- выбросы / сбросы ---
     for p in ctx.pollutants:
         table = rates["air"] if p.medium == Medium.AIR else rates["water"]
         entry = table.get(p.code)
         rate = D(entry["rate"]) if entry else Decimal("0")
         k_ot = D(p.k_ot) if p.k_ot is not None else D(coef.get("k_ot_default", 1))
+        if k_ot < 1:
+            res.warnings.append(
+                f"{p.name} ({p.code}): коэффициент территории {k_ot} < 1 — "
+                f"проверьте (обычно 1, для ООПТ 2)")
         masses = {"norm": p.mass_norm, "limit": p.mass_limit, "over": p.mass_over}
         for band in _BANDS:
             mass = D(masses[band])

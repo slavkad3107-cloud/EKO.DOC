@@ -108,7 +108,21 @@ def load_context(org: str, site: str) -> ReportContext:
     return ctx
 
 
+def save_org(org: str, organization: Organization) -> Path:
+    """Сохранить реквизиты организации в org.json (канонический источник)."""
+    path = org_dir(org) / "org.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(organization), ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+    return path
+
+
 def save_context(org: str, site: str, ctx: ReportContext) -> Path:
+    # реквизиты организации канонично живут в org.json — если правились
+    # (во вкладке «Данные»), пишем их туда, иначе правки терялись бы при
+    # следующей загрузке (load_context перечитывает организацию из org.json).
+    if (org_dir(org) / "org.json").exists():
+        save_org(org, ctx.organization)
     return serialize.to_json(ctx, site_dir(org, site) / "context.json")
 
 

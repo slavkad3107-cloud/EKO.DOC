@@ -118,8 +118,11 @@ def api_context_save(params, body):
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(body["context"], ensure_ascii=False, indent=2),
                    encoding="utf-8")
-    serialize.from_json(tmp)
-    tmp.replace(p)
+    ctx = serialize.from_json(tmp)
+    tmp.unlink(missing_ok=True)
+    # save_context также пишет реквизиты организации в org.json (иначе
+    # правки блока organization во вкладке «Данные» терялись бы)
+    workspace.save_context(body["org"], body["site"], ctx)
     return {"ok": True}
 
 
@@ -223,6 +226,10 @@ def api_generate(params, body):
     errors = [i for i in issues if i.level == "error"]
     out = {"issues": [{"level": i.level, "field": i.field, "message": i.message}
                       for i in issues]}
+    from ecodoc.calendar.engine import deadline_note
+    note = deadline_note(body["form"], ctx.period.year)
+    if note:
+        out["deadline"] = note
     if errors and not body.get("force"):
         out["error"] = "Есть ошибки — исправьте данные или включите «принудительно»."
         return out

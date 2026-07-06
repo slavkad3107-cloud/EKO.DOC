@@ -519,6 +519,7 @@ async function doGenerate(code){
       pdf:$("genpdf").checked, force:$("genforce").checked}, 0);
     renderIssues(code, j.issues);
     let t = "";
+    if (j.deadline) t += j.deadline + "\n\n";
     if (j.xml)   t += "XML:    " + j.xml + "\n";
     if (j.print) t += "Печать: " + j.print + "\n";
     if (j.pdf)   t += "PDF:    " + j.pdf + "\n";
