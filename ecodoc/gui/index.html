@@ -520,17 +520,24 @@ let CTX = null;
 const esc = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
   .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 const ORG_FLD = [["name","Полное наименование"],["short_name","Краткое наименование"],
-  ["inn","ИНН"],["kpp","КПП"],["ogrn","ОГРН"],["oktmo","ОКТМО"],
-  ["address","Юридический адрес"],["director_name","Руководитель (ФИО)"],
+  ["inn","ИНН"],["kpp","КПП"],["ogrn","ОГРН"],["okpo","ОКПО"],["okved","ОКВЭД"],
+  ["oktmo","ОКТМО"],["address","Юридический адрес"],["director_name","Руководитель (ФИО)"],
   ["director_position","Должность"],["phone","Телефон"],["email","E-mail"]];
 
+function seedWater(){
+  const w = (CTX.extra || {}).water || {};
+  CTX._wintake = w.intake || [];
+  CTX._wdischarge = w.discharge || [];
+  CTX._wmeta = {recycled: w.recycled||"", used_own: w.used_own||""};
+}
 async function loadCtx(){
   needSite();
   const j = await get("context", {org:ORG, site:SITE});
   CTX = j.context;
   $("data-msg").textContent = j.path;
   SITE_ADDR = (CTX.extra || {}).site_address || "";
-  $("ctx").value = JSON.stringify(CTX, null, 2);
+  $("ctx").value = JSON.stringify(CTX, null, 2);   // чистый JSON без служебных ключей
+  seedWater();
   renderDataForm();
 }
 function tinput(val, path, ph, num){
@@ -566,6 +573,17 @@ function renderDataForm(){
     [["fkko_code","ФККО"],["name","Наименование"],["hazard_class","Класс",,"num"],
      ["generated","Образовано, т",,"num"],["transferred","Передано, т",,"num"],
      ["placed_norm","Размещено (лимит), т",,"num"],["placed_over","Размещено (сверх), т",,"num"]]);
+  // водопользование (для 2-ТП водхоз) — в сворачиваемом блоке
+  const wm = CTX._wmeta || {};
+  h += '<details class="dsec"><summary style="cursor:pointer;font-weight:600;color:var(--acc)">Водопользование (для 2-ТП водхоз)</summary>';
+  h += tableSection("Забор воды, тыс. м³/год", "_wintake", CTX._wintake||[],
+    [["name","Источник"],["type","Тип"],["volume","Объём, тыс. м³",,"num"]]);
+  h += tableSection("Водоотведение, тыс. м³/год", "_wdischarge", CTX._wdischarge||[],
+    [["receiver","Приёмник"],["quality","Категория качества"],["volume","Объём, тыс. м³",,"num"]]);
+  h += '<div class="fgrid">'+
+    `<div class="fld"><label>Оборотная/повторная вода, тыс. м³</label>${tinput(wm.recycled,'_wmeta.recycled','',true)}</div>`+
+    `<div class="fld"><label>Использовано на собств. нужды, тыс. м³</label>${tinput(wm.used_own,'_wmeta.used_own','',true)}</div>`+
+    '</div></details>';
   $("dataform").innerHTML = h;
 }
 function tableSection(title, key, rows, cols){
@@ -627,34 +645,50 @@ function collectDataForm(){
     }
   });
 }
+function foldWater(){
+  // перенести временные ключи водоучёта в extra.water и убрать их
+  const wm = CTX._wmeta || {};
+  const water = {intake: CTX._wintake||[], discharge: CTX._wdischarge||[]};
+  if (wm.recycled!=="" && wm.recycled!=null) water.recycled = wm.recycled;
+  if (wm.used_own!=="" && wm.used_own!=null) water.used_own = wm.used_own;
+  const hasWater = water.intake.length || water.discharge.length ||
+                   water.recycled || water.used_own;
+  CTX.extra = CTX.extra || {};
+  if (hasWater) CTX.extra.water = water; else delete CTX.extra.water;
+  delete CTX._wintake; delete CTX._wdischarge; delete CTX._wmeta;
+}
 async function saveCtx(){
   needSite(); spin("sp-data",1);
   try{
     collectDataForm();
+    foldWater();
     await post("context_save", {org:ORG, site:SITE, context:CTX});
+    seedWater();
     $("data-msg").textContent = "Сохранено ✓";
     $("ctx").value = JSON.stringify(CTX, null, 2);
   }catch(e){ $("data-msg").textContent = "Ошибка: " + e.message; }
   spin("sp-data",0);
 }
 function applyRawJson(){
-  try{ CTX = JSON.parse($("ctx").value); renderDataForm();
+  try{ CTX = JSON.parse($("ctx").value); seedWater(); renderDataForm();
     $("data-msg").textContent = "JSON применён — не забудьте «Сохранить»"; }
   catch(e){ alert("Ошибка в JSON: " + e.message); }
 }
 async function snapshotPeriod(){
-  needSite(); collectDataForm(); spin("sp-data",1);
+  needSite(); collectDataForm(); foldWater(); spin("sp-data",1);
   try{
     await post("context_save", {org:ORG, site:SITE, context:CTX});
+    seedWater();
     const j = await post("compare", {org:ORG, site:SITE, save:true}, 0);
     $("data-msg").textContent = "Снимок сохранён: " + j.saved;
   }catch(e){ $("data-msg").textContent = "Ошибка: " + e.message; }
   spin("sp-data",0);
 }
 async function comparePeriods(){
-  needSite(); collectDataForm(); spin("sp-data",1);
+  needSite(); collectDataForm(); foldWater(); spin("sp-data",1);
   try{
     await post("context_save", {org:ORG, site:SITE, context:CTX});
+    seedWater();
     const j = await post("compare", {org:ORG, site:SITE}, 0);
     const box = $("cmp-out"); box.style.display="block";
     if(j.note){ box.textContent = j.note; }

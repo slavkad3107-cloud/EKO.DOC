@@ -52,16 +52,24 @@ _BANDS = ("norm", "limit", "over")
 def calculate(ctx: ReportContext) -> PaymentResult:
     rates = rates_nvos()
     coef = coefficients()
-    k_ind = D(rates.get("indexation", 1))
     res = PaymentResult()
 
-    # ставки в справочнике могут относиться к конкретному году — если он задан
-    # и не совпадает с отчётным, есть риск двойной/неверной индексации
-    rates_year = rates.get("rates_year") or rates.get("year")
-    if rates_year and ctx.period.year and int(rates_year) != int(ctx.period.year):
-        res.warnings.append(
-            f"Ставки в справочнике за {rates_year}, отчётный год {ctx.period.year} "
-            f"— проверьте ставки и коэффициент индексации (data/rates_nvos.json)")
+    # коэффициент индексации: сначала по отчётному году, иначе общий
+    by_year = rates.get("indexation_by_year") or {}
+    year = ctx.period.year
+    if year and str(year) in by_year:
+        val = by_year[str(year)]
+        if val is None:
+            res.warnings.append(
+                f"Коэффициент индексации на {year} год не задан "
+                f"(indexation_by_year в data/rates_nvos.json = null) — уточните "
+                f"по действующему Постановлению Правительства и впишите значение. "
+                f"Пока применён общий indexation.")
+            k_ind = D(rates.get("indexation", 1))
+        else:
+            k_ind = D(val)
+    else:
+        k_ind = D(rates.get("indexation", 1))
 
     # --- выбросы / сбросы ---
     for p in ctx.pollutants:

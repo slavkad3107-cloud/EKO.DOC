@@ -8,12 +8,7 @@ from ecodoc.core.registry import register
 from ecodoc.reports.base import NotImplementedReport
 
 
-@register
-class TP2Water(NotImplementedReport):
-    code = "2tp-water"
-    title = "2-ТП (водхоз)"
-    # Нужен блок водопотребления/водоотведения в ctx.extra['water']
-    # (журналы водоучёта) — модель появится вместе с реализацией.
+# 2-ТП (водхоз) реализована в ecodoc/reports/tp2_water/report.py
 
 
 # ── Контур «Разработка»: полная карта документов ─────────────────────────

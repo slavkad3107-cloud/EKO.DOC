@@ -47,12 +47,25 @@ def _build(cls, data: dict):
     return cls(**kwargs)
 
 
+def _to_int(v):
+    """Число из строки/None (формы шлют строки). Мусор -> 0."""
+    if v in (None, ""):
+        return 0
+    try:
+        return int(float(str(v).replace(",", ".")))
+    except (ValueError, TypeError):
+        return 0
+
+
 def from_json(path: str | Path) -> ReportContext:
     # utf-8-sig: терпим BOM от Блокнота и прочих Windows-редакторов
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     ctx = ReportContext()
     ctx.organization = _build(Organization, data.get("organization", {}))
     ctx.period = _build(ReportPeriod, data.get("period", {}))
+    # год/квартал из формы приходят строками — приводим к int
+    ctx.period.year = _to_int(ctx.period.year)
+    ctx.period.quarter = _to_int(ctx.period.quarter) or None
     ctx.objects = [_build(NVOSObject, o) for o in data.get("objects", [])]
     ctx.extra = data.get("extra", {})
     ctx.provenance = data.get("provenance", {})
@@ -72,5 +85,6 @@ def from_json(path: str | Path) -> ReportContext:
         w = _build(WasteFlow, wd)
         for a in dec_fields:
             setattr(w, a, Decimal(str(wd.get(a, 0) or 0)))
+        w.hazard_class = _to_int(w.hazard_class) or 5   # из формы приходит строкой
         ctx.wastes.append(w)
     return ctx
