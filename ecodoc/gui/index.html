@@ -22,7 +22,7 @@ table.srctbl,table.dtbl{border-collapse:collapse;width:100%;font-size:13px;margi
 table.srctbl th,table.dtbl th{background:var(--acc2);color:var(--acc);padding:5px 6px;
   text-align:left;font-weight:600;white-space:nowrap;cursor:help}
 table.srctbl td,table.dtbl td{border:1px solid var(--line);padding:2px}
-table.srctbl input,table.dtbl input,table.dtbl select{border:0;width:100%;min-width:56px;
+table.srctbl input,table.srctbl select,table.dtbl input,table.dtbl select{border:0;width:100%;min-width:56px;
   padding:5px;font-size:13px;background:transparent}
 table.srctbl input:focus,table.dtbl input:focus{outline:2px solid var(--acc2);border-radius:4px}
 .delrow{color:var(--err);cursor:pointer;border:0;background:none;font-size:16px;padding:0 6px}
@@ -200,9 +200,12 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <div style="overflow-x:auto">
         <table class="srctbl" id="srctbl"><thead><tr>
           <th title="Название источника">Источник</th>
-          <th title="Координата X устья на площадке, м">X, м</th>
-          <th title="Координата Y устья на площадке, м">Y, м</th>
-          <th title="Высота трубы, м">H, м</th>
+          <th title="Тип: точечный (труба), линейный (дорога), площадной (склад)">Тип</th>
+          <th title="Координата X устья / начала линии / угла площадки, м">X, м</th>
+          <th title="Координата Y устья / начала линии / угла площадки, м">Y, м</th>
+          <th title="X2 — конец линии / противоположный угол площадки (для линейных/площадных)">X2, м</th>
+          <th title="Y2 — конец линии / противоположный угол площадки">Y2, м</th>
+          <th title="Высота источника, м">H, м</th>
           <th title="Диаметр устья, м">D, м</th>
           <th title="Скорость выхода газовоздушной смеси, м/с">w₀, м/с</th>
           <th title="Температура газовоздушной смеси, °C">Tг, °C</th>
@@ -817,25 +820,30 @@ async function downloadIcs(){
 }
 
 // ── рассеивание (таблица источников вместо JSON) ──
-const SRC_COLS = ["name","x","y","H","D","w0","Tg","Tv","M","F","substance","code","pdk"];
-const SRC_DEF = {name:"Источник", x:0, y:0, H:10, D:0.5, w0:5, Tg:120, Tv:25.2,
-                 M:0.1, F:1, substance:"", code:"", pdk:0};
+const SRC_COLS = ["name","kind","x","y","x2","y2","H","D","w0","Tg","Tv","M","F","substance","code","pdk"];
+const SRC_DEF = {name:"Источник", kind:"point", x:0, y:0, x2:0, y2:0, H:10, D:0.5,
+                 w0:5, Tg:120, Tv:25.2, M:0.1, F:1, substance:"", code:"", pdk:0};
+const KIND_OPT = [["point","точечный"],["line","линейный"],["area","площадной"]];
 function addSrcRow(src){
   const s = {...SRC_DEF, ...(src||{})};
   const tb = $("srctbl").querySelector("tbody");
   const tr = document.createElement("tr");
-  tr.innerHTML = SRC_COLS.map(c => c==="substance"
-    ? `<td><input data-c="substance" value="${esc(s[c])}" list="subst-list" onchange="fillSubstance(this)"></td>`
-    : `<td><input data-c="${c}" value="${esc(s[c])}"></td>`).join('') +
+  tr.innerHTML = SRC_COLS.map(c => {
+    if (c==="kind") return `<td><select data-c="kind">`+
+      KIND_OPT.map(([v,t])=>`<option value="${v}"${s.kind===v?' selected':''}>${t}</option>`).join('')+
+      `</select></td>`;
+    if (c==="substance") return `<td><input data-c="substance" value="${esc(s[c])}" list="subst-list" onchange="fillSubstance(this)"></td>`;
+    return `<td><input data-c="${c}" value="${esc(s[c])}"></td>`;
+  }).join('') +
     `<td><button class="delrow" title="удалить" onclick="this.closest('tr').remove()">✕</button></td>`;
   tb.appendChild(tr);
 }
 function dispData(){
   const rows = [...$("srctbl").querySelectorAll("tbody tr")].map(tr=>{
     const s = {A:160};
-    tr.querySelectorAll("input[data-c]").forEach(inp=>{
-      const c = inp.dataset.c, v = inp.value.trim();
-      s[c] = ["name","substance","code"].includes(c) ? v :
+    tr.querySelectorAll("[data-c]").forEach(inp=>{
+      const c = inp.dataset.c, v = (inp.value||"").trim();
+      s[c] = ["name","substance","code","kind"].includes(c) ? v :
              (v==="" ? 0 : parseFloat(v.replace(",",".")));
     });
     return s;

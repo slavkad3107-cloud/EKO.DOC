@@ -40,6 +40,47 @@ class MapSource:
     code: str = ""             # код вещества
     pdk: float = 0.0           # ПДКм.р., мг/м³
     bg: float = 0.0            # фоновая концентрация, мг/м³
+    # тип источника: "point" (труба), "line" (линейный, x..x2/y..y2),
+    # "area" (площадной, прямоугольник (x,y)-(x2,y2))
+    kind: str = "point"
+    x2: float = 0.0            # вторая точка (линия) / противоположный угол (площадь)
+    y2: float = 0.0
+
+
+def expand_source(s: MapSource) -> list[MapSource]:
+    """Линейный/площадной источник → набор точечных с делённым выбросом.
+
+    Аппроксимация по МРР-2017: площадные и линейные источники представляются
+    набором элементарных точечных. Экспериментально — для экспертизы сверяйте
+    с аттестованной УПРЗА.
+    """
+    kind = (s.kind or "point").lower()
+    if kind == "line" and (s.x2 or s.y2):
+        n = 6
+        pts = []
+        for i in range(n):
+            t = (i + 0.5) / n
+            pts.append(_clone(s, s.x + (s.x2 - s.x) * t,
+                              s.y + (s.y2 - s.y) * t, s.M / n))
+        return pts
+    if kind == "area" and (s.x2 or s.y2):
+        nx = ny = 4
+        x0, x1 = sorted((s.x, s.x2))
+        y0, y1 = sorted((s.y, s.y2))
+        pts = []
+        for i in range(nx):
+            for j in range(ny):
+                cx = x0 + (x1 - x0) * (i + 0.5) / nx
+                cy = y0 + (y1 - y0) * (j + 0.5) / ny
+                pts.append(_clone(s, cx, cy, s.M / (nx * ny)))
+        return pts
+    return [s]
+
+
+def _clone(s: MapSource, x: float, y: float, m: float) -> MapSource:
+    return MapSource(name=s.name, x=x, y=y, H=s.H, D=s.D, w0=s.w0, Tg=s.Tg,
+                     Tv=s.Tv, M=m, F=s.F, A=s.A, eta=s.eta,
+                     substance=s.substance, code=s.code, pdk=s.pdk, bg=s.bg)
 
 
 def _as_point(s: MapSource):
@@ -123,10 +164,13 @@ def compute_grid(sources: list[MapSource], substance: str | None = None,
     """
     if substance is None:
         substance = next((s.substance for s in sources if s.substance), "")
-    grp = [s for s in sources if (s.substance or "") == (substance or "")] \
+    orig = [s for s in sources if (s.substance or "") == (substance or "")] \
         or list(sources)
-    if not grp:
+    if not orig:
         raise ValueError("Нет источников для карты.")
+    # площадные/линейные разворачиваем в элементарные точечные для расчёта;
+    # оригиналы (orig) сохраняем для отрисовки маркеров на карте
+    grp = [p for s in orig for p in expand_source(s)]
 
     res = {id(s): calc_point(_as_point(s)) for s in grp}
     xm_max = max(res[id(s)].xm for s in grp) or 100.0
@@ -171,7 +215,7 @@ def compute_grid(sources: list[MapSource], substance: str | None = None,
         share = [[0.0] * n for _ in range(n)]
         share_max = 0.0
     return GridResult(xs, ys, conc, share, cmax, share_max,
-                      substance or "вещество", pdk, bg, grp)
+                      substance or "вещество", pdk, bg, orig)
 
 
 # ── векторная карта (SVG) ────────────────────────────────────────────────

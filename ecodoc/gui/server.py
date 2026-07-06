@@ -373,7 +373,7 @@ def api_dispersion_map(params, body):
     if not sources:
         return {"error": "Нет источников."}
     grid = dm.compute_grid(sources, substance=body.get("substance"),
-                           n=int(body.get("n", 50)))
+                           n=int(body.get("n", 40)), dirs=int(body.get("dirs", 16)))
     return {"svg": dm.render_svg(grid), "summary": dm.summary(grid),
             "share_max": grid.share_max, "cmax": grid.cmax}
 
