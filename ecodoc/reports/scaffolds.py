@@ -36,7 +36,8 @@ class HazardClassCalc(_Dev):
 @register
 class NMUPlan(_Dev):
     code = "nmu"
-    title = "План мероприятий при НМУ (пр. МПР № 811)"
+    title = "План мероприятий при НМУ (пр. МПР № 811) — .docx"
+    devdoc = True   # генерируется как .docx через api_devdoc / ecodoc devdoc nmu
 
 
 @register
@@ -60,7 +61,8 @@ class AirInventory(_Dev):
 @register
 class PEKProgram(_Dev):
     code = "pek-program"
-    title = "Программа ПЭК (разработка, пр. МПР № 109)"
+    title = "Программа ПЭК (разработка, пр. МПР № 109) — .docx"
+    devdoc = True   # генерируется как .docx через api_devdoc / ecodoc devdoc pek-program
 
 
 @register

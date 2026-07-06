@@ -733,6 +733,8 @@ function renderForms(){
     const btns = f.implemented
       ? `<button class="b sec" onclick="doValidate('${f.code}')">Проверить</button>
          <button class="b" onclick="doGenerate('${f.code}')">Сгенерировать</button>`
+      : f.devdoc
+      ? `<button class="b" onclick="doDevDoc('${f.code}')">Сгенерировать (.docx)</button>`
       : '<span class="hint">каркас — генерация в следующих версиях</span>';
     card.innerHTML = `<div class="t">${f.title}</div>
       <div class="c">${f.code}</div><div class="row">${btns}</div>
@@ -750,6 +752,15 @@ async function doValidate(code){
   try{ const j = await post("validate", {org:ORG, site:SITE, form:code});
        renderIssues(code, j.issues);
   }catch(e){ alert(e.message); }
+}
+async function doDevDoc(kind){
+  needSite(); spin("sp-gen",1);
+  try{
+    const j = await post("devdoc", {org:ORG, site:SITE, kind}, 0);
+    show("out-gen", "Документ (.docx): " + j.path);
+    post("open", {path:j.path}).catch(()=>{});
+  }catch(e){ show("out-gen", "Ошибка: " + e.message); }
+  spin("sp-gen",0);
 }
 async function validateAll(){
   needSite(); spin("sp-gen",1);

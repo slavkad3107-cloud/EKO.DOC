@@ -27,7 +27,8 @@ def _forms() -> list[dict]:
     return [{"code": code,
              "title": cls.title,
              "domain": getattr(cls, "domain", "reporting"),
-             "implemented": bool(getattr(cls, "implemented", True))}
+             "implemented": bool(getattr(cls, "implemented", True)),
+             "devdoc": bool(getattr(cls, "devdoc", False))}
             for code, cls in registry.all_reports().items()]
 
 
@@ -283,6 +284,22 @@ def api_reference(params, body):
     return {"substances": substances(), "wastes": common_wastes()}
 
 
+def api_devdoc(params, body):
+    """Сгенерировать документ разработки (.docx): НМУ или программа ПЭК."""
+    ctx = workspace.load_context(body["org"], body["site"])
+    out_dir = workspace.site_dir(body["org"], body["site"]) / "out"
+    kind = body.get("kind")
+    if kind == "nmu":
+        from ecodoc.development import nmu
+        path = nmu.generate(ctx, out_dir / "план_НМУ.docx")
+    elif kind == "pek-program":
+        from ecodoc.development import pek_program
+        path = pek_program.generate(ctx, out_dir / "программа_ПЭК.docx")
+    else:
+        return {"error": f"неизвестный документ: {kind}"}
+    return {"path": str(path)}
+
+
 def api_hazard_class(params, body):
     from ecodoc.development.hazard_class import Component, calculate
     comps = [Component(name=c.get("name", ""), ci=float(c.get("ci") or 0),
@@ -432,7 +449,7 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "upraza_export": api_upraza_export,
                "counterparty": api_counterparty, "oktmo": api_oktmo,
                "hazard_class": api_hazard_class, "compare": api_compare,
-               "open": api_open}
+               "devdoc": api_devdoc, "open": api_open}
 
 
 class Handler(BaseHTTPRequestHandler):

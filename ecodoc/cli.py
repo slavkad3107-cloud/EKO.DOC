@@ -295,6 +295,18 @@ def _cmd_upraza_export(args):
           "«Источники»/«Выбросы» (см. лист «Инструкция»).")
 
 
+def _cmd_devdoc(args):
+    ctx = workspace.resolve(args)
+    out_dir = workspace.out_dir(args)
+    if args.kind == "nmu":
+        from ecodoc.development import nmu
+        path = nmu.generate(ctx, out_dir / "план_НМУ.docx")
+    else:
+        from ecodoc.development import pek_program
+        path = pek_program.generate(ctx, out_dir / "программа_ПЭК.docx")
+    print(f"Документ: {path}")
+
+
 def _cmd_gui(args):
     from ecodoc.gui import server
 
@@ -411,6 +423,12 @@ def build_parser() -> argparse.ArgumentParser:
     ue.add_argument("sources", help="JSON с источниками")
     ue.add_argument("-o", "--outdir", default="out")
     ue.set_defaults(func=_cmd_upraza_export)
+
+    dd = sub.add_parser("devdoc", help="документ разработки (.docx): НМУ, программа ПЭК")
+    dd.add_argument("kind", choices=["nmu", "pek-program"])
+    _target_args(dd)
+    dd.add_argument("-o", "--outdir", default="out")
+    dd.set_defaults(func=_cmd_devdoc)
 
     gu = sub.add_parser("gui", help="графический интерфейс (локально, в браузере)")
     gu.add_argument("--port", type=int, default=8737)
