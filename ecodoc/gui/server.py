@@ -251,16 +251,79 @@ def api_generate(params, body):
 
 
 def api_calendar(params, body):
+    from datetime import date
+
     from ecodoc.calendar import engine
     ctx = workspace.load_context(params["org"], params["site"])
     year = int(params.get("year") or 0) or \
         (ctx.period.year + 1 if ctx.period.year else 0)
     if not year:
         return {"error": "Укажите год (или заполните period.year в данных)."}
-    out = {"text": engine.render_console(ctx, year), "year": year}
+    periodic, possession = engine.build_calendar(ctx, year)
+    today = date.today()
+    rows = []
+    for e in periodic:
+        days = (e.due - today).days
+        status = ("overdue" if days < 0 else "soon" if days <= 30 else "ok")
+        rows.append({"date": e.due.strftime("%d.%m.%Y"), "title": e.title,
+                     "where": e.where, "coverage": e.coverage,
+                     "days": days, "status": status})
+    docs = [{"title": e.title, "where": e.where, "basis": e.basis}
+            for e in possession]
+    out = {"rows": rows, "docs": docs, "year": year,
+           "text": engine.render_console(ctx, year)}
     if params.get("ics"):
         out["ics"] = engine.export_ics_text(ctx, year)
     return out
+
+
+def api_reference(params, body):
+    """Справочники для автоподстановки: вещества и частые отходы."""
+    from ecodoc.core.refdata import common_wastes, substances
+    return {"substances": substances(), "wastes": common_wastes()}
+
+
+def api_hazard_class(params, body):
+    from ecodoc.development.hazard_class import Component, calculate
+    comps = [Component(name=c.get("name", ""), ci=float(c.get("ci") or 0),
+                       wi=float(c.get("wi") or 0))
+             for c in body.get("components", []) if c.get("name")]
+    if not comps:
+        return {"error": "Добавьте компоненты отхода (наименование, Ci, Wi)."}
+    r = calculate(comps)
+    return {"k_total": r.k_total, "hazard_class": r.hazard_class,
+            "components": r.components, "warnings": r.warnings}
+
+
+def api_compare(params, body):
+    """Сравнить отходы/выбросы текущего контекста с сохранённым снимком."""
+    import json as _json
+
+    site = workspace.site_dir(body["org"], body["site"])
+    snap_dir = site / "history"
+    ctx = workspace.load_context(body["org"], body["site"])
+    if body.get("save"):
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        yr = ctx.period.year or "XXXX"
+        from ecodoc.core import serialize
+        serialize.to_json(ctx, snap_dir / f"snapshot_{yr}.json")
+        return {"saved": f"snapshot_{yr}.json"}
+    snaps = sorted(snap_dir.glob("snapshot_*.json")) if snap_dir.exists() else []
+    if not snaps:
+        return {"diffs": [], "note": "Нет сохранённых снимков для сравнения. "
+                "Сохраните текущие данные снимком (кнопка «Запомнить период»)."}
+    prev = _json.loads(snaps[-1].read_text(encoding="utf-8-sig"))
+    diffs = []
+    prev_w = {w["fkko_code"]: w for w in prev.get("wastes", [])}
+    for w in ctx.wastes:
+        p = prev_w.get(w.fkko_code)
+        cur = float(w.generated or 0)
+        old = float(p.get("generated", 0)) if p else 0
+        if cur != old:
+            pct = ((cur - old) / old * 100) if old else 100
+            diffs.append({"kind": "отход", "name": w.name or w.fkko_code,
+                          "prev": old, "cur": cur, "pct": round(pct, 1)})
+    return {"diffs": diffs, "snapshot": snaps[-1].name}
 
 
 def api_watch(params, body):
@@ -355,7 +418,8 @@ def api_open(params, body):
 
 
 GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
-              "context": api_context_get, "calendar": api_calendar}
+              "context": api_context_get, "calendar": api_calendar,
+              "reference": api_reference}
 POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add,
                "context_save": api_context_save, "intake": api_intake,
@@ -367,6 +431,7 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "dispersion_map": api_dispersion_map,
                "upraza_export": api_upraza_export,
                "counterparty": api_counterparty, "oktmo": api_oktmo,
+               "hazard_class": api_hazard_class, "compare": api_compare,
                "open": api_open}
 
 

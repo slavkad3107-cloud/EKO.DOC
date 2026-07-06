@@ -34,7 +34,8 @@ class PNOOLR(_Dev):
 @register
 class HazardClassCalc(_Dev):
     code = "hazard-class"
-    title = "Расчёт класса опасности отхода (пр. МПР № 536, КХА/биотест)"
+    title = "Расчёт класса опасности отхода (пр. МПР № 536) — калькулятор во вкладке «Сервис»"
+    implemented = False   # интерактивный калькулятор в GUI (Сервис), не форма-генератор
 
 
 @register

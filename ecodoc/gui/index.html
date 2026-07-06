@@ -145,9 +145,12 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <div class="row">
         <button class="b" onclick="saveCtx()">💾 Сохранить</button>
         <button class="b sec" onclick="loadCtx()">Перечитать</button>
+        <button class="b sec" onclick="snapshotPeriod()" title="Сохранить текущие данные как снимок периода для будущего сравнения">Запомнить период</button>
+        <button class="b sec" onclick="comparePeriods()" title="Сравнить с последним сохранённым снимком">Сравнить с прошлым</button>
         <button class="b sec" onclick="openWs()">Открыть папку площадки</button>
         <span class="spin" id="sp-data">…</span><span id="data-msg" class="hint"></span>
       </div>
+      <div id="cmp-out" class="hint" style="display:none;white-space:pre-wrap"></div>
       <div id="dataform"></div>
       <details style="margin-top:12px">
         <summary style="cursor:pointer;color:var(--mut)">Расширенно: все поля в формате JSON (для опытных)</summary>
@@ -184,7 +187,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
         <button class="b sec" onclick="downloadIcs()">Скачать .ics (Outlook/Google)</button>
         <span class="spin" id="sp-cal">…</span>
       </div>
-      <pre class="out" id="out-cal" style="display:none"></pre>
+      <div id="out-cal" style="display:none;margin-top:8px"></div>
     </div>
   </div>
 
@@ -226,6 +229,22 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
   </div>
 
   <div class="tab" id="tab-svc">
+    <div class="card">
+      <h2>Калькулятор класса опасности отхода (Приказ МПР № 536)</h2>
+      <div class="hint">Компонентный метод: K = Σ(Ci/Wi). Ci — концентрация компонента (мг/кг,
+        сумма ≈ 1 000 000 = 100%), Wi — коэффициент степени опасности из аттестованного источника.</div>
+      <div style="overflow-x:auto"><table class="dtbl" id="hztbl"><thead><tr>
+        <th title="Компонент отхода">Компонент</th>
+        <th title="Концентрация, мг/кг">Ci, мг/кг</th>
+        <th title="Коэффициент степени опасности">Wi</th><th></th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="row">
+        <button class="b sec" onclick="addHzRow()">+ компонент</button>
+        <button class="b" onclick="doHazard()">Рассчитать класс</button>
+        <span class="spin" id="sp-hz">…</span>
+      </div>
+      <pre class="out" id="out-hz" style="display:none"></pre>
+    </div>
     <div class="card">
       <h2>Проверка контрагента (получателя отходов) по ИНН</h2>
       <div class="row">
@@ -524,7 +543,9 @@ function renderDataForm(){
   let h = '<div class="dsec"><h4>Реквизиты организации</h4><div class="fgrid">';
   for (const [k,label] of ORG_FLD)
     h += `<div class="fld"><label>${label}</label>${tinput(o[k],'organization.'+k)}</div>`;
-  h += '</div></div>';
+  h += '</div><div class="row" style="margin-top:6px">'+
+    '<button class="b sec" onclick="detectOktmo()">Определить ОКТМО по адресу</button>'+
+    '<span class="hint" id="oktmo-msg"></span></div></div>';
   // период
   h += '<div class="dsec"><h4>Отчётный период</h4><div class="fgrid">'+
     `<div class="fld"><label>Год</label>${tinput(per.year,'period.year','напр. 2025',true)}</div>`+
@@ -565,6 +586,12 @@ function rowHtml(key, r, cols, ri){
         [["air","воздух"],["water","вода"]].map(([v,t])=>
           `<option value="${v}"${r[f]===v?' selected':''}>${t}</option>`).join('')+
         `</select></td>`;
+    } else if (key==="pollutants" && f==="name"){
+      h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" `+
+        `list="subst-list" onchange="fillSubstance(this)"></td>`;
+    } else if (key==="wastes" && f==="name"){
+      h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" `+
+        `list="waste-list" onchange="fillWaste(this)"></td>`;
     } else {
       h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}"></td>`;
     }
@@ -614,6 +641,45 @@ function applyRawJson(){
   try{ CTX = JSON.parse($("ctx").value); renderDataForm();
     $("data-msg").textContent = "JSON применён — не забудьте «Сохранить»"; }
   catch(e){ alert("Ошибка в JSON: " + e.message); }
+}
+async function snapshotPeriod(){
+  needSite(); collectDataForm(); spin("sp-data",1);
+  try{
+    await post("context_save", {org:ORG, site:SITE, context:CTX});
+    const j = await post("compare", {org:ORG, site:SITE, save:true}, 0);
+    $("data-msg").textContent = "Снимок сохранён: " + j.saved;
+  }catch(e){ $("data-msg").textContent = "Ошибка: " + e.message; }
+  spin("sp-data",0);
+}
+async function comparePeriods(){
+  needSite(); collectDataForm(); spin("sp-data",1);
+  try{
+    await post("context_save", {org:ORG, site:SITE, context:CTX});
+    const j = await post("compare", {org:ORG, site:SITE}, 0);
+    const box = $("cmp-out"); box.style.display="block";
+    if(j.note){ box.textContent = j.note; }
+    else if(!j.diffs.length){ box.textContent = "Отличий от снимка "+j.snapshot+" нет."; }
+    else{
+      box.textContent = "Сравнение со снимком "+j.snapshot+":\n" +
+        j.diffs.map(d=>{
+          const arrow = d.cur>d.prev ? "▲" : "▼";
+          return `  ${arrow} ${d.name}: ${d.prev} → ${d.cur} т (${d.pct>0?'+':''}${d.pct}%)`;
+        }).join("\n");
+    }
+  }catch(e){ $("cmp-out").style.display="block"; $("cmp-out").textContent="Ошибка: "+e.message; }
+  spin("sp-data",0);
+}
+async function detectOktmo(){
+  collectDataForm();
+  const addr = (CTX.organization||{}).address || SITE_ADDR;
+  if(!addr){ $("oktmo-msg").textContent = "Сначала заполните адрес"; return; }
+  $("oktmo-msg").textContent = "запрос…";
+  try{
+    const j = await post("oktmo", {address: addr}, 0);
+    CTX.organization.oktmo = j.result.oktmo;
+    renderDataForm();
+    $("oktmo-msg").textContent = "ОКТМО: " + j.result.oktmo + " ("+ j.result.value +")";
+  }catch(e){ $("oktmo-msg").textContent = "Ошибка: " + e.message; }
 }
 async function openWs(){
   needSite();
@@ -674,12 +740,32 @@ async function doGenerate(code){
   spin("sp-gen",0);
 }
 
-// ── календарь ──
+// ── календарь (таблица со статусами) ──
+const CAL_CLR = {overdue:"#d32f2f", soon:"#b07d10", ok:"#1a6d42"};
+const CAL_LBL = {overdue:"просрочено", soon:"скоро", ok:"в срок"};
 async function doCal(){
   needSite(); spin("sp-cal",1);
   try{
     const j = await get("calendar", {org:ORG, site:SITE, year:$("calyear").value||""});
-    show("out-cal", j.text); $("calyear").value = j.year;
+    $("calyear").value = j.year;
+    const box = $("out-cal"); box.style.display="block"; box.innerHTML="";
+    if(!j.rows.length){ box.textContent = "Нет периодических обязанностей — проверьте категорию объекта и виды воздействия во вкладке «Данные»."; }
+    else{
+      let h = '<table class="dtbl"><thead><tr><th>Срок</th><th>Документ</th>'+
+        '<th>Куда</th><th>Статус</th></tr></thead><tbody>';
+      for(const r of j.rows){
+        const lbl = r.status==="overdue" ? `просрочено на ${-r.days} дн.` :
+          r.status==="soon" ? `осталось ${r.days} дн.` : CAL_LBL[r.status];
+        h += `<tr><td style="white-space:nowrap"><b>${r.date}</b></td><td>${r.title}</td>`+
+          `<td>${r.where||""}</td><td style="color:${CAL_CLR[r.status]};font-weight:600;white-space:nowrap">●&nbsp;${lbl}</td></tr>`;
+      }
+      h += '</tbody></table>';
+      if(j.docs && j.docs.length){
+        h += '<div style="margin-top:10px;color:var(--mut)">Обязательны к наличию: '+
+          j.docs.map(d=>d.title).join(' · ')+'</div>';
+      }
+      box.innerHTML = h;
+    }
   }catch(e){ show("out-cal", "Ошибка: " + e.message); }
   spin("sp-cal",0);
 }
@@ -704,8 +790,9 @@ function addSrcRow(src){
   const s = {...SRC_DEF, ...(src||{})};
   const tb = $("srctbl").querySelector("tbody");
   const tr = document.createElement("tr");
-  tr.innerHTML = SRC_COLS.map(c =>
-    `<td><input data-c="${c}" value="${esc(s[c])}"></td>`).join('') +
+  tr.innerHTML = SRC_COLS.map(c => c==="substance"
+    ? `<td><input data-c="substance" value="${esc(s[c])}" list="subst-list" onchange="fillSubstance(this)"></td>`
+    : `<td><input data-c="${c}" value="${esc(s[c])}"></td>`).join('') +
     `<td><button class="delrow" title="удалить" onclick="this.closest('tr').remove()">✕</button></td>`;
   tb.appendChild(tr);
 }
@@ -776,6 +863,64 @@ async function doCounterparty(){
   spin("sp-cp",1);
   try{ const j = await post("counterparty", {inn}, 0); show("out-cp", j.text); }
   catch(e){ show("out-cp", "Ошибка: " + e.message); } spin("sp-cp",0); }
+// калькулятор класса опасности
+function addHzRow(c){
+  c = c || {name:"", ci:"", wi:""};
+  const tb = $("hztbl").querySelector("tbody");
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td><input data-c="name" value="${esc(c.name)}"></td>`+
+    `<td><input data-c="ci" value="${esc(c.ci)}" inputmode="decimal"></td>`+
+    `<td><input data-c="wi" value="${esc(c.wi)}" inputmode="decimal"></td>`+
+    `<td><button class="delrow" onclick="this.closest('tr').remove()">✕</button></td>`;
+  tb.appendChild(tr);
+}
+async function doHazard(){
+  const comps = [...$("hztbl").querySelectorAll("tbody tr")].map(tr=>{
+    const g = s=>tr.querySelector(`[data-c="${s}"]`).value.trim().replace(",",".");
+    return {name: tr.querySelector('[data-c="name"]').value.trim(),
+            ci: parseFloat(g("ci"))||0, wi: parseFloat(g("wi"))||0};
+  }).filter(c=>c.name);
+  if(!comps.length){ alert("Добавьте компоненты"); return; }
+  spin("sp-hz",1);
+  try{
+    const j = await post("hazard_class", {components:comps}, 0);
+    let t = `K = Σ(Ci/Wi) = ${(+j.k_total).toPrecision(4)}\nКЛАСС ОПАСНОСТИ: ${j.hazard_class}`;
+    if(j.hazard_class===5) t += "\n⚠ V класс требует подтверждения биотестированием.";
+    if(j.warnings && j.warnings.length) t += "\n"+j.warnings.map(w=>"⚠ "+w).join("\n");
+    show("out-hz", t);
+  }catch(e){ show("out-hz", "Ошибка: " + e.message); } spin("sp-hz",0); }
+addHzRow({name:"Нефтепродукты", ci:"50000", wi:"100"});
+addHzRow({name:"Песок (диоксид кремния)", ci:"950000", wi:"1000000"});
+
+// ── справочники (автоподстановка) ──
+let REF = {substances:[], wastes:[]};
+function buildDatalists(){
+  const dl = document.createElement("div");
+  dl.innerHTML =
+    `<datalist id="subst-list">` +
+    REF.substances.map(s=>`<option value="${esc(s.name)}">`).join('') +
+    `</datalist><datalist id="waste-list">` +
+    REF.wastes.map(w=>`<option value="${esc(w.name)}">`).join('') + `</datalist>`;
+  document.body.appendChild(dl);
+}
+function fillSubstance(nameInp){
+  const s = REF.substances.find(x=>x.name===nameInp.value);
+  if(!s) return;
+  const tr = nameInp.closest("tr");
+  const set = (sel,val)=>{ const el=tr.querySelector(sel); if(el && !el.value) el.value=val; };
+  // таблица выбросов (data-path) или источников рассеивания (data-c)
+  set('[data-path$=".code"]', s.code); set('[data-c="code"]', s.code);
+  set('[data-c="pdk"]', s.pdk_mr || "");
+  const med = tr.querySelector('[data-path$=".medium"]');
+  if(med) med.value = s.medium;
+}
+function fillWaste(nameInp){
+  const w = REF.wastes.find(x=>x.name===nameInp.value);
+  if(!w) return;
+  const tr = nameInp.closest("tr");
+  const set = (sel,val)=>{ const el=tr.querySelector(sel); if(el && !el.value) el.value=val; };
+  set('[data-path$=".fkko_code"]', w.fkko); set('[data-path$=".hazard_class"]', w.class);
+}
 
 // ── старт ──
 async function refreshMeta(){
@@ -787,6 +932,7 @@ async function refreshMeta(){
   renderForms();
 }
 $("calyear").value = new Date().getFullYear();
+get("reference", {}).then(r=>{ REF=r; buildDatalists(); }).catch(()=>{});
 refreshMeta().then(loadTree).catch(e => $("selinfo").textContent = "Ошибка: " + e.message);
 </script>
 </body>

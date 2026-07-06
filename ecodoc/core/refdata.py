@@ -29,3 +29,19 @@ def rates_nvos() -> dict:
 def coefficients() -> dict:
     """Коэффициенты к ставкам (по нормативным корзинам, по классам отходов и т.п.)."""
     return _load("coefficients.json")
+
+
+def substances() -> list[dict]:
+    """Справочник веществ (код, наименование, среда, ПДК). Для автоподстановки."""
+    try:
+        return _load("substances.json").get("substances", [])
+    except FileNotFoundError:
+        return []
+
+
+def common_wastes() -> list[dict]:
+    """Частые отходы (ФККО, наименование, класс) — для автоподстановки."""
+    try:
+        return _load("substances.json").get("common_wastes", [])
+    except FileNotFoundError:
+        return []
