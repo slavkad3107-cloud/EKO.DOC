@@ -7,10 +7,25 @@
 <style>
 :root{
   --bg:#f4f6f8; --panel:#fff; --line:#dde3ea; --text:#1c2733; --mut:#66788c;
-  --acc:#1d7a4f; --acc2:#e8f5ee; --err:#c0392b; --warn:#b07d10;
+  --acc:#1a6d42; --acc2:#e8f5ee; --err:#d32f2f; --warn:#b07d10;
   font-family:"Segoe UI",system-ui,sans-serif;
 }
-*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text)}
+*{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-size:15px}
+/* форма данных */
+.dsec{border:1px solid var(--line);border-radius:8px;padding:10px 12px;margin:8px 0}
+.dsec>h4{margin:0 0 8px;font-size:14px;color:var(--acc)}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px}
+.fld{display:flex;flex-direction:column;gap:2px}
+.fld label{font-size:12px;color:var(--mut)}
+.fld input,.fld select{border:1px solid var(--line);border-radius:6px;padding:7px 9px;font-size:15px}
+table.srctbl,table.dtbl{border-collapse:collapse;width:100%;font-size:13px;margin:4px 0}
+table.srctbl th,table.dtbl th{background:var(--acc2);color:var(--acc);padding:5px 6px;
+  text-align:left;font-weight:600;white-space:nowrap;cursor:help}
+table.srctbl td,table.dtbl td{border:1px solid var(--line);padding:2px}
+table.srctbl input,table.dtbl input,table.dtbl select{border:0;width:100%;min-width:56px;
+  padding:5px;font-size:13px;background:transparent}
+table.srctbl input:focus,table.dtbl input:focus{outline:2px solid var(--acc2);border-radius:4px}
+.delrow{color:var(--err);cursor:pointer;border:0;background:none;font-size:16px;padding:0 6px}
 header{display:flex;align-items:center;gap:14px;padding:10px 18px;
   background:#173d2b;color:#fff}
 header h1{font-size:18px;margin:0;font-weight:600}
@@ -126,14 +141,20 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 
   <div class="tab" id="tab-data">
     <div class="card">
-      <h2>Данные площадки (context.json) — проверьте и дозаполните</h2>
+      <h2>Данные площадки — проверьте и дозаполните</h2>
       <div class="row">
-        <button class="b" onclick="saveCtx()">Сохранить</button>
+        <button class="b" onclick="saveCtx()">💾 Сохранить</button>
         <button class="b sec" onclick="loadCtx()">Перечитать</button>
         <button class="b sec" onclick="openWs()">Открыть папку площадки</button>
         <span class="spin" id="sp-data">…</span><span id="data-msg" class="hint"></span>
       </div>
-      <textarea id="ctx" spellcheck="false"></textarea>
+      <div id="dataform"></div>
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;color:var(--mut)">Расширенно: все поля в формате JSON (для опытных)</summary>
+        <div class="hint">Правьте, только если знаете формат. После правки нажмите «Применить JSON».</div>
+        <textarea id="ctx" spellcheck="false" style="min-height:220px"></textarea>
+        <button class="b sec" onclick="applyRawJson()">Применить JSON</button>
+      </details>
     </div>
   </div>
 
@@ -169,18 +190,36 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 
   <div class="tab" id="tab-disp">
     <div class="card">
-      <h2>Расчёт рассеивания (МРР-2017) — свой расчёт без УПРЗА</h2>
-      <div class="hint">Источники с координатами x,y и веществом. Профиль —
-        по оси факела; Карта — суммарное поле максимальных концентраций
-        (перебор направлений и скоростей ветра) с изолинией ПДК.
-        Для госэкспертизы используйте аттестованную УПРЗА; выгрузка данных — ниже.</div>
-      <textarea id="dispsrc" style="min-height:200px"></textarea>
+      <h2>Расчёт рассеивания загрязнения воздуха (МРР-2017) — свой расчёт без УПРЗА</h2>
+      <div class="hint">Заполните источники выбросов (трубы). «Карта» — суммарное поле
+        максимальных концентраций с изолинией ПДК; «Профиль» — по оси факела.
+        Для госэкспертизы нужна аттестованная УПРЗА — данные можно выгрузить кнопкой ниже.</div>
+      <div style="overflow-x:auto">
+        <table class="srctbl" id="srctbl"><thead><tr>
+          <th title="Название источника">Источник</th>
+          <th title="Координата X устья на площадке, м">X, м</th>
+          <th title="Координата Y устья на площадке, м">Y, м</th>
+          <th title="Высота трубы, м">H, м</th>
+          <th title="Диаметр устья, м">D, м</th>
+          <th title="Скорость выхода газовоздушной смеси, м/с">w₀, м/с</th>
+          <th title="Температура газовоздушной смеси, °C">Tг, °C</th>
+          <th title="Температура воздуха (тёплый период), °C">Tв, °C</th>
+          <th title="Выброс вещества, грамм в секунду">M, г/с</th>
+          <th title="Коэффициент оседания: газы 1, пыль 2–3">F</th>
+          <th title="Загрязняющее вещество">Вещество</th>
+          <th title="Код вещества (перечень)">Код</th>
+          <th title="ПДК максимально-разовая, мг/м³">ПДКм.р.</th>
+          <th></th>
+        </tr></thead><tbody></tbody></table>
+      </div>
       <div class="row">
+        <button class="b sec" onclick="addSrcRow()">+ источник</button>
+        <button class="b" onclick="doMap()">🗺 Карта рассеивания</button>
         <button class="b sec" onclick="doDisp()">Профиль по оси</button>
-        <button class="b" onclick="doMap()">Карта рассеивания</button>
-        <button class="b sec" onclick="doUpraza()">Выгрузить для УПРЗА (Excel+JSON)</button>
+        <button class="b sec" onclick="doUpraza()">⬇ Выгрузить для УПРЗА (Excel+JSON)</button>
         <span class="spin" id="sp-disp">расчёт…</span>
       </div>
+      <div class="hint">Коэффициент A=160 (СЗФО/центр ЕТР) подставляется автоматически.</div>
       <div id="mapbox" style="margin-top:10px;overflow:auto"></div>
       <pre class="out" id="out-disp" style="display:none"></pre>
     </div>
@@ -447,29 +486,134 @@ async function doIntake(){
     let rep = j.report;
     if (SKIPPED.length) rep += "\n── Пропущено при загрузке ──\n  " + SKIPPED.join("\n  ");
     renderReport(rep);
-    $("filelist").textContent = `Готово: принято ${stored.length} файл(ов).`;
+    $("filelist").innerHTML = `✓ Принято ${stored.length} файл(ов). ` +
+      `Дальше: <a class="link" onclick="document.querySelector('button[data-t=&quot;data&quot;]').click()">` +
+      `проверьте «Данные»</a>, затем <a class="link" ` +
+      `onclick="document.querySelector('button[data-t=&quot;gen&quot;]').click()">«Генерация»</a>.`;
     $("files").value = ""; $("folder").value = "";
     loadCtx().catch(()=>{});
   }catch(e){ show("out-intake", "Ошибка: " + e.message); }
   $("btn-intake").disabled = false; spin("sp-intake", 0);
 }
 
-// ── данные ──
+// ── данные (форма вместо сырого JSON) ──
+let CTX = null;
+const esc = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
+  .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+const ORG_FLD = [["name","Полное наименование"],["short_name","Краткое наименование"],
+  ["inn","ИНН"],["kpp","КПП"],["ogrn","ОГРН"],["oktmo","ОКТМО"],
+  ["address","Юридический адрес"],["director_name","Руководитель (ФИО)"],
+  ["director_position","Должность"],["phone","Телефон"],["email","E-mail"]];
+
 async function loadCtx(){
   needSite();
   const j = await get("context", {org:ORG, site:SITE});
-  $("ctx").value = JSON.stringify(j.context, null, 2);
+  CTX = j.context;
   $("data-msg").textContent = j.path;
-  SITE_ADDR = (j.context.extra || {}).site_address || "";
+  SITE_ADDR = (CTX.extra || {}).site_address || "";
+  $("ctx").value = JSON.stringify(CTX, null, 2);
+  renderDataForm();
+}
+function tinput(val, path, ph, num){
+  return `<input value="${esc(val)}" data-path="${path}" `+
+    `${num?'inputmode="decimal" ':''}placeholder="${ph||''}">`;
+}
+function renderDataForm(){
+  const o = CTX.organization || {};
+  const per = CTX.period || {};
+  let h = '<div class="dsec"><h4>Реквизиты организации</h4><div class="fgrid">';
+  for (const [k,label] of ORG_FLD)
+    h += `<div class="fld"><label>${label}</label>${tinput(o[k],'organization.'+k)}</div>`;
+  h += '</div></div>';
+  // период
+  h += '<div class="dsec"><h4>Отчётный период</h4><div class="fgrid">'+
+    `<div class="fld"><label>Год</label>${tinput(per.year,'period.year','напр. 2025',true)}</div>`+
+    `<div class="fld"><label>Квартал (пусто = год)</label>`+
+    `<select data-path="period.quarter"><option value="">год</option>`+
+    [1,2,3,4].map(q=>`<option value="${q}"${per.quarter==q?' selected':''}>${q} кв.</option>`).join('')+
+    `</select></div></div></div>`;
+  // объекты НВОС
+  h += tableSection("Объекты НВОС", "objects", CTX.objects||[],
+    [["code","Код НВОС"],["name","Наименование"],["category","Категория"],["address","Адрес"]]);
+  // выбросы/сбросы
+  h += tableSection("Выбросы и сбросы", "pollutants", CTX.pollutants||[],
+    [["name","Вещество"],["code","Код"],["medium","Среда","sel"],
+     ["mass_norm","В пределах норм., т",,"num"],["mass_limit","В пределах лимита, т",,"num"],
+     ["mass_over","Сверх лимита, т",,"num"]]);
+  // отходы
+  h += tableSection("Отходы", "wastes", CTX.wastes||[],
+    [["fkko_code","ФККО"],["name","Наименование"],["hazard_class","Класс",,"num"],
+     ["generated","Образовано, т",,"num"],["transferred","Передано, т",,"num"],
+     ["placed_norm","Размещено (лимит), т",,"num"],["placed_over","Размещено (сверх), т",,"num"]]);
+  $("dataform").innerHTML = h;
+}
+function tableSection(title, key, rows, cols){
+  let h = `<div class="dsec"><h4>${title}</h4><div style="overflow-x:auto">`+
+    `<table class="dtbl" data-key="${key}"><thead><tr>`+
+    cols.map(c=>`<th>${c[1]}</th>`).join('')+'<th></th></tr></thead><tbody>';
+  rows.forEach((r,ri)=>{ h += rowHtml(key, r, cols, ri); });
+  h += `</tbody></table></div>`+
+    `<button class="b sec" style="margin-top:6px" onclick="addRow('${key}')">+ строка</button></div>`;
+  return h;
+}
+function rowHtml(key, r, cols, ri){
+  let h = '<tr>';
+  for (const c of cols){
+    const [f,label,typ] = c;
+    if (typ==="sel"){
+      h += `<td><select data-path="${key}[${ri}].${f}">`+
+        [["air","воздух"],["water","вода"]].map(([v,t])=>
+          `<option value="${v}"${r[f]===v?' selected':''}>${t}</option>`).join('')+
+        `</select></td>`;
+    } else {
+      h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}"></td>`;
+    }
+  }
+  h += `<td><button class="delrow" title="удалить" onclick="delRow(this)">✕</button></td></tr>`;
+  return h;
+}
+const DEFROW = {objects:{}, pollutants:{medium:"air"}, wastes:{hazard_class:5}};
+function addRow(key){
+  collectDataForm();
+  (CTX[key] = CTX[key]||[]).push({...(DEFROW[key]||{})});
+  renderDataForm();
+}
+function delRow(btn){
+  collectDataForm();
+  const tr = btn.closest("tr"), tbody = tr.parentNode, key = tr.closest("table").dataset.key;
+  const idx = [...tbody.children].indexOf(tr);
+  CTX[key].splice(idx,1); renderDataForm();
+}
+function collectDataForm(){
+  // организация и период
+  $("dataform").querySelectorAll("[data-path]").forEach(el=>{
+    const p = el.dataset.path;
+    const m = p.match(/^(\w+)\[(\d+)\]\.(\w+)$/);
+    if (m){
+      const [,key,i,f] = m;
+      (CTX[key] = CTX[key]||[])[+i] = CTX[key][+i]||{};
+      CTX[key][+i][f] = el.value;
+    } else {
+      const [sec,f] = p.split(".");
+      CTX[sec] = CTX[sec]||{};
+      CTX[sec][f] = el.value;
+    }
+  });
 }
 async function saveCtx(){
   needSite(); spin("sp-data",1);
   try{
-    const context = JSON.parse($("ctx").value);
-    await post("context_save", {org:ORG, site:SITE, context});
+    collectDataForm();
+    await post("context_save", {org:ORG, site:SITE, context:CTX});
     $("data-msg").textContent = "Сохранено ✓";
+    $("ctx").value = JSON.stringify(CTX, null, 2);
   }catch(e){ $("data-msg").textContent = "Ошибка: " + e.message; }
   spin("sp-data",0);
+}
+function applyRawJson(){
+  try{ CTX = JSON.parse($("ctx").value); renderDataForm();
+    $("data-msg").textContent = "JSON применён — не забудьте «Сохранить»"; }
+  catch(e){ alert("Ошибка в JSON: " + e.message); }
 }
 async function openWs(){
   needSite();
@@ -552,15 +696,36 @@ async function downloadIcs(){
   }catch(e){ alert(e.message); }
 }
 
-// ── рассеивание ──
-$("dispsrc").value = JSON.stringify({
-  sources:[
-    {name:"Котельная", x:0, y:0, H:18, D:0.6, w0:8.5, Tg:140, Tv:25.2, M:0.35,
-     F:1, A:160, substance:"NO2", code:"0301", pdk:0.2},
-    {name:"ДГУ", x:120, y:40, H:6, D:0.2, w0:18, Tg:400, Tv:25.2, M:0.5,
-     F:1, A:160, substance:"NO2", code:"0301", pdk:0.2}
-  ]}, null, 2);
-function dispData(){ return JSON.parse($("dispsrc").value); }
+// ── рассеивание (таблица источников вместо JSON) ──
+const SRC_COLS = ["name","x","y","H","D","w0","Tg","Tv","M","F","substance","code","pdk"];
+const SRC_DEF = {name:"Источник", x:0, y:0, H:10, D:0.5, w0:5, Tg:120, Tv:25.2,
+                 M:0.1, F:1, substance:"", code:"", pdk:0};
+function addSrcRow(src){
+  const s = {...SRC_DEF, ...(src||{})};
+  const tb = $("srctbl").querySelector("tbody");
+  const tr = document.createElement("tr");
+  tr.innerHTML = SRC_COLS.map(c =>
+    `<td><input data-c="${c}" value="${esc(s[c])}"></td>`).join('') +
+    `<td><button class="delrow" title="удалить" onclick="this.closest('tr').remove()">✕</button></td>`;
+  tb.appendChild(tr);
+}
+function dispData(){
+  const rows = [...$("srctbl").querySelectorAll("tbody tr")].map(tr=>{
+    const s = {A:160};
+    tr.querySelectorAll("input[data-c]").forEach(inp=>{
+      const c = inp.dataset.c, v = inp.value.trim();
+      s[c] = ["name","substance","code"].includes(c) ? v :
+             (v==="" ? 0 : parseFloat(v.replace(",",".")));
+    });
+    return s;
+  }).filter(s=>s.name);
+  return {sources: rows};
+}
+// стартовый пример
+addSrcRow({name:"Котельная", x:0, y:0, H:18, D:0.6, w0:8.5, Tg:140, M:0.35,
+           substance:"NO2", code:"0301", pdk:0.2});
+addSrcRow({name:"ДГУ", x:120, y:40, H:6, D:0.2, w0:18, Tg:400, M:0.5,
+           substance:"NO2", code:"0301", pdk:0.2});
 async function doDisp(){
   spin("sp-disp",1); $("mapbox").innerHTML="";
   try{
