@@ -11,14 +11,24 @@ def _ctx():
     return ctx
 
 
+def _docx_text(path):
+    """Весь текст docx: абзацы + ячейки таблиц."""
+    from docx import Document
+    doc = Document(str(path))
+    parts = [p.text for p in doc.paragraphs]
+    for t in doc.tables:
+        for row in t.rows:
+            parts += [c.text for c in row.cells]
+    return "\n".join(parts)
+
+
 def test_nmu_generates(tmp_path):
     ctx = _ctx()
     ctx.extra["nmu"] = {"measures": [
         {"mode": 1, "text": "Усилить контроль ГОУ", "reduction_pct": 15}]}
     p = nmu.generate(ctx, tmp_path / "nmu.docx")
     assert p.exists() and p.stat().st_size > 1000
-    from docx import Document
-    text = "\n".join(par.text for par in Document(str(p)).paragraphs)
+    text = _docx_text(p)
     assert "НМУ" in text and "Усилить контроль ГОУ" in text
 
 
