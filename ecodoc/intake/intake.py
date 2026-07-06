@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import tempfile
 from datetime import date
 from pathlib import Path
 
@@ -52,22 +53,163 @@ def _register(att_dir: Path, src: Path) -> tuple[Path, bool]:
     return dest, True
 
 
+_ARCHIVE_EXTS = {".zip", ".rar", ".7z"}
+# типы, которые умеет анализировать text_extract (для отбора из архивов)
+_DOC_EXTS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".jpg", ".jpeg",
+             ".png", ".tif", ".tiff", ".txt", ".xml", ".rtf"}
+_MAX_INNER = 100 * 1024 * 1024        # предел одного файла внутри архива
+_MAX_TOTAL = 2 * 1024 * 1024 * 1024   # предел суммарной распаковки (анти-zip-бомба)
+_MAX_FILES = 5000                     # предел числа извлечённых файлов
+_MAX_DEPTH = 2                        # глубина вложенных архивов
+
+
+def _zip_name(info) -> str:
+    """Имя файла из zip с починкой кириллицы (Windows-архивы пишут cp866)."""
+    name = info.filename
+    if not (info.flag_bits & 0x800):        # нет флага UTF-8
+        try:
+            name = name.encode("cp437").decode("cp866")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+    return name
+
+
+def _seven_zip() -> str | None:
+    for cand in (shutil.which("7z"), r"C:\Program Files\7-Zip\7z.exe",
+                 r"C:\Program Files (x86)\7-Zip\7z.exe"):
+        if cand and Path(cand).exists():
+            return cand
+    return None
+
+
+class _Budget:
+    """Общий бюджет распаковки на одну операцию store (анти-zip-бомба)."""
+    def __init__(self):
+        self.bytes = 0
+        self.files = 0
+        self.seq = 0
+
+    def allow(self, size: int) -> bool:
+        if self.bytes + size > _MAX_TOTAL or self.files >= _MAX_FILES:
+            return False
+        self.bytes += size
+        self.files += 1
+        return True
+
+    def unique(self, tmpdir: Path, stem: str, base: str) -> Path:
+        """Уникальное имя в tmpdir (одинаковые basename не затирают друг друга),
+        гарантированно внутри tmpdir (защита от path traversal)."""
+        self.seq += 1
+        safe = Path(base).name or f"file_{self.seq}"
+        target = (tmpdir / f"{stem}__{self.seq}__{safe}").resolve()
+        if not str(target).startswith(str(tmpdir.resolve())):
+            return tmpdir / f"{stem}__{self.seq}__file"   # перестраховка
+        return target
+
+
+def _extract_archive(src: Path, tmpdir: Path, log: list[str],
+                     budget: "_Budget", depth: int = 0) -> list[Path]:
+    """Достать поддерживаемые документы из архива. Вложенные — до _MAX_DEPTH."""
+    out: list[Path] = []
+    skipped = 0
+    if depth >= _MAX_DEPTH:
+        log.append(f"  ⚠ {src.name}: слишком глубокая вложенность архивов — пропущен")
+        return out
+    if src.suffix.lower() == ".zip":
+        import zipfile
+        try:
+            zf = zipfile.ZipFile(src)
+        except (zipfile.BadZipFile, OSError):
+            log.append(f"  ✖ {src.name}: повреждённый zip")
+            return out
+        with zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                base = Path(_zip_name(info).replace("\\", "/")).name
+                ext = Path(base).suffix.lower()
+                if ext not in _ARCHIVE_EXTS and ext not in _DOC_EXTS:
+                    skipped += 1
+                    continue
+                if info.file_size > _MAX_INNER or not budget.allow(info.file_size):
+                    skipped += 1
+                    continue
+                target = budget.unique(tmpdir, src.stem, base)
+                try:
+                    target.write_bytes(zf.read(info))
+                except (RuntimeError, zipfile.BadZipFile, OSError):
+                    skipped += 1                # зашифровано/битая запись
+                    continue
+                if ext in _ARCHIVE_EXTS:
+                    out += _extract_archive(target, tmpdir, log, budget, depth + 1)
+                else:
+                    out.append(target)
+    else:  # .rar / .7z — через установленный 7-Zip
+        seven = _seven_zip()
+        if not seven:
+            log.append(f"  ⚠ {src.name}: для rar/7z установите 7-Zip "
+                       f"(https://7-zip.org) — архив пропущен")
+            return out
+        import subprocess
+        ex_dir = tmpdir / f"_{src.stem}_{budget.seq}"
+        ex_dir.mkdir(parents=True, exist_ok=True)
+        budget.seq += 1
+        try:
+            subprocess.run([seven, "x", "-y", "-snl-", f"-o{ex_dir}", str(src)],
+                           capture_output=True, timeout=600)
+        except (subprocess.SubprocessError, OSError) as e:
+            log.append(f"  ✖ {src.name}: 7-Zip не смог распаковать ({e})")
+            # ниже всё равно заберём то, что успело распаковаться
+        for p in sorted(ex_dir.rglob("*")):
+            if not p.is_file() or p.is_symlink():
+                continue
+            ext = p.suffix.lower()
+            if ext not in _ARCHIVE_EXTS and ext not in _DOC_EXTS:
+                skipped += 1
+                continue
+            size = p.stat().st_size
+            if size > _MAX_INNER or not budget.allow(size):
+                skipped += 1
+                continue
+            if ext in _ARCHIVE_EXTS:
+                out += _extract_archive(p, tmpdir, log, budget, depth + 1)
+            else:
+                out.append(p)
+    if budget.files >= _MAX_FILES or budget.bytes >= _MAX_TOTAL:
+        log.append(f"  ⚠ достигнут предел распаковки "
+                   f"({_MAX_FILES} файлов / {_MAX_TOTAL // (1024*1024)} МБ) — остальное в архивах пропущено")
+    log.append(f"  📦 {src.name}: извлечено документов {len(out)}"
+               + (f", пропущено {skipped}" if skipped else ""))
+    return out
+
+
 def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
     """Сохранить файлы в attachments площадки (без анализа).
 
-    Возвращает (имена сохранённых файлов, строки лога). Позволяет грузить
-    большие папки партиями, а анализ запускать один раз в конце.
+    Архивы (zip; rar/7z при наличии 7-Zip) распаковываются, документы из
+    них принимаются как обычные файлы с префиксом «имя-архива__».
+    Возвращает (имена сохранённых файлов, строки лога).
     """
     att = workspace.site_dir(org, site) / "attachments"
     names, lines = [], []
-    for f in files:
-        src = Path(f)
-        if not src.exists():
-            lines.append(f"✖ нет файла: {src}")
-            continue
-        dest, is_new = _register(att, src)
-        lines.append(f"{'＋ принят' if is_new else '= уже был'}: {dest.name}")
-        names.append(dest.name)
+    tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_arc_"))
+    budget = _Budget()
+    try:
+        queue: list[Path] = []
+        for f in files:
+            src = Path(f)
+            if not src.exists():
+                lines.append(f"✖ нет файла: {src}")
+            elif src.suffix.lower() in _ARCHIVE_EXTS:
+                queue += _extract_archive(src, tmpdir, lines, budget)
+            else:
+                queue.append(src)
+        for src in queue:
+            dest, is_new = _register(att, src)
+            lines.append(f"{'＋ принят' if is_new else '= уже был'}: {dest.name}")
+            names.append(dest.name)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
     return names, lines
 
 

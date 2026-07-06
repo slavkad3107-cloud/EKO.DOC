@@ -107,7 +107,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 
   <div class="tab on" id="tab-intake">
     <div class="card">
-      <h2>Загрузить документы (справки, акты, протоколы, договоры — pdf/doc/jpg/xml)</h2>
+      <h2>Загрузить документы (pdf/doc/xls/jpg/xml и архивы zip/rar/7z — распакуются)</h2>
       <div class="row">
         <label class="b sec" style="display:inline-block">Файлы…
           <input type="file" id="files" multiple style="display:none"></label>
@@ -354,7 +354,9 @@ async function addSite(){
 // ── приём ──
 const EXT_OK = ["pdf","doc","docx","xls","xlsx","jpg","jpeg","png","tif",
                 "tiff","txt","xml","rtf"];
-const MAX_MB = 50;   // на файл; крупнее — пропускаем с пометкой
+const EXT_ARCHIVE = ["zip","rar","7z"];   // распакуются на сервере
+const MAX_MB = 50;         // документ; крупнее — пропускаем
+const MAX_ARC_MB = 300;    // архив (внутри 512 МБ лимита запроса с base64)
 let SKIPPED = [];
 function pickedFiles(){
   const all = [...$("files").files, ...$("folder").files];
@@ -362,8 +364,10 @@ function pickedFiles(){
   const ok = [];
   for (const f of all){
     const ext = f.name.split(".").pop().toLowerCase();
-    if (!EXT_OK.includes(ext)) SKIPPED.push(f.name + " (тип не поддерживается)");
-    else if (f.size > MAX_MB*1024*1024) SKIPPED.push(f.name + ` (больше ${MAX_MB} МБ)`);
+    const isArc = EXT_ARCHIVE.includes(ext);
+    const lim = isArc ? MAX_ARC_MB : MAX_MB;
+    if (!EXT_OK.includes(ext) && !isArc) SKIPPED.push(f.name + " (тип не поддерживается)");
+    else if (f.size > lim*1024*1024) SKIPPED.push(f.name + ` (больше ${lim} МБ)`);
     else ok.push(f);
   }
   return ok;
