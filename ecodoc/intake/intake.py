@@ -30,27 +30,48 @@ def _sha1(path: Path) -> str:
     return h.hexdigest()
 
 
-def _register(att_dir: Path, src: Path) -> tuple[Path, bool]:
-    """Скопировать файл в attachments/, вести реестр. False — уже был."""
-    att_dir.mkdir(parents=True, exist_ok=True)
+def _load_registry(att_dir: Path) -> tuple[list, dict, set]:
+    """Прочитать реестр attachments один раз: (список, sha1→файл, имена)."""
     reg_path = att_dir / "intake.json"
-    reg = json.loads(reg_path.read_text(encoding="utf-8")) if reg_path.exists() else []
+    reg = []
+    if reg_path.exists():
+        try:
+            reg = json.loads(reg_path.read_text(encoding="utf-8-sig"))
+        except (json.JSONDecodeError, OSError):
+            reg = []
+    by_sha = {row["sha1"]: row["file"] for row in reg if "sha1" in row}
+    names = {row["file"] for row in reg if "file" in row}
+    return reg, by_sha, names
+
+
+def _save_registry(att_dir: Path, reg: list) -> None:
+    reg_path = att_dir / "intake.json"
+    tmp = reg_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(reg, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(reg_path)          # атомарная замена — реестр не бьётся при сбое
+
+
+def _register_one(att_dir: Path, src: Path, by_sha: dict, names: set,
+                  reg: list, today: str) -> tuple[str, bool]:
+    """Зарегистрировать один файл, обновляя переданные индексы в памяти.
+
+    Реестр НЕ пишется на диск (это делает вызывающий один раз на батч —
+    иначе на 10000 файлов было бы O(n²) перезаписей).
+    """
     digest = _sha1(src)
-    for row in reg:
-        if row["sha1"] == digest:
-            return att_dir / row["file"], False
-    dest = att_dir / src.name
-    n = 1
-    while dest.exists() and _sha1(dest) != digest:
-        dest = att_dir / f"{src.stem}_{n}{src.suffix}"
-        n += 1
-    if not dest.exists():
-        shutil.copy2(src, dest)
-    reg.append({"file": dest.name, "sha1": digest,
-                "received": date.today().isoformat()})
-    reg_path.write_text(json.dumps(reg, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
-    return dest, True
+    if digest in by_sha:
+        return by_sha[digest], False           # такой файл уже принят
+    name = src.name
+    if name in names:                          # то же имя, другое содержимое
+        n = 1
+        while f"{src.stem}_{n}{src.suffix}" in names:
+            n += 1
+        name = f"{src.stem}_{n}{src.suffix}"
+    shutil.copy2(src, att_dir / name)
+    by_sha[digest] = name
+    names.add(name)
+    reg.append({"file": name, "sha1": digest, "received": today})
+    return name, True
 
 
 _ARCHIVE_EXTS = {".zip", ".rar", ".7z"}
@@ -191,9 +212,12 @@ def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
     Возвращает (имена сохранённых файлов, строки лога).
     """
     att = workspace.site_dir(org, site) / "attachments"
+    att.mkdir(parents=True, exist_ok=True)
     names, lines = [], []
     tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_arc_"))
     budget = _Budget()
+    reg, by_sha, reg_names = _load_registry(att)   # реестр — один раз на батч
+    today = date.today().isoformat()
     try:
         queue: list[Path] = []
         for f in files:
@@ -209,8 +233,13 @@ def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
         for src in queue:
             if src.name.startswith("~$"):
                 continue
-            dest, is_new = _register(att, src)
-            names.append(dest.name)
+            try:
+                name, _is_new = _register_one(att, src, by_sha, reg_names,
+                                              reg, today)
+                names.append(name)
+            except OSError as e:
+                lines.append(f"✖ не сохранён {src.name}: {e}")
+        _save_registry(att, reg)                   # запись реестра — один раз
         lines.append(f"Принято файлов: {len(names)}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

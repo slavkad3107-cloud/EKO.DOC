@@ -1,6 +1,6 @@
 # ЭКО.DOC — продукт «ЭКО Проект»
 
-**Версия: 0.14.1** · [github.com/slavkad3107-cloud/EKO.DOC](https://github.com/slavkad3107-cloud/EKO.DOC)
+**Версия: 0.15.0** · [github.com/slavkad3107-cloud/EKO.DOC](https://github.com/slavkad3107-cloud/EKO.DOC)
 · zip-архив каждой версии собирается `release.ps1` (номер версии — в имени файла)
 
 Генератор экологических документов с подключаемыми модулями. Каждая форма
