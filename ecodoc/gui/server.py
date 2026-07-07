@@ -107,6 +107,16 @@ def api_site_add(params, body):
             "site": workspace.slug(name)}
 
 
+def api_site_del(params, body):
+    dest = workspace.delete_site(body["org"], body["site"])
+    return {"ok": True, "trash": str(dest)}
+
+
+def api_org_del(params, body):
+    dest = workspace.delete_org(body["org"])
+    return {"ok": True, "trash": str(dest)}
+
+
 def api_context_get(params, body):
     p = _ctx_path(params["org"], params["site"])
     return {"context": json.loads(p.read_text(encoding="utf-8-sig")),
@@ -438,7 +448,8 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "context": api_context_get, "calendar": api_calendar,
               "reference": api_reference}
 POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
-               "site_add": api_site_add,
+               "site_add": api_site_add, "site_del": api_site_del,
+               "org_del": api_org_del,
                "context_save": api_context_save, "intake": api_intake,
                "intake_upload": api_intake_upload, "intake_run": api_intake_run,
                "validate": api_validate, "validate_all": api_validate_all,

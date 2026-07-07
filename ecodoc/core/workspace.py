@@ -126,6 +126,41 @@ def save_context(org: str, site: str, ctx: ReportContext) -> Path:
     return serialize.to_json(ctx, site_dir(org, site) / "context.json")
 
 
+def _trash_dir() -> Path:
+    d = root() / ".корзина"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _to_trash(src: Path, label: str) -> Path:
+    """Переместить папку в корзину рабочего пространства (не удалять насовсем)."""
+    import shutil
+    from datetime import datetime
+
+    if not src.exists():
+        raise FileNotFoundError(src)
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    dest = _trash_dir() / f"{stamp}__{label}"
+    shutil.move(str(src), str(dest))
+    return dest
+
+
+def delete_site(org: str, site: str) -> Path:
+    """Удалить площадку (перенос в корзину). Возвращает путь в корзине."""
+    d = site_dir(org, site)
+    if not d.exists():
+        raise FileNotFoundError(f"Нет площадки: {org}/{site}")
+    return _to_trash(d, f"{slug(org)}__{slug(site)}")
+
+
+def delete_org(org: str) -> Path:
+    """Удалить организацию со всеми площадками (перенос в корзину)."""
+    d = org_dir(org)
+    if not d.exists():
+        raise FileNotFoundError(f"Нет организации: {org}")
+    return _to_trash(d, slug(org))
+
+
 def list_tree() -> dict[str, list[str]]:
     """{организация: [площадки]} по факту на диске."""
     out: dict[str, list[str]] = {}
