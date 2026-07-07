@@ -79,5 +79,6 @@ if (-not (Get-Command tesseract -ErrorAction SilentlyContinue)) {
 
 Write-Host ""
 Write-Host "=== Готово ===" -ForegroundColor Green
-Write-Host "Откройте новую консоль (cmd) и выполните:  ecodoc list"
+Write-Host "Графический интерфейс: двойной щелчок по файлу  ЭКО.DOC.bat"
+Write-Host "Или в консоли:  ecodoc gui   (список форм:  ecodoc list)"
 Write-Host "Быстрый старт: README.md (org add -> site add -> intake -> generate)"
