@@ -748,13 +748,20 @@ async function detectOktmo(){
   collectDataForm();
   const addr = (CTX.organization||{}).address || SITE_ADDR;
   if(!addr){ $("oktmo-msg").textContent = "Сначала заполните адрес"; return; }
-  $("oktmo-msg").textContent = "запрос…";
+  $("oktmo-msg").textContent = "запрос в DaData…";
   try{
-    const j = await post("oktmo", {address: addr}, 0);
+    const j = await post("oktmo", {address: addr}, 30000);
     CTX.organization.oktmo = j.result.oktmo;
     renderDataForm();
     $("oktmo-msg").textContent = "ОКТМО: " + j.result.oktmo + " ("+ j.result.value +")";
-  }catch(e){ $("oktmo-msg").textContent = "Ошибка: " + e.message; }
+  }catch(e){
+    const m = /токен|dadata|token/i.test(e.message)
+      ? "Определение ОКТМО по адресу требует бесплатный токен DaData "
+        + "(dadata.ru → регистрация → API-ключ), переменная окружения DADATA_TOKEN. "
+        + "Либо впишите ОКТМО вручную."
+      : "Не удалось определить ОКТМО: " + e.message + ". Впишите ОКТМО вручную.";
+    $("oktmo-msg").textContent = m;
+  }
 }
 async function openWs(){
   needSite();

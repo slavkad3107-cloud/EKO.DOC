@@ -82,16 +82,50 @@ def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc) -> None:
             ctx.provenance.setdefault("objects", []).append(
                 {"code": code, "src": doc.path.name})
 
-    # коды ФККО -> черновые позиции отходов (массы заполнит человек)
+    # коды ФККО -> черновые позиции отходов (массы заполнит человек).
+    # Строгая проверка структуры отсекает шум (ОКТМО, телефоны, номера строк).
+    names = _fkko_names()
     for raw in RE_FKKO.findall(t):
         digits = re.sub(r"\s", "", raw)
-        if len(digits) != 11:
+        if not _fkko_valid(digits):
             continue
-        hazard = int(digits[-1]) if digits[-1] in "12345" else 5
-        if not any(w.fkko_code == digits for w in ctx.wastes):
-            ctx.wastes.append(WasteFlow(fkko_code=digits, hazard_class=hazard))
-            ctx.provenance.setdefault("wastes", []).append(
-                {"fkko": digits, "src": doc.path.name})
+        if any(w.fkko_code == digits for w in ctx.wastes):
+            continue
+        w = WasteFlow(fkko_code=digits, hazard_class=int(digits[-1]))
+        w.name = names.get(digits, "")          # имя из справочника, если есть
+        ctx.wastes.append(w)
+        ctx.provenance.setdefault("wastes", []).append(
+            {"fkko": digits, "src": doc.path.name})
+
+
+def _fkko_valid(digits: str) -> bool:
+    """Похоже ли 11-значное число на реальный код ФККО (а не ОКТМО/шум).
+
+    ФККО: 11 цифр, первая — блок (1–9), последняя — класс опасности.
+    В отчётах о движении отходов участвуют только классы 1–5 (0 — групповые
+    заголовки каталога, не позиции). Отсекаем «круглые» коды с длинными
+    хвостами нулей и коды с чрезмерным повтором одной цифры (шум OCR/таблиц).
+    """
+    if len(digits) != 11 or not digits.isdigit():
+        return False
+    if digits[0] == "0":                     # реальные ФККО начинаются с 1–9
+        return False
+    if digits[-1] not in "12345":            # класс опасности 1–5
+        return False
+    if digits.count("0") >= 6:               # групповой заголовок / круглый шум
+        return False
+    if max(digits.count(d) for d in set(digits)) >= 7:  # почти одна цифра
+        return False
+    return True
+
+
+def _fkko_names() -> dict:
+    """Код ФККО → наименование (из справочника частых отходов)."""
+    try:
+        from ecodoc.core.refdata import common_wastes
+        return {w["fkko"]: w.get("name", "") for w in common_wastes()}
+    except Exception:
+        return {}
 
 
 def summary(ctx: ReportContext) -> str:
