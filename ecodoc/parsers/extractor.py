@@ -29,12 +29,15 @@ RE_NVOS = re.compile(r"\b(\d{2}-\d{4}-\d{6}-[А-ЯA-Z])\b")
 # ФККО: 11 знаков (последний — класс опасности 0-5), часто с пробелами
 RE_FKKO = re.compile(r"\b(\d[\d\s]{9,15}\d)\b")
 RE_CATEGORY = re.compile(r"категори[ияю][\s,]*?(I{1,3}V?|IV|[1-4])\s*категори", re.IGNORECASE)
-RE_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+RE_EMAIL = re.compile(r"\b([\w.+-]+@[\w-]+\.[\w.-]+)\b")
 
 
 def _first(rx: re.Pattern, text: str):
     m = rx.search(text)
-    return m.group(1) if m else ""
+    if not m:
+        return ""
+    # группа 1, если она есть; иначе всё совпадение (страховка от regex без группы)
+    return m.group(1) if m.re.groups >= 1 else m.group(0)
 
 
 def parse_files(paths: list[str | Path], ocr: bool = True) -> ReportContext:

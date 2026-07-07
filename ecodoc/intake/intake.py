@@ -261,12 +261,22 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
             docs.append(extract(p, ocr=ocr))
         except Exception as e:
             lines.append(f"✖ не читается {p.name}: {e}")
+    parse_errors = 0
     for doc in docs:
-        extractor._fill_from_doc(ctx, doc)
+        try:
+            extractor._fill_from_doc(ctx, doc)   # сбой на одном файле
+        except Exception as e:                   # не должен рушить весь пакет
+            parse_errors += 1
+            lines.append(f"✖ ошибка разбора {doc.path.name}: {e}")
+    if parse_errors:
+        lines.append(f"(разбор пропущен для {parse_errors} файл(ов) из-за ошибок)")
     if docs:
         from ecodoc.intake import classify
         lines.append("")
-        lines.append(classify.render(docs))
+        try:
+            lines.append(classify.render(docs))
+        except Exception as e:
+            lines.append(f"✖ распределение не выполнено: {e}")
     lines.append("")
     lines.append(extractor.summary(ctx))
 
