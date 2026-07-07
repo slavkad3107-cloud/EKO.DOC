@@ -65,16 +65,77 @@ Write-Host ""
 Write-Host "=== Поиск ИИ на этой машине ===" -ForegroundColor Cyan
 & $venvPy -m ecodoc ai setup
 
-# 6. Подсказки по необязательным компонентам
+# 6. Автоустановка внешних компонентов (Tesseract-OCR, LibreOffice) через winget
 Write-Host ""
-Write-Host "=== Дополнительно (по желанию) ===" -ForegroundColor Cyan
-if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
-    Write-Host "- Ollama не найдена. Для локального ИИ-анализа: https://ollama.com"
-    Write-Host "  затем:  ollama pull qwen2.5:7b   и повторите  ecodoc ai setup"
+Write-Host "=== Дополнительные компоненты ===" -ForegroundColor Cyan
+
+function Find-Tesseract {
+    $c = (Get-Command tesseract -ErrorAction SilentlyContinue).Source
+    if ($c) { return $c }
+    foreach ($p in @("$env:ProgramFiles\Tesseract-OCR\tesseract.exe",
+                     "${env:ProgramFiles(x86)}\Tesseract-OCR\tesseract.exe",
+                     "$env:LOCALAPPDATA\Programs\Tesseract-OCR\tesseract.exe")) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
 }
-if (-not (Get-Command tesseract -ErrorAction SilentlyContinue)) {
-    Write-Host "- Tesseract-OCR не найден: сканы/jpg распознаваться не будут."
-    Write-Host "  https://github.com/UB-Mannheim/tesseract/wiki (+ пакет 'rus')"
+
+$winget = (Get-Command winget -ErrorAction SilentlyContinue) -ne $null
+
+# --- Tesseract-OCR (распознавание сканов и фото) ---
+$tess = Find-Tesseract
+if (-not $tess) {
+    if ($winget) {
+        Write-Host "Ставлю Tesseract-OCR (winget)..."
+        winget install --id UB-Mannheim.TesseractOCR -e --silent `
+            --accept-source-agreements --accept-package-agreements
+        $tess = Find-Tesseract
+    } else {
+        Write-Host "- winget не найден. Tesseract-OCR поставьте вручную:" -ForegroundColor Yellow
+        Write-Host "  https://github.com/UB-Mannheim/tesseract/wiki"
+    }
+}
+if ($tess) {
+    Write-Host "Tesseract: $tess"
+    # Русский язык. Папка Program Files требует прав админа, поэтому держим
+    # языки в пользовательской папке (приложение её находит по TESSDATA_PREFIX).
+    $sysTd = Join-Path (Split-Path $tess -Parent) "tessdata"
+    $userTd = "$env:LOCALAPPDATA\EcoDoc\tessdata"
+    New-Item -ItemType Directory -Force $userTd | Out-Null
+    foreach ($l in @("eng.traineddata", "osd.traineddata")) {
+        if ((Test-Path (Join-Path $sysTd $l)) -and -not (Test-Path (Join-Path $userTd $l))) {
+            Copy-Item (Join-Path $sysTd $l) (Join-Path $userTd $l) -Force
+        }
+    }
+    if (-not (Test-Path "$userTd\rus.traineddata")) {
+        Write-Host "Догружаю русский языковой пакет (~19 МБ)..."
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            Invoke-WebRequest -UseBasicParsing `
+                "https://github.com/tesseract-ocr/tessdata/raw/main/rus.traineddata" `
+                -OutFile "$userTd\rus.traineddata"
+            Write-Host "  Русский язык установлен."
+        } catch {
+            Write-Host "  Не удалось скачать rus.traineddata — проверьте интернет." -ForegroundColor Yellow
+        }
+    }
+}
+
+# --- LibreOffice (запасное чтение старых .doc/.rtf) ---
+$soffice = (Get-Command soffice -ErrorAction SilentlyContinue).Source
+if (-not $soffice) { $soffice = "$env:ProgramFiles\LibreOffice\program\soffice.exe" }
+if (-not (Test-Path $soffice)) {
+    if ($winget) {
+        Write-Host "Ставлю LibreOffice (winget, для старых .doc)..."
+        winget install --id TheDocumentFoundation.LibreOffice -e --silent `
+            --accept-source-agreements --accept-package-agreements
+    } else {
+        Write-Host "- LibreOffice не установлен (нужен для части старых .doc)." -ForegroundColor Yellow
+    }
+}
+
+if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+    Write-Host "- Ollama (локальный ИИ) — по желанию: https://ollama.com, затем ollama pull qwen2.5:7b"
 }
 
 Write-Host ""

@@ -186,6 +186,12 @@ def _soffice_to_txt(src: Path) -> str | None:
 
     soffice = shutil.which("soffice") or shutil.which("soffice.exe")
     if not soffice:
+        for c in (r"C:\Program Files\LibreOffice\program\soffice.exe",
+                  r"C:\Program Files (x86)\LibreOffice\program\soffice.exe"):
+            if Path(c).exists():
+                soffice = c
+                break
+    if not soffice:
         return None
     outdir = Path(tempfile.mkdtemp(prefix="ed_txt_"))
     try:
@@ -210,10 +216,61 @@ def _extract_image(p: Path) -> ExtractedDoc:
     return ExtractedDoc(p, text, [text], "ocr")
 
 
-def _ocr_image(img) -> str:
-    import pytesseract
+_TESS_READY = None
 
-    return pytesseract.image_to_string(img, lang="rus+eng")
+
+def _setup_tesseract():
+    """Найти tesseract.exe где угодно и настроить pytesseract.
+
+    Возвращает 'rus+eng' | 'eng' | None (не найден). Кэшируется.
+    """
+    global _TESS_READY
+    if _TESS_READY is not None:
+        return _TESS_READY
+    import os
+    import shutil
+
+    try:
+        import pytesseract
+    except ImportError:
+        _TESS_READY = None
+        return None
+
+    cmd = shutil.which("tesseract")
+    if not cmd:
+        for c in (r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+                  r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+                  os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+                  os.path.expandvars(r"%LOCALAPPDATA%\Tesseract-OCR\tesseract.exe")):
+            if Path(c).exists():
+                cmd = c
+                break
+    if not cmd:
+        _TESS_READY = None
+        return None
+    pytesseract.pytesseract.tesseract_cmd = cmd
+    # русский язык может лежать в пользовательской папке (установка без прав
+    # админа не пишет в Program Files) — указываем её через TESSDATA_PREFIX
+    user_td = Path(os.path.expandvars(r"%LOCALAPPDATA%\EcoDoc\tessdata"))
+    if (user_td / "rus.traineddata").exists():
+        os.environ["TESSDATA_PREFIX"] = str(user_td)
+    try:
+        langs = pytesseract.get_languages(config="")
+    except Exception:
+        langs = []
+    _TESS_READY = "rus+eng" if "rus" in langs else "eng"
+    return _TESS_READY
+
+
+def _ocr_image(img) -> str:
+    lang = _setup_tesseract()
+    if lang is None:
+        raise RuntimeError(
+            "Tesseract-OCR не установлен — сканы и фото не распознаются. "
+            "Установите его (в установщике ЭКО.DOC это делается автоматически) "
+            "или скачайте: https://github.com/UB-Mannheim/tesseract/wiki")
+    import pytesseract
+    return pytesseract.image_to_string(img, lang=lang)
 
 
 def _ocr_pixmap(pix) -> str:

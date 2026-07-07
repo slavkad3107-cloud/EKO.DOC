@@ -307,6 +307,31 @@ def _cmd_devdoc(args):
     print(f"Документ: {path}")
 
 
+def _cmd_doctor(args):
+    """Показать, какие компоненты установлены (для диагностики)."""
+    import shutil
+    from importlib.util import find_spec
+
+    print(f"ЭКО.DOC {__version__} — проверка окружения\n")
+    # python-пакеты
+    for mod, label in (("fitz", "PyMuPDF (PDF)"), ("docx", "python-docx (.docx)"),
+                       ("openpyxl", "openpyxl (.xlsx)"), ("xlrd", "xlrd (.xls)"),
+                       ("striprtf", "striprtf (.rtf)"), ("lxml", "lxml (XML)"),
+                       ("pytesseract", "pytesseract (OCR-обёртка)")):
+        ok = find_spec(mod) is not None
+        print(f"  [{'✓' if ok else '✖'}] {label}")
+    # внешние программы
+    from ecodoc.parsers.text_extract import _setup_tesseract
+    tl = _setup_tesseract()
+    print(f"  [{'✓' if tl else '✖'}] Tesseract-OCR (сканы/фото)"
+          + (f" — язык: {tl}" if tl else " — не найден"))
+    soffice = shutil.which("soffice") or shutil.which("soffice.exe")
+    print(f"  [{'✓' if soffice else '✖'}] LibreOffice (запасное чтение .doc)")
+    print(f"  [{'✓' if shutil.which('ollama') else '○'}] Ollama (локальный ИИ)")
+    print(f"  [{'✓' if shutil.which('7z') else '○'}] 7-Zip (rar/7z-архивы)")
+    print("\n✓ — установлено, ✖ — нужно для полной работы, ○ — по желанию")
+
+
 def _cmd_gui(args):
     from ecodoc.gui import server
 
@@ -429,6 +454,9 @@ def build_parser() -> argparse.ArgumentParser:
     _target_args(dd)
     dd.add_argument("-o", "--outdir", default="out")
     dd.set_defaults(func=_cmd_devdoc)
+
+    doc = sub.add_parser("doctor", help="проверить установленные компоненты")
+    doc.set_defaults(func=_cmd_doctor)
 
     gu = sub.add_parser("gui", help="графический интерфейс (локально, в браузере)")
     gu.add_argument("--port", type=int, default=8737)
