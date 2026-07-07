@@ -325,10 +325,17 @@ def _cmd_doctor(args):
     tl = _setup_tesseract()
     print(f"  [{'✓' if tl else '✖'}] Tesseract-OCR (сканы/фото)"
           + (f" — язык: {tl}" if tl else " — не найден"))
-    soffice = shutil.which("soffice") or shutil.which("soffice.exe")
+
+    def _found(*paths):
+        return any(shutil.which(p) or Path(p).exists() for p in paths)
+
+    soffice = _found("soffice", "soffice.exe",
+                     r"C:\Program Files\LibreOffice\program\soffice.exe",
+                     r"C:\Program Files (x86)\LibreOffice\program\soffice.exe")
     print(f"  [{'✓' if soffice else '✖'}] LibreOffice (запасное чтение .doc)")
+    from ecodoc.intake.intake import _seven_zip
+    print(f"  [{'✓' if _seven_zip() else '○'}] 7-Zip (rar/7z-архивы)")
     print(f"  [{'✓' if shutil.which('ollama') else '○'}] Ollama (локальный ИИ)")
-    print(f"  [{'✓' if shutil.which('7z') else '○'}] 7-Zip (rar/7z-архивы)")
     print("\n✓ — установлено, ✖ — нужно для полной работы, ○ — по желанию")
 
 

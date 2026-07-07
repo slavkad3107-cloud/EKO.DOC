@@ -8,24 +8,47 @@ Write-Host ""
 Write-Host "=== Установка ЭКО.DOC ===" -ForegroundColor Cyan
 Write-Host "Папка: $root"
 
-# 1. Python >= 3.10
-$python = ""
-$pyArgs = @()
-foreach ($cand in @("py", "python")) {
-    $cmd = Get-Command $cand -ErrorAction SilentlyContinue
-    if (-not $cmd) { continue }
-    $a = @(); if ($cand -eq "py") { $a = @("-3") }
-    try { $ver = (& $cand @a --version) 2>&1 } catch { continue }
-    if ("$ver" -match "Python 3\.(1[0-9]|[2-9][0-9])") {
-        $python = $cand; $pyArgs = $a; break
+# 1. Python >= 3.10 (при отсутствии — ставим через winget)
+function Find-Python {
+    foreach ($cand in @("py", "python")) {
+        $cmd = Get-Command $cand -ErrorAction SilentlyContinue
+        if (-not $cmd) { continue }
+        $a = @(); if ($cand -eq "py") { $a = @("-3") }
+        try { $v = (& $cand @a --version) 2>&1 } catch { continue }
+        if ("$v" -match "Python 3\.(1[0-9]|[2-9][0-9])") {
+            return @{ exe = $cand; args = $a; ver = "$v" }
+        }
+    }
+    # прямые пути установок winget/python.org (в этой сессии PATH может не обновиться)
+    foreach ($p in @("$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+                     "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+                     "$env:ProgramFiles\Python312\python.exe",
+                     "$env:ProgramFiles\Python311\python.exe")) {
+        if (Test-Path $p) {
+            try { $v = (& $p --version) 2>&1 } catch { continue }
+            if ("$v" -match "Python 3\.") { return @{ exe = $p; args = @(); ver = "$v" } }
+        }
+    }
+    return $null
+}
+
+$py = Find-Python
+if (-not $py) {
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Host "Python 3.10+ не найден — ставлю через winget..." -ForegroundColor Yellow
+        winget install --id Python.Python.3.12 -e --silent `
+            --accept-source-agreements --accept-package-agreements
+        $py = Find-Python
     }
 }
-if (-not $python) {
-    Write-Host "Python 3.10+ не найден. Установите с https://www.python.org/downloads/" -ForegroundColor Red
-    Write-Host "(при установке отметьте галочку 'Add python.exe to PATH')"
-    exit 1
+if (-not $py) {
+    Write-Host "Не удалось поставить Python автоматически." -ForegroundColor Red
+    Write-Host "Установите вручную: https://www.python.org/downloads/ (галочка 'Add to PATH'),"
+    Write-Host "затем запустите install.bat ещё раз."
+    pause; exit 1
 }
-Write-Host "Python: $ver"
+$python = $py.exe; $pyArgs = $py.args
+Write-Host "Python: $($py.ver)"
 
 # 2. Виртуальное окружение
 if (-not (Test-Path "$root\.venv\Scripts\python.exe")) {
@@ -134,9 +157,25 @@ if (-not (Test-Path $soffice)) {
     }
 }
 
+# --- 7-Zip (распаковка rar/7z-архивов во входящих) ---
+$has7z = (Get-Command 7z -ErrorAction SilentlyContinue) -or `
+         (Test-Path "$env:ProgramFiles\7-Zip\7z.exe")
+if (-not $has7z) {
+    if ($winget) {
+        Write-Host "Ставлю 7-Zip (winget, для rar/7z-архивов)..."
+        winget install --id 7zip.7zip -e --silent `
+            --accept-source-agreements --accept-package-agreements
+    }
+}
+
 if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
     Write-Host "- Ollama (локальный ИИ) — по желанию: https://ollama.com, затем ollama pull qwen2.5:7b"
 }
+
+# 7. Итоговая проверка окружения
+Write-Host ""
+Write-Host "=== Проверка установленного ===" -ForegroundColor Cyan
+& $venvPy -m ecodoc doctor
 
 Write-Host ""
 Write-Host "=== Готово ===" -ForegroundColor Green
