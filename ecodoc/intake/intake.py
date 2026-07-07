@@ -198,6 +198,8 @@ def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
         queue: list[Path] = []
         for f in files:
             src = Path(f)
+            if src.name.startswith("~$"):
+                continue                     # временные lock-файлы Word/Excel
             if not src.exists():
                 lines.append(f"✖ нет файла: {src}")
             elif src.suffix.lower() in _ARCHIVE_EXTS:
@@ -205,9 +207,11 @@ def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
             else:
                 queue.append(src)
         for src in queue:
+            if src.name.startswith("~$"):
+                continue
             dest, is_new = _register(att, src)
-            lines.append(f"{'＋ принят' if is_new else '= уже был'}: {dest.name}")
             names.append(dest.name)
+        lines.append(f"Принято файлов: {len(names)}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     return names, lines
@@ -250,17 +254,37 @@ def run(files: list[str], org: str = "", site: str = "",
                     forms=forms, ocr=ocr, lines=lines)
 
 
+def _err_reason(msg: str, p: Path) -> str:
+    """Свести текст ошибки чтения к короткой человекочитаемой причине."""
+    low = msg.lower()
+    if "tesseract" in low:
+        return "сканы/фото не распознаны — не установлен Tesseract-OCR"
+    if "неподдерживаемый формат" in low:
+        return f"формат {p.suffix.lower()} не поддерживается"
+    if ".doc" in low or "word" in low:
+        return "старый .doc не открылся (Word/LibreOffice) — сконвертируйте в .docx/.pdf"
+    return msg[:80]
+
+
 def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
              use_ai: bool, forms: list[str] | None, ocr: bool,
              lines: list[str]) -> str:
     in_workspace = bool(org and site)
     # 2. извлечение текста + regex-парсер (быстрый, консервативный)
     docs = []
+    unread: dict[str, list[str]] = {}
     for p in stored:
         try:
             docs.append(extract(p, ocr=ocr))
         except Exception as e:
-            lines.append(f"✖ не читается {p.name}: {e}")
+            unread.setdefault(_err_reason(str(e), p), []).append(p.name)
+    if unread:
+        total = sum(len(v) for v in unread.values())
+        lines.append(f"── Не прочитано файлов: {total} (по причинам) ──")
+        for reason, files_ in sorted(unread.items(), key=lambda kv: -len(kv[1])):
+            sample = ", ".join(files_[:3]) + (" …" if len(files_) > 3 else "")
+            lines.append(f"  • {reason}: {len(files_)} — {sample}")
+        lines.append("")
     parse_errors = 0
     for doc in docs:
         try:
