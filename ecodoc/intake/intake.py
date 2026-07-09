@@ -299,14 +299,29 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
              use_ai: bool, forms: list[str] | None, ocr: bool,
              lines: list[str]) -> str:
     in_workspace = bool(org and site)
-    # 2. извлечение текста + regex-парсер (быстрый, консервативный)
+    # 2. извлечение текста ПАРАЛЛЕЛЬНО (OCR сканов — узкое место; Tesseract
+    #    работает как подпроцесс и отпускает GIL, поэтому потоки реально
+    #    ускоряют). Разбор в контекст — потом, последовательно (потокобезопасно).
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
     docs = []
     unread: dict[str, list[str]] = {}
-    for p in stored:
+    workers = min(8, (os.cpu_count() or 4))
+
+    def _extract_one(p):
         try:
-            docs.append(extract(p, ocr=ocr))
+            return (extract(p, ocr=ocr), None)
         except Exception as e:
-            unread.setdefault(_err_reason(str(e), p), []).append(p.name)
+            return (None, (p, str(e)))
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for doc, err in ex.map(_extract_one, stored):
+            if doc is not None:
+                docs.append(doc)
+            else:
+                p, msg = err
+                unread.setdefault(_err_reason(msg, p), []).append(p.name)
     if unread:
         total = sum(len(v) for v in unread.values())
         lines.append(f"── Не прочитано файлов: {total} (по причинам) ──")

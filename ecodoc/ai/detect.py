@@ -19,6 +19,24 @@ _CHAT_PREFERENCE = ("qwen3", "qwen2.5", "llama3.3", "gemma3", "llama3.2",
                     "mistral", "deepseek-r1", "phi4", "llama3", "gemma2")
 _EMBED_MARKERS = ("bge", "embed", "nomic", "mxbai", "e5")
 
+# дефолтные модели для облачных провайдеров (быстрые и пригодные для
+# извлечения структурных данных из русскоязычных документов)
+CLOUD_DEFAULT_MODEL = {
+    "deepseek": "deepseek-chat",
+    "openrouter": "deepseek/deepseek-chat",
+    "groq": "llama-3.3-70b-versatile",
+    "mistral": "mistral-large-latest",
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-sonnet-5",
+    "gemini": "gemini-2.5-flash",
+    "together": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+    "xai": "grok-2-latest",
+    "vsegpt": "openai/gpt-4o-mini",
+    "proxyapi": "gpt-4o-mini",
+    "yandexgpt": "yandexgpt-lite/latest",
+    "gigachat": "GigaChat",
+}
+
 
 def _ollama_models() -> list[str]:
     for base in (os.environ.get("OLLAMA_HOST_URL", ""),
@@ -94,6 +112,8 @@ def setup(prefer: str = "") -> AIConfig:
         cfg.embed_model = pick_embed_model(found["ollama"])
     elif cfg.provider == "lmstudio":
         cfg.model = pick_chat_model(found["lmstudio"])
+    elif cfg.provider:
+        cfg.model = CLOUD_DEFAULT_MODEL.get(cfg.provider, "")
 
     # запасные варианты: сначала ВСЕ остальные локальные модели, затем
     # другой локальный сервер, затем внешние API по найденным ключам

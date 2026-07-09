@@ -225,12 +225,23 @@ def _store_extras(ctx: ReportContext, data: dict, src: str,
 
 def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
                  cfg: AIConfig | None = None) -> ExtractionReport:
-    """Прогнать документы через LLM и слить результат в контекст."""
+    """Прогнать документы через LLM и слить результат в контекст.
+
+    Запросы к модели идут ПАРАЛЛЕЛЬНО (сетевые вызовы — потоки дают большой
+    выигрыш, особенно на облачном провайдере). Слияние результатов в общий
+    контекст — потом, последовательно (потокобезопасно).
+    """
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+
     cfg = cfg or load_config()
     rep = ExtractionReport()
     if not cfg.provider:
         rep.errors.append("ИИ не настроен: запустите `python -m ecodoc ai setup`")
         return rep
+
+    # список задач (документ, кусок текста, метка)
+    tasks = []
     for doc in docs:
         chunks = [doc.text[i:i + _CHUNK] for i in range(0, len(doc.text), _CHUNK)] \
             or [""]
@@ -238,18 +249,33 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
             if not chunk.strip():
                 continue
             label = doc.path.name if len(chunks) == 1 else f"{doc.path.name} (ч.{n})"
-            try:
-                answer, model = chat_with_fallback(
-                    cfg, SYSTEM, f"Документ «{doc.path.name}»:\n\n{chunk}")
-                rep.used_model = model
-                data = _parse_json(answer)
-            except (AIError, ValueError, json.JSONDecodeError) as e:
-                rep.errors.append(f"{label}: {e}")
-                continue
-            # цитаты легитимны только если реально найдены в тексте документа
-            quotes = _verify_quotes(data.get("quotes") or {}, chunk)
-            _merge_org(ctx, data, quotes, label, rep)
-            _merge_objects(ctx, data, label, rep)
-            _merge_wastes(ctx, data, quotes, label, rep)
-            _store_extras(ctx, data, label, rep)
+            tasks.append((label, doc.path.name, chunk))
+
+    def _ask(task):
+        label, docname, chunk = task
+        try:
+            answer, model = chat_with_fallback(
+                cfg, SYSTEM, f"Документ «{docname}»:\n\n{chunk}")
+            return (label, chunk, _parse_json(answer), model, None)
+        except (AIError, ValueError, json.JSONDecodeError) as e:
+            return (label, chunk, None, "", str(e))
+
+    # локальный провайдер (ollama) — без параллелизма (перегрузит одну модель);
+    # облачный — до 6 одновременных запросов
+    local = cfg.provider in ("ollama", "lmstudio")
+    workers = 1 if local else 6
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        results = list(ex.map(_ask, tasks))
+
+    # слияние — последовательно, в порядке документов
+    for label, chunk, data, model, err in results:
+        if err:
+            rep.errors.append(f"{label}: {err}")
+            continue
+        rep.used_model = model
+        quotes = _verify_quotes(data.get("quotes") or {}, chunk)
+        _merge_org(ctx, data, quotes, label, rep)
+        _merge_objects(ctx, data, label, rep)
+        _merge_wastes(ctx, data, quotes, label, rep)
+        _store_extras(ctx, data, label, rep)
     return rep
