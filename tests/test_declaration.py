@@ -53,6 +53,18 @@ def test_render(tmp_path):
     assert "ДекларацияНВОС" in xml.read_text(encoding="utf-8")
 
 
+def test_print_official_sheets(tmp_path):
+    import openpyxl
+    rep = DeclarationNVOS(_ctx())
+    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "d.xlsx"))
+    assert wb.sheetnames[:2] == ["стр.1", "стр.2"]
+    s2 = wb["стр.2"]
+    # официальные коды строк расчёта присутствуют по столбцу B
+    codes = {s2["B" + str(r)].value for r in range(3, 17)}
+    for want in ("010", "020", "021", "023", "024", "100"):
+        assert want in codes, want
+
+
 if __name__ == "__main__":
     test_money_roundhalfup()
     test_calc_matches_manual()

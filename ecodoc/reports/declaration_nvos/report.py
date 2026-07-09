@@ -16,6 +16,12 @@ from lxml import etree
 _BAND_RU = {"norm": "в пределах норматива", "limit": "в пределах лимита",
             "over": "сверх лимита/норматива"}
 
+# КБК платы за НВОС (администратор 048 — Росприроднадзор)
+_KBK_AIR = "048 1 12 01010 01 6000 120"    # выбросы стационарными объектами
+_KBK_PNG = "048 1 12 01070 01 6000 120"    # выбросы при сжигании/рассеивании ПНГ
+_KBK_WATER = "048 1 12 01030 01 6000 120"  # сбросы в водные объекты
+_KBK_WASTE = "048 1 12 01041 01 6000 120"  # размещение отходов (кроме ТКО)
+
 
 @register
 class DeclarationNVOS(Report):
@@ -115,40 +121,91 @@ class DeclarationNVOS(Report):
     def render_print(self, out_path: Path) -> Path:
         out_path = self._ensure_dir(out_path)
         wb = xlsx.new_workbook()
-        self._sheet_summary(wb)
-        self._sheet_lines(wb, "Выбросы", Medium.AIR.value)
-        self._sheet_lines(wb, "Сбросы", Medium.WATER.value)
-        self._sheet_lines(wb, "Отходы", "waste")
+        self._sheet_title(wb)          # стр.1 — титульный лист
+        self._sheet_calc(wb)           # стр.2 — расчёт суммы платы (коды 010-100)
+        self._sheet_lines(wb, "Раздел 1 (выбросы)", Medium.AIR.value)
+        self._sheet_lines(wb, "Раздел 2 (сбросы)", Medium.WATER.value)
+        self._sheet_lines(wb, "Раздел 3 (отходы)", "waste")
         xlsx.save(wb, out_path)
         return out_path
 
-    # ----- листы Excel -----
-    def _sheet_summary(self, wb):
+    # стр.1 — титульный лист официального бланка -----------------------
+    def _sheet_title(self, wb):
+        o = self.ctx.organization
+        e = self.ctx.extra if isinstance(self.ctx.extra, dict) else {}
+        year = self.ctx.period.year or ""
+        ws = wb.create_sheet("стр.1")
+        xlsx.widths(ws, {"A": 4, "B": 40, "C": 52})
+        xlsx.merge(ws, "B1:C1",
+                   "ДЕКЛАРАЦИЯ О ПЛАТЕ ЗА НЕГАТИВНОЕ ВОЗДЕЙСТВИЕ НА ОКРУЖАЮЩУЮ СРЕДУ",
+                   bold=True, border=False)
+        xlsx.merge(ws, "B2:C2", f"за {year} год", border=False, bold=True)
+        rows = [
+            ("1", "Вид документа (первичный «0» / уточнённый)",
+             e.get("doc_kind", "первичный")),
+            ("2", "Декларация представляется в территориальный орган Росприроднадзора",
+             e.get("rospr", "")),
+            ("3", "Организационно-правовая форма и полное наименование ЮЛ", o.name),
+            ("4", "Сокращённое наименование", o.short_name or o.name),
+            ("5", "Адрес ЮЛ/ИП", o.address),
+            ("6", "Код города и номер контактного телефона", o.phone),
+            ("7", "ИНН", o.inn),
+            ("8", "КПП", o.kpp),
+            ("9", "ОГРН", o.ogrn),
+            ("10", "Руководитель ЮЛ / уполномоченное лицо / ИП",
+             f"{o.director_position} {o.director_name}".strip()),
+        ]
+        r = 4
+        for num, label, value in rows:
+            xlsx.cell(ws, f"A{r}", num)
+            xlsx.cell(ws, f"B{r}", label, align="left")
+            xlsx.cell(ws, f"C{r}", value or "", align="left")
+            r += 1
+        r += 1
+        xlsx.cell(ws, f"B{r}", "Достоверность и полноту сведений подтверждаю.",
+                  border=False, align="left")
+        xlsx.cell(ws, f"B{r+2}", "Дата: «____» __________ 20___ г.",
+                  border=False, align="left")
+
+    # стр.2 — расчёт суммы платы (официальные коды строк) --------------
+    def _sheet_calc(self, wb):
         o = self.ctx.organization
         c = self.calc
-        ws = wb.create_sheet("Сводка")
-        ws.column_dimensions["A"].width = 38
-        ws.column_dimensions["B"].width = 40
+        ws = wb.create_sheet("стр.2")
+        xlsx.widths(ws, {"A": 66, "B": 12, "C": 22})
+        xlsx.merge(ws, "A1:C1",
+                   "Расчёт суммы платы, подлежащей внесению в бюджет", bold=True, border=False)
+        xlsx.cell(ws, "A2", "Показатели", bold=True, fill=True, align="left")
+        xlsx.cell(ws, "B2", "Код строки", bold=True, fill=True)
+        xlsx.cell(ws, "C2", "Значение", bold=True, fill=True)
         rows = [
-            ("ДЕКЛАРАЦИЯ О ПЛАТЕ ЗА НВОС", ""),
-            ("Отчётный год", self.ctx.period.year),
-            ("Плательщик", o.name),
-            ("ИНН / КПП", f"{o.inn} / {o.kpp}"),
-            ("ОГРН", o.ogrn),
-            ("ОКТМО", o.oktmo),
-            ("Объекты НВОС", ", ".join(x.code for x in self.ctx.objects)),
-            ("", ""),
-            ("Плата за выбросы, руб.", fmt_money(c.total_air)),
-            ("Плата за сбросы, руб.", fmt_money(c.total_water)),
-            ("Плата за размещение отходов, руб.", fmt_money(c.total_waste)),
-            ("ИТОГО плата, руб.", fmt_money(c.total)),
+            ("Код по ОКТМО объекта НВОС", "010", o.oktmo or ""),
+            ("Сумма платы, всего (020 = 021 + 022 + 023 + 024), руб.", "020",
+             fmt_money(c.total)),
+            ("плата за выбросы ЗВ в атмосферу стационарными объектами", "021",
+             fmt_money(c.total_air)),
+            ("плата за выбросы при сжигании/рассеивании ПНГ", "022", fmt_money(0)),
+            ("плата за сбросы ЗВ в водные объекты", "023", fmt_money(c.total_water)),
+            ("плата за размещение отходов производства и потребления", "024",
+             fmt_money(c.total_waste)),
+            ("КБК платы за выбросы (стационарные)", "030", _KBK_AIR),
+            ("Сумма платы за выбросы, всего", "040", fmt_money(c.total_air)),
+            ("КБК платы за выбросы ПНГ", "050", _KBK_PNG),
+            ("Сумма платы за выбросы ПНГ, всего", "060", fmt_money(0)),
+            ("КБК платы за сбросы", "070", _KBK_WATER),
+            ("Сумма платы за сбросы, всего", "080", fmt_money(c.total_water)),
+            ("КБК платы за размещение отходов", "090", _KBK_WASTE),
+            ("Сумма платы за размещение отходов, всего", "100", fmt_money(c.total_waste)),
         ]
-        for i, (k, v) in enumerate(rows, start=1):
-            a = ws.cell(row=i, column=1, value=k)
-            ws.cell(row=i, column=2, value=v)
-            if i == 1 or k.startswith("ИТОГО"):
-                a.font = xlsx.BOLD
+        r = 3
+        for label, code, value in rows:
+            bold = code in ("020",)
+            xlsx.cell(ws, f"A{r}", label, align="left", bold=bold)
+            xlsx.cell(ws, f"B{r}", code, bold=bold)
+            xlsx.cell(ws, f"C{r}", value, bold=bold)
+            r += 1
 
+    # ----- листы Excel -----
     def _sheet_lines(self, wb, title: str, medium: str):
         c = self.calc
         rows = [ln for ln in c.lines if ln.medium == medium]
