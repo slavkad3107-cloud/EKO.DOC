@@ -19,6 +19,48 @@ _CHAT_PREFERENCE = ("qwen3", "qwen2.5", "llama3.3", "gemma3", "llama3.2",
                     "mistral", "deepseek-r1", "phi4", "llama3", "gemma2")
 _EMBED_MARKERS = ("bge", "embed", "nomic", "mxbai", "e5")
 
+# человекочитаемые метки провайдеров (для выпадающего списка в GUI)
+PROVIDER_LABEL = {
+    "deepseek": "DeepSeek (облако, быстро)",
+    "openrouter": "OpenRouter (облако, много моделей)",
+    "groq": "Groq (облако, очень быстро)",
+    "mistral": "Mistral (облако)",
+    "gemini": "Google Gemini (облако)",
+    "openai": "OpenAI / GPT (облако)",
+    "anthropic": "Anthropic / Claude (облако)",
+    "together": "Together (облако)",
+    "xai": "xAI / Grok (облако)",
+    "vsegpt": "VseGPT (облако, РФ-агрегатор)",
+    "proxyapi": "ProxyAPI (облако, РФ-прокси)",
+    "gigachat": "GigaChat (Сбер, облако)",
+    "yandexgpt": "YandexGPT (облако)",
+    "ollama": "Ollama (локально, приватно)",
+    "lmstudio": "LM Studio (локально)",
+}
+
+# пресеты моделей на провайдера (пользователь выбирает из списка или вводит
+# своё). Для ollama/lmstudio список подтягивается из установленных моделей.
+KNOWN_MODELS = {
+    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "openrouter": ["deepseek/deepseek-chat", "deepseek/deepseek-chat-v3.1:free",
+                   "meta-llama/llama-3.3-70b-instruct",
+                   "google/gemini-2.0-flash-001", "openai/gpt-4o-mini",
+                   "qwen/qwen-2.5-72b-instruct", "mistralai/mistral-small-3.2-24b-instruct:free"],
+    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant",
+             "openai/gpt-oss-120b", "qwen/qwen3-32b"],
+    "mistral": ["mistral-large-latest", "mistral-small-latest", "open-mistral-nemo"],
+    "gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+    "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o3-mini"],
+    "anthropic": ["claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-opus-4-8"],
+    "together": ["meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                 "Qwen/Qwen2.5-72B-Instruct-Turbo"],
+    "xai": ["grok-2-latest"],
+    "vsegpt": ["openai/gpt-4o-mini", "deepseek/deepseek-chat"],
+    "proxyapi": ["gpt-4o-mini", "gpt-4o"],
+    "gigachat": ["GigaChat", "GigaChat-Pro", "GigaChat-Max"],
+    "yandexgpt": ["yandexgpt-lite/latest", "yandexgpt/latest"],
+}
+
 # дефолтные модели для облачных провайдеров (быстрые и пригодные для
 # извлечения структурных данных из русскоязычных документов)
 CLOUD_DEFAULT_MODEL = {

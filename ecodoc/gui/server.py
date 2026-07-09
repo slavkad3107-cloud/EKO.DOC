@@ -364,6 +364,47 @@ def api_ai_setup(params, body):
     return {"text": detect.describe(cfg)}
 
 
+def api_ai_config(params, body):
+    """Всё для панели выбора ИИ: провайдеры, модели, наличие ключей, текущий выбор."""
+    from ecodoc.ai import detect
+    from ecodoc.ai.config import has_key, load_config
+    cfg = load_config()
+    providers = []
+    for pid in detect.PROVIDER_LABEL:
+        local = pid in ("ollama", "lmstudio")
+        providers.append({
+            "id": pid, "label": detect.PROVIDER_LABEL[pid],
+            "local": local, "has_key": True if local else has_key(pid),
+            "models": detect.KNOWN_MODELS.get(pid, []),
+            "default": detect.CLOUD_DEFAULT_MODEL.get(pid, "")})
+    return {"provider": cfg.provider, "model": cfg.model,
+            "fallbacks": cfg.fallbacks, "providers": providers,
+            "ollama_models": detect._ollama_models(),
+            "lmstudio_models": []}
+
+
+def api_ai_save(params, body):
+    """Сохранить выбор провайдера/модели (+ключ и запасной провайдер)."""
+    from ecodoc.ai import detect
+    from ecodoc.ai.config import (DEFAULT_KEY_ENV, load_config, save_config,
+                                  save_key)
+    provider = (body.get("provider") or "").strip()
+    if provider not in detect.PROVIDER_LABEL:
+        return {"error": f"Неизвестный провайдер: {provider}"}
+    if body.get("key"):
+        save_key(provider, body["key"].strip())
+    cfg = load_config()
+    cfg.provider = provider
+    cfg.model = (body.get("model") or "").strip() or \
+        detect.CLOUD_DEFAULT_MODEL.get(provider, "")
+    cfg.key_env = DEFAULT_KEY_ENV.get(provider, "")
+    fb = (body.get("fallback") or "").strip()
+    cfg.fallbacks = ([{"provider": fb, "model": detect.CLOUD_DEFAULT_MODEL.get(fb, "")}]
+                     if fb and fb != provider else [])
+    save_config(cfg)
+    return {"ok": True, "text": detect.describe(load_config())}
+
+
 def api_ai_test(params, body):
     from ecodoc.ai import load_config
     from ecodoc.ai.providers import chat_with_fallback
@@ -446,7 +487,7 @@ def api_open(params, body):
 
 GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "context": api_context_get, "calendar": api_calendar,
-              "reference": api_reference}
+              "reference": api_reference, "ai_config": api_ai_config}
 POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add, "site_del": api_site_del,
                "org_del": api_org_del,
@@ -455,6 +496,7 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "validate": api_validate, "validate_all": api_validate_all,
                "generate": api_generate,
                "watch": api_watch, "ai_setup": api_ai_setup,
+               "ai_config": api_ai_config, "ai_save": api_ai_save,
                "ai_test": api_ai_test, "dispersion": api_dispersion,
                "dispersion_map": api_dispersion_map,
                "upraza_export": api_upraza_export,

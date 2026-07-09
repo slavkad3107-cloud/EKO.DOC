@@ -62,6 +62,48 @@ def save_config(cfg: AIConfig) -> Path:
     return CONFIG_PATH
 
 
+KEYS_PATH = CONFIG_DIR / "keys.json"
+
+
+def _saved_keys() -> dict:
+    if KEYS_PATH.exists():
+        try:
+            return json.loads(KEYS_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def save_key(provider: str, key: str) -> None:
+    """Сохранить API-ключ провайдера локально (~/.ecodoc/keys.json).
+
+    Файл только на этой машине; храните его в безопасности. Пустой ключ —
+    удалить сохранённый.
+    """
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    keys = _saved_keys()
+    if key:
+        keys[provider] = key
+    else:
+        keys.pop(provider, None)
+    KEYS_PATH.write_text(json.dumps(keys, ensure_ascii=False, indent=2),
+                         encoding="utf-8")
+
+
+def has_key(provider: str) -> bool:
+    env = DEFAULT_KEY_ENV.get(provider, "")
+    if env and os.environ.get(env):
+        return True
+    return bool(_saved_keys().get(provider))
+
+
 def api_key(cfg: AIConfig) -> str:
-    env = cfg.key_env or DEFAULT_KEY_ENV.get(cfg.provider, "")
+    # приоритет: явная env-переменная в конфиге → сохранённый ключ провайдера
+    # → стандартная env-переменная провайдера
+    if cfg.key_env and os.environ.get(cfg.key_env):
+        return os.environ[cfg.key_env]
+    saved = _saved_keys().get(cfg.provider, "")
+    if saved:
+        return saved
+    env = DEFAULT_KEY_ENV.get(cfg.provider, "")
     return os.environ.get(env, "") if env else ""

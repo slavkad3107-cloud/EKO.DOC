@@ -268,11 +268,26 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <pre class="out" id="out-cp" style="display:none"></pre>
     </div>
     <div class="card">
-      <h2>ИИ-анализ</h2>
-      <div class="row">
-        <button class="b sec" onclick="aiSetup()">Найти ИИ заново (Ollama / ключи API)</button>
+      <h2>Выбор ИИ (провайдер и модель)</h2>
+      <div class="hint">Локальный (Ollama) — приватно и бесплатно, но медленно.
+        Облачный (DeepSeek и др.) — быстро и умнее, но документы уходят провайдеру
+        и есть плата. Запасной провайдер подхватит, если основной недоступен.</div>
+      <div class="fgrid" style="margin-top:8px">
+        <div class="fld"><label>Провайдер</label>
+          <select id="ai-prov" onchange="onProvChange()"></select></div>
+        <div class="fld"><label>Модель</label>
+          <select id="ai-model"></select></div>
+        <div class="fld" id="ai-key-box" style="display:none"><label>API-ключ (сохранится локально)</label>
+          <input type="password" id="ai-key" placeholder="ключ провайдера"></div>
+        <div class="fld"><label>Запасной провайдер</label>
+          <select id="ai-fb"></select></div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button class="b" onclick="aiSave()">Сохранить выбор</button>
         <button class="b sec" onclick="aiTest()">Проверить ответом</button>
+        <button class="b sec" onclick="aiSetup()">Автонастройка</button>
         <span class="spin" id="sp-ai">…</span>
+        <span class="hint" id="ai-key-note"></span>
       </div>
       <pre class="out" id="out-ai" style="display:none"></pre>
     </div>
@@ -322,6 +337,7 @@ $("tabs").addEventListener("click", e => {
   document.querySelectorAll(".tab").forEach(t=>t.classList.remove("on"));
   e.target.classList.add("on");
   $("tab-" + e.target.dataset.t).classList.add("on");
+  if (e.target.dataset.t === "svc" && !AICONF) loadAiPanel();
 });
 
 // ── дерево организаций ──
@@ -1008,17 +1024,67 @@ async function doUpraza(){
   spin("sp-disp",0);
 }
 
-// ── сервис ──
+// ── сервис: выбор ИИ ──
+let AICONF = null;
+async function loadAiPanel(){
+  try{
+    AICONF = await get("ai_config", {});
+    const prov = $("ai-prov"), fb = $("ai-fb");
+    prov.innerHTML = AICONF.providers.map(p=>{
+      const mark = p.local ? "" : (p.has_key ? " ✓ключ" : " (нет ключа)");
+      return `<option value="${p.id}"${p.id===AICONF.provider?" selected":""}>${esc(p.label)}${mark}</option>`;
+    }).join("");
+    fb.innerHTML = `<option value="">— без запасного —</option>` +
+      AICONF.providers.map(p=>`<option value="${p.id}">${esc(p.label)}</option>`).join("");
+    const curFb = (AICONF.fallbacks[0]||{}).provider || "";
+    fb.value = curFb;
+    onProvChange(AICONF.model);
+  }catch(e){ show("out-ai", "Ошибка: " + errText(e)); }
+}
+function onProvChange(presetModel){
+  if(!AICONF) return;
+  const pid = $("ai-prov").value;
+  const p = AICONF.providers.find(x=>x.id===pid) || {};
+  let models = p.models || [];
+  if(pid==="ollama") models = AICONF.ollama_models || [];
+  const cur = presetModel || AICONF.model || p.default || (models[0]||"");
+  const opts = [...new Set([...models, cur].filter(Boolean))];
+  $("ai-model").innerHTML = opts.map(m=>`<option value="${esc(m)}"${m===cur?" selected":""}>${esc(m)}</option>`).join("")
+    + `<option value="__manual__">✍ ввести вручную…</option>`;
+  // поле ключа — только для облачных без ключа
+  $("ai-key-box").style.display = (!p.local && !p.has_key) ? "flex" : "none";
+  $("ai-key-note").textContent = p.local ? "локально — ключ не нужен" :
+    (p.has_key ? "ключ найден" : "нужен API-ключ");
+}
+$("ai-model") && $("ai-model").addEventListener("change", e=>{
+  if(e.target.value==="__manual__"){
+    const m = prompt("Имя модели у провайдера:", "");
+    if(m){ const o=document.createElement("option"); o.value=m; o.textContent=m; o.selected=true;
+           $("ai-model").insertBefore(o, $("ai-model").firstChild); }
+    else e.target.selectedIndex = 0;
+  }
+});
+async function aiSave(){
+  spin("sp-ai",1);
+  try{
+    let model = $("ai-model").value; if(model==="__manual__") model="";
+    const body = {provider:$("ai-prov").value, model, fallback:$("ai-fb").value};
+    const key = $("ai-key").value.trim(); if(key) body.key = key;
+    const j = await post("ai_save", body, 0);
+    show("out-ai", "Сохранено:\n" + j.text); $("ai-key").value="";
+    refreshMeta(); loadAiPanel();
+  }catch(e){ show("out-ai", "Ошибка: " + errText(e)); } spin("sp-ai",0);
+}
 async function aiSetup(){ spin("sp-ai",1);
-  try{ const j = await post("ai_setup", {}, 0); show("out-ai", j.text); refreshMeta(); }
-  catch(e){ show("out-ai", "Ошибка: " + e.message); } spin("sp-ai",0); }
+  try{ const j = await post("ai_setup", {}, 0); show("out-ai", j.text); refreshMeta(); loadAiPanel(); }
+  catch(e){ show("out-ai", "Ошибка: " + errText(e)); } spin("sp-ai",0); }
 async function aiTest(){ spin("sp-ai",1);
   try{ const j = await post("ai_test", {}, 0);
        show("out-ai", `[${j.model}]\n${j.answer}`); }
-  catch(e){ show("out-ai", "Ошибка: " + e.message); } spin("sp-ai",0); }
+  catch(e){ show("out-ai", "Ошибка: " + errText(e)); } spin("sp-ai",0); }
 async function doWatch(){ spin("sp-watch",1);
   try{ const j = await post("watch", {}, 0); show("out-watch", j.text); }
-  catch(e){ show("out-watch", "Ошибка: " + e.message); } spin("sp-watch",0); }
+  catch(e){ show("out-watch", "Ошибка: " + errText(e)); } spin("sp-watch",0); }
 async function doCounterparty(){
   const inn = $("cp-inn").value.replace(/\D/g,"");
   if(inn.length!==10 && inn.length!==12){ alert("ИНН 10 или 12 цифр"); return; }
