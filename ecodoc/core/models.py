@@ -83,17 +83,26 @@ class WasteFlow:
     name: str = ""
     hazard_class: int = 5       # класс опасности 1..5
 
-    accumulated_start: Decimal = Decimal("0")   # на начало периода
+    accumulated_start: Decimal = Decimal("0")   # на начало периода (хранение)
+    accumulated_start_nakopl: Decimal = Decimal("0")  # на начало периода (накопление)
     generated: Decimal = Decimal("0")           # образовано
     received: Decimal = Decimal("0")            # принято от others
+    processed: Decimal = Decimal("0")           # обработано (сортировка и пр.)
     used: Decimal = Decimal("0")                # утилизировано
     neutralized: Decimal = Decimal("0")         # обезврежено
-    transferred: Decimal = Decimal("0")         # передано others
+    transferred: Decimal = Decimal("0")         # передано others (всего)
+    transferred_storage: Decimal = Decimal("0")  # из переданного — на хранение
+    transferred_burial: Decimal = Decimal("0")   # из переданного — на захоронение
     placed_norm: Decimal = Decimal("0")         # размещено в пределах лимита
     placed_over: Decimal = Decimal("0")         # размещено сверх лимита
     accumulated_end: Decimal = Decimal("0")     # на конец периода
 
     is_mining: bool = False     # отход добывающей промышленности (для ставки V кл.)
+
+    # --- описательные поля (Приложение 1 журнала №1028, кадастр) ---
+    origin: str = ""            # происхождение / условия образования вида отхода
+    aggregate_state: str = ""   # агрегатное состояние и физическая форма
+    composition: str = ""       # химический и (или) компонентный состав, %
 
 
 @dataclass

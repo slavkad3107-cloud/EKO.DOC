@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ecodoc"
-version = "0.17.0"
+version = "0.18.0"
 description = "ЭКО.DOC (продукт «ЭКО Проект») — генератор экологических документов РФ: отчётность, разработка, ИИ-анализ входящих, календарь, сторож форм"
 readme = "README.md"
 requires-python = ">=3.10"

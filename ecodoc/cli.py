@@ -90,8 +90,11 @@ def _cmd_generate(args):
         sys.exit("\nЕсть ошибки. Исправьте context.json или запустите с --force.")
     out_dir = workspace.out_dir(args)
     stem = f"{args.form}_{report.ctx.period.year or 'XXXX'}"
-    xml_path = report.render_xml(out_dir / f"{stem}.xml")
-    print(f"XML:    {xml_path}")
+    if getattr(report, "has_xml", True):
+        xml_path = report.render_xml(out_dir / f"{stem}.xml")
+        print(f"XML:    {xml_path}")
+    else:
+        print("XML:    (форма не выгружается в ЛКПП — только печатная форма)")
     try:
         print_path = report.render_print(out_dir / f"{stem}.xlsx")
         print(f"Печать: {print_path}")

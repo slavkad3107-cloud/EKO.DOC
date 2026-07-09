@@ -246,7 +246,10 @@ def api_generate(params, body):
         return out
     out_dir = workspace.site_dir(body["org"], body["site"]) / "out"
     stem = f"{body['form']}_{ctx.period.year or 'XXXX'}"
-    out["xml"] = str(report.render_xml(out_dir / f"{stem}.xml"))
+    if getattr(report, "has_xml", True):
+        out["xml"] = str(report.render_xml(out_dir / f"{stem}.xml"))
+    else:
+        out["xml_note"] = "форма не выгружается в ЛКПП — только печатная форма"
     try:
         print_path = report.render_print(out_dir / f"{stem}.xlsx")
         out["print"] = str(print_path)
