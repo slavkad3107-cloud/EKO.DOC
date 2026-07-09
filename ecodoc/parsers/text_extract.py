@@ -100,6 +100,13 @@ def _extract_rtf(p: Path) -> ExtractedDoc:
     return ExtractedDoc(p, text, [text], "rtf")
 
 
+# OCR: сколько страниц скана распознавать максимум (реквизиты — на первых)
+# и разрешение рендера. 300 DPI × сотни страниц = зависание; 200 DPI и
+# первые 20 страниц достаточно для распознавания реквизитов/кодов.
+_OCR_MAX_PAGES = 20
+_OCR_DPI = 200
+
+
 def _extract_pdf(p: Path, ocr: bool) -> ExtractedDoc:
     import fitz  # PyMuPDF
 
@@ -107,11 +114,16 @@ def _extract_pdf(p: Path, ocr: bool) -> ExtractedDoc:
     pages = [page.get_text("text") for page in doc]
     text = "\n".join(pages)
     method = "pdf-text"
-    # скан без текстового слоя -> OCR постранично
+    # скан без текстового слоя -> OCR первых страниц
     if ocr and len(text.strip()) < 40:
         ocr_pages = []
-        for page in doc:
-            pix = page.get_pixmap(dpi=300)
+        total = doc.page_count
+        for i, page in enumerate(doc):
+            if i >= _OCR_MAX_PAGES:
+                ocr_pages.append(
+                    f"[распознаны первые {_OCR_MAX_PAGES} из {total} страниц]")
+                break
+            pix = page.get_pixmap(dpi=_OCR_DPI)
             ocr_pages.append(_ocr_pixmap(pix))
         pages = ocr_pages
         text = "\n".join(pages)
@@ -270,7 +282,11 @@ def _ocr_image(img) -> str:
             "Установите его (в установщике ЭКО.DOC это делается автоматически) "
             "или скачайте: https://github.com/UB-Mannheim/tesseract/wiki")
     import pytesseract
-    return pytesseract.image_to_string(img, lang=lang)
+    try:
+        # таймаут на одну страницу — битый/гигантский скан не повесит приём
+        return pytesseract.image_to_string(img, lang=lang, timeout=40)
+    except RuntimeError:
+        return ""          # не распозналось за отведённое время — пропускаем
 
 
 def _ocr_pixmap(pix) -> str:
