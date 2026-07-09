@@ -86,3 +86,30 @@ def test_cadastre_spb_forms(tmp_path):
     # ТКО (73...) уходит региональному оператору — графа Q
     assert f3["Q14"].value == 42.6
     assert wb["Форма 5"]["C27"].value == "ООО «Ромашка»"
+
+
+def test_tp2_waste_datapacket_xml(tmp_path):
+    registry.load_all()
+    rep = registry.get("2tp-waste")(_ctx())
+    p = rep.render_xml(tmp_path / "2tp.xml")
+    xml = p.read_text(encoding="utf-8")
+    # реальный конверт Модуля природопользователя
+    assert "<DATA_PACKET_NI" in xml and 'DocType="3"' in xml
+    assert "<ORG_INFO>" in xml and "<EMISS_OBJECT>" in xml
+    assert "<RPT_2TP_WASTE>" in xml and "<RPT_2TP_WASTE_FACT>" in xml
+    assert "<WST_CODE>73310001724</WST_CODE>" in xml
+    assert "<TP2_FORMING>42.600000</TP2_FORMING>" in xml
+    assert "<CHECKSUM>" in xml
+
+
+def test_tp2_waste_print_pages(tmp_path):
+    registry.load_all()
+    rep = registry.get("2tp-waste")(_ctx())
+    p = rep.render_print(tmp_path / "2tp.xlsx")
+    wb = openpyxl.load_workbook(p)
+    assert wb.sheetnames == ["стр.1", "стр.2", "стр.3"]
+    assert wb["стр.1"]["A17"].value == "0609013"       # код формы по ОКУД
+    assert wb["стр.2"]["B6"].value == "ВСЕГО"           # агрегатная строка
+    # графы А,Б,В,Г,1..18
+    assert wb["стр.2"]["A5"].value == "А"
+    assert wb["стр.2"]["V5"].value == "18"
