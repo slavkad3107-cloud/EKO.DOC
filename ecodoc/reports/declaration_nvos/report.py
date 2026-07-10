@@ -193,37 +193,77 @@ class DeclarationNVOS(Report):
         xlsx.cell(ws, f"B{r+2}", "Дата: «____» __________ 20___ г.",
                   border=False, align="left")
 
-    # стр.2 — расчёт суммы платы по 9 разделам (Приказ №1043 ред. №241) ----
+    # стр.2 — расчёт суммы платы, официальные коды строк 010–120 -------
+    # (сверено с реальной сданной декларацией, Приложение 2 к Приказу № 1043)
     def _sheet_calc(self, wb):
+        from decimal import Decimal
+        from ecodoc.core.money import D
         o = self.ctx.organization
         c = self.calc
+        bs = c.by_section
+        # суммы по (раздел, корзина) для строк 041/042/043 и т.п.
+        sb: dict = {}
+        for ln in c.lines:
+            sb[(ln.section, ln.band)] = sb.get((ln.section, ln.band), Decimal("0")) + D(ln.amount)
+
+        def band(sect, b):
+            return fmt_money(sb.get((sect, b), Decimal("0")))
+
         ws = wb.create_sheet("стр.2")
-        xlsx.widths(ws, {"A": 6, "B": 52, "C": 24, "D": 18})
-        xlsx.merge(ws, "A1:D1",
-                   "Расчёт суммы платы, подлежащей внесению в бюджет "
-                   "(по разделам формы, Приказ Минприроды № 1043 в ред. № 241)",
+        xlsx.widths(ws, {"A": 10, "B": 60, "C": 26, "D": 18})
+        xlsx.merge(ws, "A1:D1", "Расчёт суммы платы, подлежащей внесению в бюджет "
+                   "(Приложение 2 к Приказу Минприроды № 1043 в ред. № 241)",
                    bold=True, border=False)
-        xlsx.cell(ws, "A2", "Код по ОКТМО объекта НВОС:", border=False, align="left")
-        xlsx.cell(ws, "B2", o.oktmo or "", border=False, bold=True, align="left")
-        xlsx.cell(ws, "A4", "Раздел", bold=True, fill=True)
-        xlsx.cell(ws, "B4", "Вид платы", bold=True, fill=True, align="left")
-        xlsx.cell(ws, "C4", "КБК", bold=True, fill=True)
-        xlsx.cell(ws, "D4", "Сумма, руб.", bold=True, fill=True)
-        r = 5
-        for key in ("Р1", "Р2", "Р3", "Р4", "Р5", "Р6", "Р7", "Р8", "Р9"):
-            amount = c.by_section.get(key, 0)
-            xlsx.cell(ws, f"A{r}", key)
-            xlsx.cell(ws, f"B{r}", SECTIONS[key], align="left")
-            xlsx.cell(ws, f"C{r}", _KBK_BY_SECTION.get(key, "") or "—")
-            xlsx.cell(ws, f"D{r}", fmt_money(amount))
+        xlsx.cell(ws, "A3", "Код строки", bold=True, fill=True)
+        xlsx.cell(ws, "B3", "Показатели", bold=True, fill=True, align="left")
+        xlsx.cell(ws, "C3", "КБК / ОКТМО", bold=True, fill=True)
+        xlsx.cell(ws, "D3", "Сумма, руб.", bold=True, fill=True)
+        png = fmt_money(D(bs.get("Р2", 0)) + D(bs.get("Р3", 0)))
+        # (код, показатель, значение-в-C (КБК/ОКТМО), значение-в-D (сумма))
+        rows = [
+            ("010", "Код по ОКТМО объекта НВОС", o.oktmo or "", None),
+            ("020", "Сумма платы, всего (020 = 021+022+023+024+025)", "", fmt_money(c.total)),
+            ("021", "  плата за выбросы стационарными источниками (040)", "", fmt_money(bs.get("Р1", 0))),
+            ("022", "  плата за выбросы ПНГ (060)", "", png),
+            ("023", "  плата за сбросы (080)", "", fmt_money(bs.get("Р4", 0))),
+            ("024", "  плата за размещение отходов производства (100)", "", fmt_money(bs.get("Р5", 0))),
+            ("025", "  плата за размещение ТКО (120)", "", fmt_money(bs.get("Р6", 0))),
+            ("030", "КБК: плата за выбросы", _KBK_AIR, None),
+            ("040", "Сумма платы за выбросы, всего (040 = 041+042+043)", "", fmt_money(bs.get("Р1", 0))),
+            ("041", "  в пределах НДВ, ТН", "", band("Р1", "norm")),
+            ("042", "  в пределах ВРВ", "", band("Р1", "limit")),
+            ("043", "  сверх НДВ, ТН, ВРВ", "", band("Р1", "over")),
+            ("050", "КБК: плата за выбросы ПНГ", _KBK_PNG, None),
+            ("060", "Сумма платы за выбросы ПНГ, всего", "", png),
+            ("070", "КБК: плата за сбросы", _KBK_WATER, None),
+            ("080", "Сумма платы за сбросы, всего (080 = 081+082+083)", "", fmt_money(bs.get("Р4", 0))),
+            ("081", "  в пределах НДС, ТН", "", band("Р4", "norm")),
+            ("082", "  в пределах ВРС", "", band("Р4", "limit")),
+            ("083", "  сверх НДС, ТН, ВРС", "", band("Р4", "over")),
+            ("090", "КБК: плата за размещение отходов производства", _KBK_WASTE, None),
+            ("100", "Сумма платы за размещение отходов производства", "", fmt_money(bs.get("Р5", 0))),
+            ("101", "  в пределах лимита", "", band("Р5", "norm")),
+            ("102", "  сверх лимита", "", band("Р5", "over")),
+            ("110", "КБК: плата за размещение ТКО", _KBK_TKO, None),
+            ("120", "Сумма платы за размещение ТКО, всего", "", fmt_money(bs.get("Р6", 0))),
+        ]
+        r = 4
+        for code, label, c_val, d_val in rows:
+            bold = code in ("010", "020")
+            xlsx.cell(ws, f"A{r}", code, bold=bold)
+            xlsx.cell(ws, f"B{r}", label, align="left", bold=bold)
+            xlsx.cell(ws, f"C{r}", c_val)
+            xlsx.cell(ws, f"D{r}", d_val if d_val is not None else "", bold=bold)
             r += 1
-        xlsx.cell(ws, f"B{r}", "ИТОГО плата, подлежащая внесению", bold=True, align="left")
-        xlsx.cell(ws, f"D{r}", fmt_money(c.total), bold=True)
-        r += 2
-        xlsx.cell(ws, f"A{r}", "Разделы 2–3 — ПНГ (флаг is_flare у вещества); Р6 — ТКО "
-                  "(ФККО «7 3…» или waste_kind=tko); Р7–Р9 (побочные продукты, породы, "
-                  "животноводство) — по waste_kind. Точные коды строк итогового раздела "
-                  "сверьте с бланком (Приложение 2 к Приказу № 1043 в ред. № 241).",
+        extra = D(bs.get("Р7", 0)) + D(bs.get("Р8", 0)) + D(bs.get("Р9", 0))
+        if extra > 0:
+            xlsx.cell(ws, f"B{r}", "Плата за размещение побочных продуктов производства / "
+                      "вскрышных пород / побочных продуктов животноводства (Разделы 7–9)",
+                      border=False, align="left")
+            xlsx.cell(ws, f"D{r}", fmt_money(extra))
+            r += 1
+        xlsx.cell(ws, f"A{r+1}", "Разделы 2–3 (ПНГ) — по флагу is_flare; строка 025/120 — ТКО "
+                  "(ФККО «7 3…»). Сверено с реальной сданной декларацией.",
                   border=False, italic=True, size=9, align="left")
 
     # ----- листы Excel -----

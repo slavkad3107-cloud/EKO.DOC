@@ -55,6 +55,11 @@ def _round_class(v, hazard_class) -> float:
     return round(_n(v), _prec(hazard_class))
 
 
+def _is_tko(fkko) -> bool:
+    """ТКО — блок ФККО «7 3…» (передаётся региональному оператору, графа 14)."""
+    return str(fkko or "").replace(" ", "").startswith("73")
+
+
 @register
 class TP2Waste(Report):
     code = "2tp-waste"
@@ -197,83 +202,85 @@ class TP2Waste(Report):
             xlsx.cell(ws, f"{col}17", v or "")
         xlsx.heights(ws, {3: 46, 15: 46})
 
+    # 29 граф Раздела I по форме Приказа Росстата № 614 (сверено с реальным
+    # принятым отчётом). Кортеж: (номер, краткая подпись).
+    _G29 = [
+        (1, "Наличие на начало года"), (2, "Образование за год"),
+        (3, "Поступление от других: всего"), (4, "из гр.3: из др. субъектов РФ"),
+        (5, "из гр.3: по импорту"), (6, "Поступление с собств. объектов: всего"),
+        (7, "из них из др. субъектов РФ"), (8, "Образование др. видов после обработки"),
+        (9, "Обработано"), (10, "Утилизировано: всего"),
+        (11, "рециклинг"), (12, "предв. прошедших обработку"), (13, "Обезврежено"),
+        (14, "Передача ТКО региональному оператору"),
+        (15, "Передача (кроме ТКО) для обработки: всего"), (16, "из них в др. субъекты"),
+        (17, "для утилизации: всего"), (18, "из них в др. субъекты"),
+        (19, "для обезвреживания: всего"), (20, "из них в др. субъекты"),
+        (21, "для хранения: всего"), (22, "из них в др. субъекты"),
+        (23, "для захоронения: всего"), (24, "из них в др. субъекты"),
+        (25, "на собств. объекты: всего"), (26, "из них в др. субъекты"),
+        (27, "Размещение: хранение"), (28, "Размещение: захоронение"),
+        (29, "Наличие на конец года"),
+    ]
+
     def _page2(self, wb):
-        ws = wb.create_sheet("стр.2")
-        xlsx.cell(ws, "A1", "Код по ОКЕИ: тонна — 168", border=False, italic=True, align="left")
-        # верхний ярус групп (row 2), подписи (row 3), номера граф (row 4)
-        xlsx.merge(ws, "A2:A4", "№ строки", bold=True, fill=True, size=9)
-        xlsx.merge(ws, "B2:B4", "Наименование видов отходов", bold=True, fill=True, size=9)
-        xlsx.merge(ws, "C2:C4", "Код отхода по ФККО", bold=True, fill=True, size=9)
-        xlsx.merge(ws, "D2:D4", "Класс опасности отхода", bold=True, fill=True, size=9)
-        xlsx.merge(ws, "E2:E4", "Наличие отходов на начало отчетного года",
-                   bold=True, fill=True, size=8)
-        xlsx.merge(ws, "F2:F4", "Образование отходов за отчетный год",
-                   bold=True, fill=True, size=8)
-        xlsx.merge(ws, "G2:H2", "Поступление отходов из других хозяйствующих субъектов",
-                   bold=True, fill=True, size=8)
-        xlsx.merge(ws, "G3:G4", "всего", bold=True, fill=True, size=8)
-        xlsx.merge(ws, "H3:H4", "в т.ч. по импорту", bold=True, fill=True, size=8)
-        xlsx.merge(ws, "I2:I4", "Обработано отходов", bold=True, fill=True, size=8)
-        xlsx.merge(ws, "J2:L2", "Утилизировано отходов", bold=True, fill=True, size=8)
-        xlsx.merge(ws, "J3:J4", "всего", bold=True, fill=True, size=8)
-        xlsx.merge(ws, "K3:K4", "для повторного применения (рециклинг)",
-                   bold=True, fill=True, size=8)
-        xlsx.merge(ws, "L3:L4", "предварительно прошедших обработку",
-                   bold=True, fill=True, size=8)
-        xlsx.merge(ws, "M2:N2", "Обезврежено отходов", bold=True, fill=True, size=8)
-        xlsx.merge(ws, "M3:M4", "всего", bold=True, fill=True, size=8)
-        xlsx.merge(ws, "N3:N4", "из них предварительно прошедших обработку",
-                   bold=True, fill=True, size=8)
-        xlsx.merge(ws, "O2:S2", "Передача отходов другим хозяйствующим субъектам",
-                   bold=True, fill=True, size=8)
-        for col, lbl in zip("OPQRS", ["для обработки", "для утилизации",
-                                      "для обезвреживания", "для хранения",
-                                      "для захоронения"]):
-            xlsx.merge(ws, f"{col}3:{col}4", lbl, bold=True, fill=True, size=8)
-        xlsx.merge(ws, "T2:U2", "Размещение отходов на эксплуатируемых объектах",
-                   bold=True, fill=True, size=8)
-        xlsx.merge(ws, "T3:T4", "хранение", bold=True, fill=True, size=8)
-        xlsx.merge(ws, "U3:U4", "захоронение", bold=True, fill=True, size=8)
-        xlsx.merge(ws, "V2:V4", "Наличие отходов на конец отчетного года",
-                   bold=True, fill=True, size=8)
-        graphs = ["А", "Б", "В", "Г"] + [str(i) for i in range(1, 19)]
         from openpyxl.utils import get_column_letter
-        for i, g in enumerate(graphs):
-            xlsx.cell(ws, f"{get_column_letter(i+1)}5", g, italic=True, size=8)
-        # строки-агрегаты + позиции (масса — с точностью по классу опасности)
+        ws = wb.create_sheet("стр.2")
+        xlsx.merge(ws, "A1:D1", "Раздел I. Сведения об образовании, обработке, "
+                   "утилизации, обезвреживании, размещении отходов (тонна)",
+                   bold=True, border=False)
+        # шапка: А,Б,В,Г + графы 1-29 (подпись — строка 2, номер — строка 3)
+        base = [("А", "№ строки"), ("Б", "Наименование видов отходов"),
+                ("В", "Код по ФККО"), ("Г", "Класс опасности")]
+        for i, (g, lbl) in enumerate(base):
+            col = get_column_letter(i + 1)
+            xlsx.cell(ws, f"{col}2", lbl, bold=True, fill=True, size=8)
+            xlsx.cell(ws, f"{col}3", g, italic=True, size=8)
+        for i, (num, lbl) in enumerate(self._G29):
+            col = get_column_letter(5 + i)
+            xlsx.cell(ws, f"{col}2", lbl, bold=True, fill=True, size=7)
+            xlsx.cell(ws, f"{col}3", num, italic=True, size=8)
+        cols = [get_column_letter(5 + i) for i in range(29)]
+
         def gv(w):
             hc = w.hazard_class
             rc = lambda v: _round_class(v, hc)  # noqa: E731
-            return {
-                "E": rc(w.accumulated_start), "F": rc(w.generated),
-                "G": rc(w.received), "H": 0.0, "I": rc(w.processed),
-                "J": rc(w.used), "K": 0.0, "L": 0.0,
-                "M": rc(w.neutralized), "N": 0.0,
-                "O": 0.0, "P": 0.0, "Q": 0.0,
-                "R": rc(w.transferred_storage), "S": rc(w.transferred_burial),
-                "T": 0.0, "U": rc(D(w.placed_norm) + D(w.placed_over)),
-                "V": rc(w.accumulated_end),
-            }
-        cols = "EFGHIJKLMNOPQRSTUV"
-        r = 6
+            tko = _is_tko(w.fkko_code)
+            trans = rc(w.transferred)
+            g = {c: 0.0 for c in cols}
+            g[cols[0]] = rc(w.accumulated_start)   # 1
+            g[cols[1]] = rc(w.generated)           # 2
+            g[cols[2]] = rc(w.received)            # 3
+            g[cols[8]] = rc(w.processed)           # 9
+            g[cols[9]] = rc(w.used)                # 10
+            g[cols[12]] = rc(w.neutralized)        # 13
+            if tko:
+                g[cols[13]] = trans                # 14 — ТКО региональному оператору
+            else:
+                g[cols[20]] = rc(w.transferred_storage)  # 21 — для хранения
+                g[cols[22]] = rc(w.transferred_burial)   # 23 — для захоронения
+            g[cols[27]] = rc(D(w.placed_norm) + D(w.placed_over))  # 28 — размещ. захоронение
+            g[cols[28]] = rc(w.accumulated_end)    # 29
+            return g
+
+        r = 4
         self._agg_row(ws, r, "1", "ВСЕГО", self.ctx.wastes, gv, cols); r += 1
         for cl in (1, 2, 3, 4, 5):
             group = [w for w in self.ctx.wastes if int(w.hazard_class) == cl]
             if group:
-                self._agg_row(ws, r, str(r - 4), f"Всего по {cl} классу опасности",
+                self._agg_row(ws, r, str(r - 2), f"Всего по {cl} классу опасности",
                               group, gv, cols); r += 1
         for w in self.ctx.wastes:
             g = gv(w)
-            xlsx.cell(ws, f"A{r}", r - 4)
+            xlsx.cell(ws, f"A{r}", r - 2)
             xlsx.cell(ws, f"B{r}", w.name, align="left")
             xlsx.cell(ws, f"C{r}", str(w.fkko_code).replace(" ", ""))
             xlsx.cell(ws, f"D{r}", w.hazard_class)
             for c in cols:
                 xlsx.cell(ws, f"{c}{r}", g[c])
             r += 1
-        xlsx.widths(ws, {"A": 6, "B": 30, "C": 14, "D": 8,
-                         **{get_column_letter(i): 10 for i in range(5, 23)}})
-        xlsx.heights(ws, {2: 40, 3: 46})
+        xlsx.widths(ws, {"A": 5, "B": 28, "C": 13, "D": 7,
+                         **{c: 9 for c in cols}})
+        xlsx.heights(ws, {2: 70})
 
     def _agg_row(self, ws, r, num, label, group, gv, cols):
         xlsx.cell(ws, f"A{r}", num, bold=True)

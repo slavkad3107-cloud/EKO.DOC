@@ -110,7 +110,8 @@ def test_tp2_waste_print_pages(tmp_path):
     wb = openpyxl.load_workbook(p)
     assert wb.sheetnames == ["стр.1", "стр.2", "стр.3"]
     assert wb["стр.1"]["A17"].value == "0609013"       # код формы по ОКУД
-    assert wb["стр.2"]["B6"].value == "ВСЕГО"           # агрегатная строка
-    # графы А,Б,В,Г,1..18
-    assert wb["стр.2"]["A5"].value == "А"
-    assert wb["стр.2"]["V5"].value == "18"
+    assert wb["стр.2"]["B4"].value == "ВСЕГО"           # агрегатная строка
+    # графы А,Б,В,Г (строка 3) + 29 граф (Приказ № 614)
+    assert wb["стр.2"]["A3"].value == "А"
+    from openpyxl.utils import get_column_letter
+    assert wb["стр.2"][f"{get_column_letter(4 + 29)}3"].value == 29  # графа 29
