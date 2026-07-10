@@ -82,6 +82,8 @@ class Pollutant:
     k_ot: Optional[Decimal] = None       # коэффициент за территорию (ООПТ и пр.)
     is_flare: bool = False      # выбросы при сжигании/рассеивании ПНГ на факелах
                                 # (Разделы 2/3 декларации), для обычных выбросов False
+    source: str = ""            # откуда взяты массы: «НДВ» / «ООС» / «инвентаризация»
+                                # (по воздуху данные берутся из проекта НДВ или раздела ООС)
 
 
 @dataclass
@@ -123,6 +125,29 @@ class WasteFlow:
 
 
 @dataclass
+class WasteAct:
+    """Справка-акт на отход — ПЕРВИЧНЫЙ ввод по отходам.
+
+    Все отходные формы (журнал №1028, 2-ТП отходы, кадастр, раздел отходов
+    декларации) СЧИТАЮТСЯ из списка актов агрегацией по ФККО (см.
+    ecodoc/core/waste_agg.py). Один акт = одна передача/обращение с отходом.
+    """
+    name: str = ""              # наименование отхода
+    fkko_code: str = ""         # код по ФККО
+    hazard_class: int = 5       # класс опасности 1..5
+    mass: Decimal = Decimal("0")        # масса, тонн
+    volume_m3: Decimal = Decimal("0")   # объём, м³ (если задан)
+    density: Decimal = Decimal("0")     # плотность, т/м³ (для пересчёта)
+    # вид обращения: утилизация | обезвреживание | размещение | хранение | ""
+    operation: str = ""
+    carrier: str = ""           # перевозчик
+    receiver: str = ""          # приёмщик / полигон / получатель
+    receiver_inn: str = ""
+    license: str = ""           # реквизиты лицензии получателя
+    date: str = ""              # дата акта (ДД.ММ.ГГГГ)
+
+
+@dataclass
 class ReportPeriod:
     year: int = 0
     # для квартальных/полугодовых форм; для годовых quarter=None
@@ -140,6 +165,8 @@ class ReportContext:
     objects: list[NVOSObject] = field(default_factory=list)
     period: ReportPeriod = field(default_factory=ReportPeriod)
     pollutants: list[Pollutant] = field(default_factory=list)
+    # первичный ввод по отходам — справки-акты; wastes (движение) считается из них
+    waste_acts: list[WasteAct] = field(default_factory=list)
     wastes: list[WasteFlow] = field(default_factory=list)
     # произвольные доп.поля, специфичные для конкретной формы (ПЭК, кадастр)
     extra: dict = field(default_factory=dict)

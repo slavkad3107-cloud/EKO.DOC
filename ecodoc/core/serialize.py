@@ -13,7 +13,7 @@ from enum import Enum
 from pathlib import Path
 
 from ecodoc.core.models import (Medium, NVOSObject, Organization, Pollutant,
-                                ReportContext, ReportPeriod, WasteFlow)
+                                ReportContext, ReportPeriod, WasteAct, WasteFlow)
 
 
 def _enc(obj):
@@ -78,13 +78,26 @@ def from_json(path: str | Path) -> ReportContext:
         p.k_ot = Decimal(str(pd["k_ot"])) if pd.get("k_ot") not in (None, "") else None
         ctx.pollutants.append(p)
 
-    dec_fields = ("accumulated_start", "generated", "received", "used",
-                  "neutralized", "transferred", "placed_norm", "placed_over",
-                  "accumulated_end")
+    dec_fields = ("accumulated_start", "accumulated_start_nakopl", "generated",
+                  "received", "processed", "used", "neutralized", "transferred",
+                  "transferred_storage", "transferred_burial", "placed_norm",
+                  "placed_over", "accumulated_end")
     for wd in data.get("wastes", []):
         w = _build(WasteFlow, wd)
         for a in dec_fields:
             setattr(w, a, Decimal(str(wd.get(a, 0) or 0)))
         w.hazard_class = _to_int(w.hazard_class) or 5   # из формы приходит строкой
         ctx.wastes.append(w)
+
+    # первичный ввод по отходам — справки-акты
+    for ad in data.get("waste_acts", []):
+        a = _build(WasteAct, ad)
+        for fld in ("mass", "volume_m3", "density"):
+            setattr(a, fld, Decimal(str(ad.get(fld, 0) or 0)))
+        a.hazard_class = _to_int(a.hazard_class) or 5
+        ctx.waste_acts.append(a)
+
+    # если движение не задано вручную — рассчитать из актов
+    from ecodoc.core.waste_agg import apply_acts
+    apply_acts(ctx)
     return ctx

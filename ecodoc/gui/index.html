@@ -684,13 +684,24 @@ function renderDataForm(){
   // объекты НВОС
   h += tableSection("Объекты НВОС", "objects", CTX.objects||[],
     [["code","Код НВОС"],["name","Наименование"],["category","Категория"],["address","Адрес"]]);
-  // выбросы/сбросы
+  // выбросы/сбросы (по воздуху данные — из проекта НДВ или раздела ООС)
   h += tableSection("Выбросы и сбросы", "pollutants", CTX.pollutants||[],
     [["name","Вещество"],["code","Код"],["medium","Среда","sel"],
      ["mass_norm","В пределах норм., т",,"num"],["mass_limit","В пределах лимита, т",,"num"],
      ["mass_over","Сверх лимита, т",,"num"]]);
-  // отходы
-  h += tableSection("Отходы", "wastes", CTX.wastes||[],
+  h += '<div class="hint" style="margin:-4px 0 8px">По воздуху массы берутся из '+
+    'проекта НДВ или раздела ООС (перечень веществ и нормативы ПДВ/ВСВ).</div>';
+  // справки-акты на отходы — первичный ввод (движение считается из них)
+  h += tableSection("Справки-акты на отходы (первичный ввод)", "waste_acts", CTX.waste_acts||[],
+    [["name","Наименование отхода"],["fkko_code","ФККО"],["hazard_class","Класс",,"num"],
+     ["mass","Масса, т",,"num"],["operation","Вид обращения"],
+     ["carrier","Перевозчик"],["receiver","Приёмщик/полигон"]]);
+  h += '<div class="hint" style="margin:-4px 0 8px">Вид обращения: '+
+    'утилизация / обезвреживание / размещение / хранение. Из актов '+
+    'рассчитываются журнал 1028, 2-ТП (отходы), кадастр, раздел отходов декларации '+
+    '(движение ниже заполнится автоматически).</div>';
+  // отходы — движение (рассчитано из актов или вручную, если актов нет)
+  h += tableSection("Отходы (движение — из актов или вручную)", "wastes", CTX.wastes||[],
     [["fkko_code","ФККО"],["name","Наименование"],["hazard_class","Класс",,"num"],
      ["generated","Образовано, т",,"num"],["transferred","Передано, т",,"num"],
      ["placed_norm","Размещено (лимит), т",,"num"],["placed_over","Размещено (сверх), т",,"num"]]);
@@ -738,7 +749,8 @@ function rowHtml(key, r, cols, ri){
   h += `<td><button class="delrow" title="удалить" onclick="delRow(this)">✕</button></td></tr>`;
   return h;
 }
-const DEFROW = {objects:{}, pollutants:{medium:"air"}, wastes:{hazard_class:5}};
+const DEFROW = {objects:{}, pollutants:{medium:"air"}, wastes:{hazard_class:5},
+  waste_acts:{hazard_class:5, operation:"размещение"}};
 function addRow(key){
   collectDataForm();
   (CTX[key] = CTX[key]||[]).push({...(DEFROW[key]||{})});
