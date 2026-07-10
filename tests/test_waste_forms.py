@@ -98,7 +98,8 @@ def test_tp2_waste_datapacket_xml(tmp_path):
     assert "<ORG_INFO>" in xml and "<EMISS_OBJECT>" in xml
     assert "<RPT_2TP_WASTE>" in xml and "<RPT_2TP_WASTE_FACT>" in xml
     assert "<WST_CODE>73310001724</WST_CODE>" in xml
-    assert "<TP2_FORMING>42.600000</TP2_FORMING>" in xml
+    # масса IV класса — с точностью 1 знак (Указания к форме)
+    assert "<TP2_FORMING>42.6</TP2_FORMING>" in xml
     assert "<CHECKSUM>" in xml
 
 

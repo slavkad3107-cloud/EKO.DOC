@@ -5,13 +5,16 @@
 ДЕЙСТВУЮЩАЯ редакция — Приказ Росстата от 06.11.2025 № 614 (за отчётный 2025);
 Приказ № 627 от 09.10.2020 (ранее № 529) утратил силу.
 
-ВНИМАНИЕ: действующая форма № 614 содержит 3 раздела (Раздел I — движение,
-графы 1–29 с балансовой формулой графы 29; Раздел II — сведения регоператоров
-ТКО; Раздел III — объекты размещения). Текущий генератор реализует только
-Раздел I в объёме 18 граф — требуется расширение до 29 граф и добавление
-Разделов II/III. Точность массы: I–III класс — 3 знака, IV–V — 1 знак.
-XML — конверт «Модуля природопользователя» (DATA_PACKET_NI, DocType=3);
-актуальный XSD Модуля за 2025 не сверялся.
+Структура: стр.1 (титул + код-строка); стр.2 — Раздел I (движение); стр.3 —
+Раздел II (регоператоры ТКО, из extra.tko_operators) + Раздел III (объекты
+размещения, из extra.disposal_objects) + справочно + подпись. Точность массы —
+по классу опасности: I–III = 3 знака, IV–V = 1 знак; баланс проверяется.
+XML — конверт «Модуля природопользователя» (DATA_PACKET_NI, DocType=3).
+
+ВНИМАНИЕ: Раздел I пока в объёме 18 граф; действующая форма № 614 имеет 29 граф
+(с детализацией обработки/утилизации/обезвреживания собственными силами и
+передачи в пределах/вне региона). Точные названия/порядок 29 граф и XSD Модуля
+за 2025 нужно взять из официального бланка/дистрибутива Модуля и досверить.
 
 Данные — из ctx.wastes (та же модель, что и учёт движения №1028).
 """
@@ -36,6 +39,22 @@ def _f6(v) -> str:
     return f"{_n(v):.6f}"
 
 
+def _prec(hazard_class) -> int:
+    """Точность массы по Указаниям: I–III класс — 3 знака, IV–V — 1 знак."""
+    try:
+        return 3 if int(hazard_class) <= 3 else 1
+    except (TypeError, ValueError):
+        return 1
+
+
+def _fmt_class(v, hazard_class) -> str:
+    return f"{_n(v):.{_prec(hazard_class)}f}"
+
+
+def _round_class(v, hazard_class) -> float:
+    return round(_n(v), _prec(hazard_class))
+
+
 @register
 class TP2Waste(Report):
     code = "2tp-waste"
@@ -48,6 +67,16 @@ class TP2Waste(Report):
             issues.append(Issue("error", "ИНН", "не указан ИНН"))
         if not o.okpo:
             issues.append(Issue("warning", "ОКПО", "для 2-ТП обязателен код ОКПО"))
+        # баланс масс по каждому отходу (наличие на конец = приход − расход)
+        for w in self.ctx.wastes:
+            bal = (D(w.accumulated_start) + D(w.generated) + D(w.received)
+                   - D(w.used) - D(w.neutralized) - D(w.transferred)
+                   - D(w.placed_norm) - D(w.placed_over))
+            if abs(bal - D(w.accumulated_end)) > D("0.001"):
+                issues.append(Issue(
+                    "warning", f"баланс/{w.fkko_code}",
+                    f"наличие на конец {D(w.accumulated_end)} ≠ расчётный баланс "
+                    f"{bal} (гр.29 = приход − расход)"))
         if not self.ctx.period.year:
             issues.append(Issue("error", "период", "не указан отчётный год"))
         if not self.ctx.wastes:
@@ -89,20 +118,21 @@ class TP2Waste(Report):
             okv = el(rpt, "OKVED")
             el(okv, "OKVED_CODE", codes[0])
         for w in self.ctx.wastes:
+            hc = w.hazard_class
             fact = el(rpt, "RPT_2TP_WASTE_FACT")
             el(fact, "NONE_FKKO_NAME", w.name)
             el(fact, "WST_CODE", str(w.fkko_code).replace(" ", ""))
-            el(fact, "WSTYPE", w.hazard_class)
-            el(fact, "TP2_BP_ACCUM_WASTE", _f6(w.accumulated_start))
-            el(fact, "TP2_FORMING", _f6(w.generated))
-            el(fact, "TP2_ARRIVAL", _f6(w.received))
-            el(fact, "TP2_TRANSF", _f6(w.transferred))
-            el(fact, "TP2_TR_ISPOTX", _f6(w.used))
-            el(fact, "TP2_TR_SOTX", _f6(w.neutralized))
-            el(fact, "TP2_TR_DISP", _f6(w.transferred))
-            el(fact, "TP2_RAZM", _f6(D(w.placed_norm) + D(w.placed_over)))
-            el(fact, "TP2_RAZM_STOR", "0.000000")
-            el(fact, "TP2_ACCUM_WASTE", _f6(w.accumulated_end))
+            el(fact, "WSTYPE", hc)
+            el(fact, "TP2_BP_ACCUM_WASTE", _fmt_class(w.accumulated_start, hc))
+            el(fact, "TP2_FORMING", _fmt_class(w.generated, hc))
+            el(fact, "TP2_ARRIVAL", _fmt_class(w.received, hc))
+            el(fact, "TP2_TRANSF", _fmt_class(w.transferred, hc))
+            el(fact, "TP2_TR_ISPOTX", _fmt_class(w.used, hc))
+            el(fact, "TP2_TR_SOTX", _fmt_class(w.neutralized, hc))
+            el(fact, "TP2_TR_DISP", _fmt_class(w.transferred, hc))
+            el(fact, "TP2_RAZM", _fmt_class(D(w.placed_norm) + D(w.placed_over), hc))
+            el(fact, "TP2_RAZM_STOR", "0.0")
+            el(fact, "TP2_ACCUM_WASTE", _fmt_class(w.accumulated_end, hc))
 
     # ---------------- Печатная форма (3 страницы) ---------------------
     def render_print(self, out_path: Path) -> Path:
@@ -187,17 +217,19 @@ class TP2Waste(Report):
         from openpyxl.utils import get_column_letter
         for i, g in enumerate(graphs):
             xlsx.cell(ws, f"{get_column_letter(i+1)}5", g, italic=True, size=8)
-        # строки-агрегаты + позиции
+        # строки-агрегаты + позиции (масса — с точностью по классу опасности)
         def gv(w):
+            hc = w.hazard_class
+            rc = lambda v: _round_class(v, hc)  # noqa: E731
             return {
-                "E": _n(w.accumulated_start), "F": _n(w.generated),
-                "G": _n(w.received), "H": 0.0, "I": _n(w.processed),
-                "J": _n(w.used), "K": 0.0, "L": 0.0,
-                "M": _n(w.neutralized), "N": 0.0,
+                "E": rc(w.accumulated_start), "F": rc(w.generated),
+                "G": rc(w.received), "H": 0.0, "I": rc(w.processed),
+                "J": rc(w.used), "K": 0.0, "L": 0.0,
+                "M": rc(w.neutralized), "N": 0.0,
                 "O": 0.0, "P": 0.0, "Q": 0.0,
-                "R": _n(w.transferred_storage), "S": _n(w.transferred),
-                "T": 0.0, "U": _n(D(w.placed_norm) + D(w.placed_over)),
-                "V": _n(w.accumulated_end),
+                "R": rc(w.transferred_storage), "S": rc(w.transferred),
+                "T": 0.0, "U": rc(D(w.placed_norm) + D(w.placed_over)),
+                "V": rc(w.accumulated_end),
             }
         cols = "EFGHIJKLMNOPQRSTUV"
         r = 6
@@ -228,27 +260,59 @@ class TP2Waste(Report):
             xlsx.cell(ws, f"{c}{r}", round(total, 6), bold=True)
 
     def _page3(self, wb):
+        """стр.3 — Раздел II (регоператоры ТКО) + Раздел III (объекты размещения)
+        + справочно + подпись. Разделы II/III — из ctx.extra."""
         ws = wb.create_sheet("стр.3")
         o = self.ctx.organization
-        xlsx.widths(ws, {"A": 60, "B": 12, "C": 20})
-        xlsx.cell(ws, "A1", "Справочно указывается:", border=False, bold=True, align="left")
-        xlsx.cell(ws, "A2", "количество эксплуатируемых объектов захоронения отходов",
+        e = self.ctx.extra if isinstance(self.ctx.extra, dict) else {}
+        xlsx.widths(ws, {"A": 40, "B": 22, "C": 16, "D": 16, "E": 16, "F": 14})
+        # Раздел II — заполняют региональные операторы по обращению с ТКО
+        xlsx.merge(ws, "A1:F1", "Раздел II. Сведения, представляемые региональными "
+                   "операторами / операторами по обращению с ТКО", bold=True, border=False)
+        tko_ops = e.get("tko_operators", [])
+        if tko_ops:
+            xlsx.header_row(ws, 2, ["Наименование отхода", "Код ФККО", "Класс",
+                                    "Принято, т", "Обработано, т", "Размещено, т"])
+            r = 3
+            for op in tko_ops:
+                xlsx.data_row(ws, r, [op.get("name", ""), op.get("fkko", ""),
+                                      op.get("hazard_class", ""), op.get("received", ""),
+                                      op.get("processed", ""), op.get("placed", "")])
+                r += 1
+        else:
+            xlsx.cell(ws, "A2", "— не заполняется (организация не является региональным "
+                      "оператором по обращению с ТКО)", border=False, italic=True, align="left")
+            r = 4
+        # Раздел III — эксплуатируемые объекты размещения/захоронения отходов
+        r += 1
+        xlsx.merge(ws, f"A{r}:F{r}", "Раздел III. Эксплуатируемые объекты размещения "
+                   "(захоронения) отходов", bold=True, border=False)
+        r += 1
+        objs = e.get("disposal_objects", [])
+        if objs:
+            xlsx.header_row(ws, r, ["Наименование объекта", "№ в ГРОРО",
+                                    "Проектная вместимость, т", "Размещено за год, т",
+                                    "Заполнение, %", "Площадь, га"])
+            r += 1
+            for ob in objs:
+                xlsx.data_row(ws, r, [ob.get("name", ""), ob.get("groro", ""),
+                                      ob.get("capacity", ""), ob.get("placed", ""),
+                                      ob.get("fill_pct", ""), ob.get("area_ha", "")])
+                r += 1
+        else:
+            xlsx.cell(ws, f"A{r}", "— собственные объекты размещения отходов "
+                      "не эксплуатируются", border=False, italic=True, align="left")
+            r += 1
+        # справочно
+        r += 1
+        xlsx.cell(ws, f"A{r}", "Справочно: количество объектов захоронения — "
+                  f"{len(objs)}; площадь — {sum(_n(x.get('area_ha', 0)) for x in objs):.2f} га",
                   border=False, align="left")
-        xlsx.cell(ws, "B2", 0, border=False)
-        xlsx.cell(ws, "A3", "в том числе не отвечающих установленным требованиям",
+        # подпись
+        r += 2
+        xlsx.cell(ws, f"A{r}", "Должностное лицо, ответственное за предоставление "
+                  "статистической информации:", border=False, align="left")
+        xlsx.cell(ws, f"A{r+2}", f"{o.director_position}  ______________  {o.director_name}",
                   border=False, align="left")
-        xlsx.cell(ws, "B3", 0, border=False)
-        xlsx.cell(ws, "A4", "площадь, занимаемая всеми объектами захоронения, га",
-                  border=False, align="left")
-        xlsx.cell(ws, "B4", 0, border=False)
-        xlsx.cell(ws, "A7", "Должностное лицо, ответственное за предоставление "
-                            "статистической информации:", border=False, align="left")
-        xlsx.cell(ws, "A9", o.director_position, border=False, align="left")
-        xlsx.cell(ws, "C9", o.director_name, border=False, align="left")
-        xlsx.cell(ws, "A10", "(должность)", border=False, italic=True, size=8, align="left")
-        xlsx.cell(ws, "C10", "(Ф.И.О.)", border=False, italic=True, size=8, align="left")
-        xlsx.cell(ws, "A12", f"E-mail: {o.email}    тел.: {o.phone}",
-                  border=False, align="left")
-        xlsx.cell(ws, "A14", "«____» __________ 20___ г.", border=False, align="left")
-        xlsx.cell(ws, "A15", "(дата составления документа)", border=False,
-                  italic=True, size=8, align="left")
+        xlsx.cell(ws, f"A{r+4}", f"E-mail: {o.email}    тел.: {o.phone}    "
+                  "«____» __________ 20___ г.", border=False, align="left")
