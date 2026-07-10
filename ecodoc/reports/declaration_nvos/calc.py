@@ -21,6 +21,25 @@ from ecodoc.core.money import D, money
 from ecodoc.core.refdata import coefficients, rates_nvos
 
 
+# Разделы расчёта по действующей форме декларации (Приказ №1043 в ред. № 241
+# от 29.04.2025). Р1 выбросы стационарными; Р2/Р3 ПНГ (в пределах/сверх лимита);
+# Р4 сбросы; Р5 отходы производства; Р6 ТКО; Р7 побочные продукты производства;
+# Р8 вскрышные/вмещающие породы; Р9 побочные продукты животноводства.
+SECTIONS = {
+    "Р1": "Выбросы ЗВ в атмосферу стационарными источниками",
+    "Р2": "Выбросы при сжигании/рассеивании ПНГ (в пределах лимита)",
+    "Р3": "Выбросы при сжигании/рассеивании ПНГ (сверх лимита)",
+    "Р4": "Сбросы ЗВ в водные объекты",
+    "Р5": "Размещение отходов производства",
+    "Р6": "Размещение твёрдых коммунальных отходов (ТКО)",
+    "Р7": "Размещение побочных продуктов производства",
+    "Р8": "Размещение вскрышных и вмещающих горных пород",
+    "Р9": "Размещение побочных продуктов животноводства",
+}
+_WASTE_SECTION = {"prod": "Р5", "tko": "Р6", "byproduct": "Р7",
+                  "overburden": "Р8", "livestock": "Р9"}
+
+
 @dataclass
 class PayLine:
     medium: str          # air | water | waste
@@ -33,20 +52,30 @@ class PayLine:
     k_band: Decimal
     k_extra: Decimal
     amount: Decimal      # итог по строке, руб. (округлён до копеек)
+    section: str = "Р1"  # раздел декларации Р1..Р9
     warning: str = ""    # напр. «нет ставки в справочнике»
 
 
 @dataclass
 class PaymentResult:
     lines: list[PayLine] = field(default_factory=list)
+    by_section: dict = field(default_factory=dict)  # {"Р1": Decimal, ...}
     total_air: Decimal = Decimal("0")
     total_water: Decimal = Decimal("0")
-    total_waste: Decimal = Decimal("0")
+    total_waste: Decimal = Decimal("0")   # Р5+Р6+Р7+Р8+Р9 (все отходы)
     total: Decimal = Decimal("0")
     warnings: list[str] = field(default_factory=list)
 
 
 _BANDS = ("norm", "limit", "over")
+
+
+def _waste_section(w) -> str:
+    kind = (getattr(w, "waste_kind", "") or "").strip().lower()
+    if kind in _WASTE_SECTION:
+        return _WASTE_SECTION[kind]
+    code = str(getattr(w, "fkko_code", "")).replace(" ", "")
+    return "Р6" if code.startswith("73") else "Р5"  # ТКО-блок ФККО «7 3…»
 
 
 def calculate(ctx: ReportContext) -> PaymentResult:
@@ -82,6 +111,8 @@ def calculate(ctx: ReportContext) -> PaymentResult:
             f"{k_extra_year} (ПП РФ №1034 от 10.07.2025); итоговый коэффициент "
             f"индексации = {k_ind}. Проверьте по действующему ПП перед сдачей.")
 
+    by_section = {k: Decimal("0") for k in SECTIONS}
+
     # --- выбросы / сбросы ---
     for p in ctx.pollutants:
         table = rates["air"] if p.medium == Medium.AIR else rates["water"]
@@ -93,6 +124,7 @@ def calculate(ctx: ReportContext) -> PaymentResult:
                 f"{p.name} ({p.code}): коэффициент территории {k_ot} < 1 — "
                 f"проверьте (обычно 1, для ООПТ 2)")
         masses = {"norm": p.mass_norm, "limit": p.mass_limit, "over": p.mass_over}
+        is_flare = getattr(p, "is_flare", False)
         for band in _BANDS:
             mass = D(masses[band])
             if mass <= 0:
@@ -100,35 +132,44 @@ def calculate(ctx: ReportContext) -> PaymentResult:
             k_band = D(coef["band"][band])
             amount = money(mass * rate * k_ind * k_band * k_ot)
             warn = "" if entry else f"нет ставки для кода {p.code} в справочнике"
+            if p.medium == Medium.AIR:
+                sect = ("Р3" if band == "over" else "Р2") if is_flare else "Р1"
+            else:
+                sect = "Р4"
             line = PayLine(p.medium.value, p.code, p.name, band, mass, rate,
-                           k_ind, k_band, k_ot, amount, warn)
+                           k_ind, k_band, k_ot, amount, sect, warn)
             res.lines.append(line)
+            by_section[sect] += amount
             if warn:
                 res.warnings.append(f"{p.name} ({p.code}): {warn}")
-            if p.medium == Medium.AIR:
-                res.total_air += amount
-            else:
+            if sect == "Р1":
+                res.total_air += amount       # только стационарные (без ПНГ)
+            elif sect == "Р4":
                 res.total_water += amount
 
-    # --- размещение отходов ---
+    # --- размещение отходов (Р5 производство / Р6 ТКО / Р7-Р9) ---
     wclass = rates["waste_by_class"]
     wband = coef["waste_band"]
     for w in ctx.wastes:
         rate = _waste_rate(w, wclass)
+        sect = _waste_section(w)
         for band, mass in (("norm", D(w.placed_norm)), ("over", D(w.placed_over))):
             if mass <= 0:
                 continue
             k_band = D(wband[band])
             amount = money(mass * rate * k_ind * k_band)
             line = PayLine("waste", w.fkko_code, w.name or w.fkko_code, band,
-                           mass, rate, k_ind, k_band, Decimal("1"), amount)
+                           mass, rate, k_ind, k_band, Decimal("1"), amount, sect)
             res.lines.append(line)
+            by_section[sect] += amount
             res.total_waste += amount
 
+    res.by_section = {k: money(v) for k, v in by_section.items()}
     res.total_air = money(res.total_air)
     res.total_water = money(res.total_water)
     res.total_waste = money(res.total_waste)
-    res.total = money(res.total_air + res.total_water + res.total_waste)
+    res.total = money(res.total_air + res.total_water + res.total_waste
+                      + res.by_section["Р2"] + res.by_section["Р3"])
     return res
 
 

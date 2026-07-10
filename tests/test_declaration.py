@@ -65,10 +65,32 @@ def test_print_official_sheets(tmp_path):
     wb = openpyxl.load_workbook(rep.render_print(tmp_path / "d.xlsx"))
     assert wb.sheetnames[:2] == ["стр.1", "стр.2"]
     s2 = wb["стр.2"]
-    # официальные коды строк расчёта присутствуют по столбцу B
-    codes = {s2["B" + str(r)].value for r in range(3, 17)}
-    for want in ("010", "020", "021", "023", "024", "100"):
-        assert want in codes, want
+    # 9 разделов расчёта (Приказ №1043 ред. №241) по столбцу A
+    sects = {s2["A" + str(r)].value for r in range(5, 14)}
+    for want in ("Р1", "Р4", "Р5", "Р6", "Р9"):
+        assert want in sects, want
+    # КБК ТКО присутствует у Р6
+    kbk = {s2["C" + str(r)].value for r in range(5, 14)}
+    assert "048 1 12 01042 01 6000 120" in kbk
+
+
+def test_declaration_sections_tko_split(tmp_path):
+    """ТКО (ФККО «7 3…») уходит в Р6, отходы производства — в Р5."""
+    from ecodoc.core.models import ReportContext, ReportPeriod, Organization, WasteFlow
+    from ecodoc.reports.declaration_nvos.calc import calculate
+    ctx = ReportContext(
+        organization=Organization(name="Т", inn="7801234564", oktmo="40324000"),
+        period=ReportPeriod(year=2025),
+        wastes=[
+            WasteFlow(fkko_code="34620001000", name="отход произв.", hazard_class=4,
+                      placed_norm="5"),
+            WasteFlow(fkko_code="73310001724", name="ТКО", hazard_class=4,
+                      placed_norm="3"),
+        ])
+    c = calculate(ctx)
+    assert c.by_section["Р5"] > 0 and c.by_section["Р6"] > 0
+    # согласованность: сумма разделов == итог
+    assert money(sum(c.by_section.values())) == c.total
 
 
 if __name__ == "__main__":
