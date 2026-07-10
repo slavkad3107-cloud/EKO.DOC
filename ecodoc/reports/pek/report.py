@@ -45,7 +45,7 @@ from ecodoc.reports.base import Report
 @register
 class PEKReport(Report):
     code = "pek"
-    title = "Отчёт по ПЭК (форма — Приказ №173/2024; ⚠ требует переработки под разделы 5–6)"
+    title = "Отчёт по ПЭК (форма — Приказ №173/2024, разделы 1–6)"
 
     # ------------------------------------------------------------------ #
     def _pek(self) -> dict:
@@ -132,28 +132,56 @@ class PEKReport(Report):
             el(x, "Факт", r.get("fact", ""))
             el(x, "Превышение", "да" if r.get("exceed") else "нет")
 
+        e = self.ctx.extra if isinstance(self.ctx.extra, dict) else {}
+        ppp = el(root, "ПобочныеПродуктыПроизводства")  # Раздел 5
+        for p in e.get("ppp", []):
+            x = el(ppp, "ППП")
+            el(x, "Наименование", p.get("name", ""))
+            el(x, "Образовано", p.get("formed", ""))
+            el(x, "Использовано", p.get("used", ""))
+        soil = el(root, "ИскусственныеГрунтыТКО")  # Раздел 6 (с 2025)
+        for s in e.get("artificial_soil", []):
+            x = el(soil, "Грунт")
+            el(x, "Наименование", s.get("name", ""))
+            el(x, "Образовано", s.get("formed", ""))
+
         write_tree(root, out_path)
         return out_path
 
     # ------------------------------------------------------------------ #
     def render_print(self, out_path: Path) -> Path:
+        """Печать по структуре Приказа Минприроды № 173 от 15.03.2024:
+        Титул + Разделы 1-6 (общие сведения / воздух / вода / отходы /
+        побочные продукты производства / искусственные грунты из ТКО)."""
         out_path = self._ensure_dir(out_path)
+        wb = xlsx.new_workbook()
+        self._title(wb)
+        self._sect1(wb)
+        self._sect2_air(wb)
+        self._sect3_water(wb)
+        self._sect4_waste(wb)
+        self._sect5_ppp(wb)
+        self._sect6_soil(wb)
+        return xlsx.save(wb, out_path)
+
+    def _title(self, wb):
         o = self.ctx.organization
         pek = self._pek()
-        wb = xlsx.new_workbook()
-
         ws = wb.create_sheet("Титул")
         ws.column_dimensions["A"].width = 40
-        ws.column_dimensions["B"].width = 52
+        ws.column_dimensions["B"].width = 56
         rows = [
-            ("ОТЧЁТ ОБ ОРГАНИЗАЦИИ И О РЕЗУЛЬТАТАХ ПЭК", ""),
+            ("ОТЧЁТ ОБ ОРГАНИЗАЦИИ И О РЕЗУЛЬТАТАХ ОСУЩЕСТВЛЕНИЯ ПЭК", ""),
+            ("(форма — Приказ Минприроды России от 15.03.2024 № 173, ред. № 262)", ""),
             ("Отчётный год", self.ctx.period.year),
             ("Организация", o.name),
             ("ИНН / КПП", f"{o.inn} / {o.kpp}"),
             ("Адрес", o.address),
             ("Программа ПЭК", f"№{pek.get('program_number','—')} от {pek.get('program_date','—')}"),
-            ("Лаборатория", pek.get("lab", "—")),
+            ("Лаборатория (аттестат аккредитации)", pek.get("lab", "—")),
             ("Объекты НВОС", ", ".join(f"{x.code} ({x.category})" for x in self.ctx.objects)),
+            ("Срок представления", "до 25 марта года, следующего за отчётным, "
+                                   "электронно с УКЭП через ЛК природопользователя"),
         ]
         for i, (k, v) in enumerate(rows, 1):
             a = ws.cell(row=i, column=1, value=k)
@@ -161,42 +189,145 @@ class PEKReport(Report):
             if i == 1:
                 a.font = xlsx.BOLD
 
-        ws = wb.create_sheet("Выбросы")
-        xlsx.header_row(ws, 1, ["Код", "Вещество", "Масса всего, т"], widths=[10, 40, 16])
-        r = 2
+    def _sect1(self, wb):
+        o = self.ctx.organization
+        pek = self._pek()
+        ws = wb.create_sheet("Раздел 1")
+        xlsx.widths(ws, {"A": 6, "B": 44, "C": 14, "D": 10, "E": 40})
+        xlsx.merge(ws, "A1:E1", "Раздел 1. Общие сведения об объекте и о применяемых "
+                   "технологиях, лабораториях контроля", bold=True, border=False)
+        xlsx.cell(ws, "A3", "№", bold=True, fill=True)
+        xlsx.cell(ws, "B3", "Объект НВОС / наименование", bold=True, fill=True)
+        xlsx.cell(ws, "C3", "Код объекта", bold=True, fill=True)
+        xlsx.cell(ws, "D3", "Категория", bold=True, fill=True)
+        xlsx.cell(ws, "E3", "Адрес / ОКТМО", bold=True, fill=True)
+        r = 4
+        for n, ob in enumerate(self.ctx.objects, 1):
+            xlsx.cell(ws, f"A{r}", n)
+            xlsx.cell(ws, f"B{r}", ob.name or o.name, align="left")
+            xlsx.cell(ws, f"C{r}", ob.code)
+            xlsx.cell(ws, f"D{r}", ob.category)
+            xlsx.cell(ws, f"E{r}", f"{ob.address or ''} {ob.oktmo or ''}".strip(), align="left")
+            r += 1
+        r += 1
+        xlsx.cell(ws, f"A{r}", "Лаборатория контроля (наименование, аттестат "
+                  "аккредитации, область):", border=False, align="left")
+        xlsx.cell(ws, f"B{r+1}", pek.get("lab", "—"), border=False, align="left")
+
+    def _sect2_air(self, wb):
+        ws = wb.create_sheet("Раздел 2 (воздух)")
+        pek = self._pek()
+        xlsx.widths(ws, {"A": 10, "B": 40, "C": 18, "D": 18})
+        xlsx.merge(ws, "A1:D1", "Раздел 2. ПЭК в области охраны атмосферного воздуха "
+                   "(контроль источников выбросов и наблюдения)", bold=True, border=False)
+        xlsx.header_row(ws, 3, ["Код ЗВ", "Загрязняющее вещество",
+                                "Масса выброса за год, т", "Норматив (ПДВ/ВСВ), т"])
+        r = 4
         for p in (x for x in self.ctx.pollutants if x.medium == Medium.AIR):
-            xlsx.data_row(ws, r, [p.code, p.name, float(_tot(p))])
+            xlsx.data_row(ws, r, [p.code, p.name, float(_tot(p)),
+                                  float(D(p.mass_norm) + D(p.mass_limit))])
             r += 1
+        r += 1
+        xlsx.cell(ws, f"A{r}", "Результаты контроля (замеры на источниках / "
+                  "на границе СЗЗ):", border=False, bold=True, align="left")
+        r += 1
+        self._results_table(ws, r, pek.get("results", []))
 
-        ws = wb.create_sheet("Сбросы")
-        xlsx.header_row(ws, 1, ["Код", "Вещество", "Масса всего, т"], widths=[10, 40, 16])
-        r = 2
+    def _sect3_water(self, wb):
+        ws = wb.create_sheet("Раздел 3 (вода)")
+        pek = self._pek()
+        xlsx.widths(ws, {"A": 10, "B": 40, "C": 18, "D": 18})
+        xlsx.merge(ws, "A1:D1", "Раздел 3. ПЭК в области охраны водных объектов "
+                   "(забор/сброс воды, качество вод)", bold=True, border=False)
+        xlsx.header_row(ws, 3, ["Код ЗВ", "Загрязняющее вещество",
+                                "Масса сброса за год, т", "Норматив (НДС/ВСС), т"])
+        r = 4
         for p in (x for x in self.ctx.pollutants if x.medium == Medium.WATER):
-            xlsx.data_row(ws, r, [p.code, p.name, float(_tot(p))])
+            xlsx.data_row(ws, r, [p.code, p.name, float(_tot(p)),
+                                  float(D(p.mass_norm) + D(p.mass_limit))])
             r += 1
 
-        ws = wb.create_sheet("Отходы")
-        xlsx.header_row(ws, 1, ["ФККО", "Наименование", "Класс", "Образовано, т",
-                                "Передано, т", "Размещено, т"],
-                        widths=[14, 36, 8, 14, 14, 14])
-        r = 2
+    def _sect4_waste(self, wb):
+        ws = wb.create_sheet("Раздел 4 (отходы)")
+        xlsx.widths(ws, {"A": 14, "B": 34, "C": 6, **{c: 12 for c in "DEFGHIJ"}})
+        xlsx.merge(ws, "A1:J1", "Раздел 4. ПЭК в области обращения с отходами "
+                   "(движение отходов, контрагенты)", bold=True, border=False)
+        xlsx.header_row(ws, 3, ["ФККО", "Наименование", "Кл.", "Нач. года, т",
+                                "Образовано, т", "Утилизир., т", "Обезвр., т",
+                                "Передано, т", "Размещено, т", "Кон. года, т"])
+        r = 4
         for w in self.ctx.wastes:
             xlsx.data_row(ws, r, [w.fkko_code, w.name, w.hazard_class,
-                                  float(D(w.generated)), float(D(w.transferred)),
-                                  float(D(w.placed_norm) + D(w.placed_over))])
+                                  float(D(w.accumulated_start)), float(D(w.generated)),
+                                  float(D(w.used)), float(D(w.neutralized)),
+                                  float(D(w.transferred)),
+                                  float(D(w.placed_norm) + D(w.placed_over)),
+                                  float(D(w.accumulated_end))])
             r += 1
+        recv = self.ctx.extra.get("waste_receivers", []) if isinstance(self.ctx.extra, dict) else []
+        if recv:
+            r += 1
+            xlsx.cell(ws, f"A{r}", "Контрагенты (кому переданы отходы):",
+                      border=False, bold=True, align="left")
+            r += 1
+            xlsx.header_row(ws, r, ["ФККО", "Получатель", "ИНН", "Лицензия", "Операция"])
+            r += 1
+            for rc in recv:
+                xlsx.data_row(ws, r, [rc.get("fkko", ""), rc.get("receiver", ""),
+                                      rc.get("inn", ""), rc.get("license", ""),
+                                      rc.get("operation", "")])
+                r += 1
 
-        ws = wb.create_sheet("Результаты наблюдений")
-        xlsx.header_row(ws, 1, ["Точка контроля", "Показатель", "План (изм./год)",
-                                "Факт", "Превышение"], widths=[24, 22, 16, 12, 12])
-        r = 2
-        for rr in pek.get("results", []):
+    def _sect5_ppp(self, wb):
+        """Раздел 5 — обращение с побочными продуктами производства (с 01.09.2024)."""
+        ws = wb.create_sheet("Раздел 5 (ППП)")
+        xlsx.widths(ws, {"A": 6, "B": 40, "C": 16, "D": 20, "E": 20, "F": 24})
+        xlsx.merge(ws, "A1:F1", "Раздел 5. ПЭК в области обращения с побочными "
+                   "продуктами производства (ППП)", bold=True, border=False)
+        xlsx.header_row(ws, 3, ["№", "Наименование ППП", "Объём образования, т",
+                                "Использовано/реализовано, т", "Передано, т",
+                                "Отнесено к отходам, т"])
+        ppp = self.ctx.extra.get("ppp", []) if isinstance(self.ctx.extra, dict) else []
+        r = 4
+        if ppp:
+            for n, p in enumerate(ppp, 1):
+                xlsx.data_row(ws, r, [n, p.get("name", ""), p.get("formed", ""),
+                                      p.get("used", ""), p.get("transferred", ""),
+                                      p.get("to_waste", "")])
+                r += 1
+        else:
+            xlsx.data_row(ws, r, ["-", "побочные продукты производства не образуются",
+                                  "", "", "", ""])
+
+    def _sect6_soil(self, wb):
+        """Раздел 6 — искусственные грунты из органической части ТКО (с 01.09.2025)."""
+        ws = wb.create_sheet("Раздел 6 (искусств. грунты)")
+        xlsx.widths(ws, {"A": 6, "B": 40, "C": 20, "D": 24, "E": 24})
+        xlsx.merge(ws, "A1:E1", "Раздел 6. ПЭК в области обращения с искусственными "
+                   "грунтами из органической части ТКО (с отчёта за 2025 г.)",
+                   bold=True, border=False)
+        xlsx.header_row(ws, 3, ["№", "Наименование ИГ", "Объём образования, т",
+                                "Использовано/передано, т", "Получатель (ИНН)"])
+        soil = self.ctx.extra.get("artificial_soil", []) if isinstance(self.ctx.extra, dict) else []
+        r = 4
+        if soil and (self.ctx.period.year or 0) >= 2025:
+            for n, s in enumerate(soil, 1):
+                xlsx.data_row(ws, r, [n, s.get("name", ""), s.get("formed", ""),
+                                      s.get("used", ""), s.get("receiver", "")])
+                r += 1
+        else:
+            xlsx.data_row(ws, r, ["-", "искусственные грунты из органической части "
+                                  "ТКО не производятся", "", "", ""])
+
+    def _results_table(self, ws, r, results):
+        xlsx.header_row(ws, r, ["Точка контроля", "Показатель", "План (изм./год)",
+                                "Факт", "Превышение"])
+        r += 1
+        for rr in results:
             xlsx.data_row(ws, r, [rr.get("point", ""), rr.get("substance", ""),
                                   rr.get("plan", ""), rr.get("fact", ""),
                                   "да" if rr.get("exceed") else "нет"])
             r += 1
-
-        return xlsx.save(wb, out_path)
 
 
 def _tot(p) -> Decimal:
