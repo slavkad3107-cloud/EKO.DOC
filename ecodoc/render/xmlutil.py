@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 from lxml import etree
@@ -21,6 +22,14 @@ def el(parent, tag: str, text=None, **attrs):
 def _guid(*parts: str) -> str:
     """Детерминированный 32-символьный идентификатор (формат ID_ORG/ID_EO)."""
     return hashlib.md5("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
+
+
+_NVOS_RE = re.compile(r"^\s*\d{2}-\d{4}-\d{5,7}-[ПТОЛ]\s*$")
+
+
+def _is_nvos_code(code: str) -> bool:
+    """Похоже ли на рег.код объекта НВОС (NN-NNNN-NNNNNN-П/Т/О/Л)."""
+    return bool(_NVOS_RE.match(str(code or "")))
 
 
 def data_packet_ni(ctx, doc_type: int, body_fn, *, exp_date: str,
@@ -46,21 +55,25 @@ def data_packet_ni(ctx, doc_type: int, body_fn, *, exp_date: str,
     e = ctx.extra if isinstance(ctx.extra, dict) else {}
     year = ctx.period.year or ""
     okato = o.oktmo or ""
+    # ИП определяется по длине ИНН (12 знаков = ИП/физлицо, 10 = ЮЛ);
+    # у ИП нет КПП, ОГРН — это ОГРНИП.
+    is_ip = o.is_individual
 
     root = etree.Element("DATA_PACKET_NI", Version=version, Program=program,
                          ExpDate=exp_date, DocType=str(doc_type), RPN_TO="1",
                          YEAR=str(year), RPT_PERIOD=str(rpt_period),
-                         CALC_TYPE="0", NUMB_COR_RPT="", INN=o.inn or "",
-                         KPP=o.kpp or "", OGRN=o.ogrn or "")
+                         CALC_TYPE="0", NUMB_COR_RPT="",
+                         INN=o.inn or "", KPP="" if is_ip else (o.kpp or ""),
+                         OGRN=o.ogrn or "")
     org = etree.SubElement(root, "ORG_INFO")
     el(org, "ID_ORG", _guid(o.inn, "org"))
     el(org, "FNAME", o.name)
     el(org, "SNAME", o.short_name or o.name)
-    el(org, "FINDIVID", "false")
+    el(org, "FINDIVID", "true" if is_ip else "false")
     el(org, "INN", o.inn)
     el(org, "OGRN", o.ogrn)
     el(org, "REG_DATE", e.get("reg_date", ""))
-    el(org, "KPP", o.kpp)
+    el(org, "KPP", "" if is_ip else o.kpp)
     el(org, "ADDJ_OKATO", okato)
     el(org, "ADDJ_INDEX", e.get("index", ""))
     el(org, "ADDR_JUR", o.address)
@@ -99,7 +112,11 @@ def data_packet_ni(ctx, doc_type: int, body_fn, *, exp_date: str,
         el(eo, "DRINK_WTS", "false")
         el(eo, "OBJ_AREA_TYPE", "5")
         el(eo, "IS_BOAT", "false")
-        el(eo, "NOT_REG_OBJ", "true")
+        # объект на учёте НВОС, если задан его рег.код (напр. «41-0247-000123-П»)
+        reg = _is_nvos_code(ob.code if ob else "")
+        if reg:
+            el(eo, "REG_NUMBER", ob.code)
+        el(eo, "NOT_REG_OBJ", "false" if reg else "true")
         if obj_el is None:
             obj_el = (ob, eo_id)
     body_fn(org, obj_el, exp_date)

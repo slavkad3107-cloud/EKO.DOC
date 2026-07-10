@@ -108,6 +108,28 @@ def _cmd_generate(args):
         print("Печать: (для этой формы не реализована)")
 
 
+def _cmd_submit(args):
+    """Собрать пакет к подаче в ЛКПП: XML + печать + МЧД + чек-лист."""
+    from ecodoc.submit import build_package
+    report = _load_report(args.form, args)
+    if not getattr(report, "implemented", True):
+        sys.exit(f"Форма «{report.title}» — каркас, подача недоступна.")
+    out_dir = workspace.out_dir(args)
+    res = build_package(report, out_dir)
+    print(f"Пакет:   {res['dir']}")
+    for kind, p in res["files"].items():
+        print(f"  {kind:7} {p.name}")
+    print(f"  чеклист {res['checklist'].name}")
+    errs = res["errors"]
+    if errs:
+        print(f"\n⚠ {len(errs)} ошибок preflight — исправьте перед подачей "
+              f"(подробности в ЧЕКЛИСТ.md):")
+        for i in errs:
+            print(f"   ✖ [{i.field}] {i.message}")
+    else:
+        print("\n✅ preflight без ошибок — можно загружать XML в ЛКПП и подписывать.")
+
+
 def _cmd_calendar(args):
     from ecodoc.calendar import engine
 
@@ -379,6 +401,12 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--force", action="store_true", help="генерировать несмотря на ошибки")
     g.add_argument("--pdf", action="store_true", help="также сконвертировать печать в PDF")
     g.set_defaults(func=_cmd_generate)
+
+    sm = sub.add_parser("submit", help="собрать пакет к подаче в ЛКПП (XML + МЧД + чек-лист)")
+    sm.add_argument("form")
+    _target_args(sm)
+    sm.add_argument("-o", "--outdir", default="out")
+    sm.set_defaults(func=_cmd_submit)
 
     c = sub.add_parser("calendar", help="календарь подачи + чек-лист документов по категории")
     _target_args(c)

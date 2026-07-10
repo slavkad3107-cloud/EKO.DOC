@@ -43,6 +43,16 @@ class Organization:
     phone: str = ""
     email: str = ""
 
+    @property
+    def is_individual(self) -> bool:
+        """ИП/физлицо определяется по длине ИНН (12 знаков), у ЮЛ — 10."""
+        return len((self.inn or "").strip()) == 12
+
+    @property
+    def official_title(self) -> str:
+        """Должность подписанта: у ИП — «Индивидуальный предприниматель»."""
+        return "Индивидуальный предприниматель" if self.is_individual else self.director_position
+
 
 @dataclass
 class NVOSObject:

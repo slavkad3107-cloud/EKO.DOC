@@ -27,7 +27,7 @@ from ecodoc.core.models import Issue
 from ecodoc.core.money import D
 from ecodoc.core.registry import register
 from ecodoc.render import xlsx
-from ecodoc.render.xmlutil import data_packet_ni, el, write_tree
+from ecodoc.render.xmlutil import _is_nvos_code as _is_nvos, data_packet_ni, el, write_tree
 from ecodoc.reports.base import Report
 
 
@@ -61,12 +61,34 @@ class TP2Waste(Report):
     title = "2-ТП (отходы)"
 
     def validate(self) -> list[Issue]:
+        from ecodoc.core.validators import inn_valid, ogrn_valid
         issues: list[Issue] = []
         o = self.ctx.organization
         if not o.inn:
             issues.append(Issue("error", "ИНН", "не указан ИНН"))
+        elif not inn_valid(o.inn):
+            issues.append(Issue("error", "ИНН", f"ИНН {o.inn} не проходит проверку — опечатка"))
         if not o.okpo:
             issues.append(Issue("warning", "ОКПО", "для 2-ТП обязателен код ОКПО"))
+        # --- preflight под загрузку в ЛКПП РПН ---
+        if not o.ogrn:
+            kind = "ОГРНИП" if o.is_individual else "ОГРН"
+            issues.append(Issue("error", kind,
+                                f"не указан {kind} — обязателен для сверки с ЕГРЮЛ/ЕГРИП "
+                                "при загрузке в ЛКПП"))
+        elif not ogrn_valid(o.ogrn):
+            issues.append(Issue("warning", "ОГРН", f"ОГРН {o.ogrn} не проходит проверку — сверьте"))
+        okt = (o.oktmo or "").strip()
+        if not okt:
+            issues.append(Issue("error", "ОКТМО", "не указан ОКТМО территории (Код по ОКТМО)"))
+        elif len(okt) not in (8, 11) or not okt.isdigit():
+            issues.append(Issue("warning", "ОКТМО",
+                                f"ОКТМО «{okt}» — ожидается 8 или 11 цифр; проверьте, что это "
+                                "именно ОКТМО, а не ОКАТО"))
+        if not any(_is_nvos(ob.code) for ob in self.ctx.objects):
+            issues.append(Issue("warning", "объект",
+                                "нет кода объекта НВОС (напр. 41-0247-000123-П) — если объект "
+                                "на учёте, укажите код, иначе РПН отклонит «объект не стоит на учёте»"))
         # баланс масс по каждому отходу (наличие на конец = приход − расход)
         for w in self.ctx.wastes:
             bal = (D(w.accumulated_start) + D(w.generated) + D(w.received)
@@ -107,7 +129,7 @@ class TP2Waste(Report):
         el(rpt, "INN", o.inn)
         el(rpt, "KPP", o.kpp)
         el(rpt, "OKPO", o.okpo)
-        el(rpt, "OFFICIAL", o.director_position)
+        el(rpt, "OFFICIAL", o.official_title)
         el(rpt, "FIO_OFFICIAL", o.director_name)
         el(rpt, "CREATE_DATE", exp_date[:10])
         el(rpt, "OKATO", o.oktmo)
@@ -129,7 +151,8 @@ class TP2Waste(Report):
             el(fact, "TP2_TRANSF", _fmt_class(w.transferred, hc))
             el(fact, "TP2_TR_ISPOTX", _fmt_class(w.used, hc))
             el(fact, "TP2_TR_SOTX", _fmt_class(w.neutralized, hc))
-            el(fact, "TP2_TR_DISP", _fmt_class(w.transferred, hc))
+            # передано на захоронение (не «всего передано» — это TP2_TRANSF)
+            el(fact, "TP2_TR_DISP", _fmt_class(w.transferred_burial, hc))
             el(fact, "TP2_RAZM", _fmt_class(D(w.placed_norm) + D(w.placed_over), hc))
             el(fact, "TP2_RAZM_STOR", "0.0")
             el(fact, "TP2_ACCUM_WASTE", _fmt_class(w.accumulated_end, hc))
@@ -227,7 +250,7 @@ class TP2Waste(Report):
                 "J": rc(w.used), "K": 0.0, "L": 0.0,
                 "M": rc(w.neutralized), "N": 0.0,
                 "O": 0.0, "P": 0.0, "Q": 0.0,
-                "R": rc(w.transferred_storage), "S": rc(w.transferred),
+                "R": rc(w.transferred_storage), "S": rc(w.transferred_burial),
                 "T": 0.0, "U": rc(D(w.placed_norm) + D(w.placed_over)),
                 "V": rc(w.accumulated_end),
             }
