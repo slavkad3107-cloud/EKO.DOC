@@ -71,6 +71,17 @@ def calculate(ctx: ReportContext) -> PaymentResult:
     else:
         k_ind = D(rates.get("indexation", 1))
 
+    # дополнительный повышающий коэффициент по году (напр. 1,045 за 2025 —
+    # ПП РФ №1034 от 10.07.2025). Умножается на основную индексацию.
+    extra_by_year = rates.get("indexation_extra_by_year") or {}
+    if year and str(year) in extra_by_year and extra_by_year[str(year)]:
+        k_extra_year = D(extra_by_year[str(year)])
+        k_ind = k_ind * k_extra_year
+        res.warnings.append(
+            f"К ставкам {year} применён дополнительный коэффициент "
+            f"{k_extra_year} (ПП РФ №1034 от 10.07.2025); итоговый коэффициент "
+            f"индексации = {k_ind}. Проверьте по действующему ПП перед сдачей.")
+
     # --- выбросы / сбросы ---
     for p in ctx.pollutants:
         table = rates["air"] if p.medium == Medium.AIR else rates["water"]

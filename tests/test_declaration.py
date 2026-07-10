@@ -22,14 +22,20 @@ def test_money_roundhalfup():
 
 
 def test_calc_matches_manual():
-    ctx = _ctx()
+    ctx = _ctx()  # отчётный год 2025
     res = calculate(ctx)
-    # Азота диоксид: 1.2 т × 138.8 × 1.32 × 1 (norm) = 219.85 (округл.)
+    # 2025: базовая индексация 1,32 × доп. коэффициент 1,045 (ПП №1034) = 1,3794
+    k2025 = D("1.32") * D("1.045")
+    # Азота диоксид: 1.2 т × 138.8 × 1.3794 × 1 (norm)
     no2 = next(l for l in res.lines if l.code == "0301")
-    assert no2.amount == money(D("1.2") * D("138.8") * D("1.32"))
-    # СО сверх лимита: 0.2 × 1.6 × 1.32 × 100
+    assert no2.k_ind == k2025
+    assert no2.amount == money(D("1.2") * D("138.8") * k2025)
+    # СО сверх лимита: 0.2 × 1.6 × 1.3794 × 100
     co_over = next(l for l in res.lines if l.code == "0337" and l.band == "over")
-    assert co_over.amount == money(D("0.2") * D("1.6") * D("1.32") * D("100"))
+    assert co_over.amount == money(D("0.2") * D("1.6") * k2025 * D("100"))
+    # формула согласована по всем строкам
+    for ln in res.lines:
+        assert ln.amount == money(ln.mass * ln.rate * ln.k_ind * ln.k_band * ln.k_extra)
     # отход 1 класса (лампы) — передан, не размещён => платы за размещение нет
     assert not any(l.medium == "waste" and l.code == "47110101521" for l in res.lines)
     # итог > 0 и согласован

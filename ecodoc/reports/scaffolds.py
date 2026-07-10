@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+from ecodoc.core.models import Issue
 from ecodoc.core.registry import register
 from ecodoc.reports.base import NotImplementedReport
 
@@ -18,6 +19,15 @@ from ecodoc.reports.base import NotImplementedReport
 class _Dev(NotImplementedReport):
     domain = "development"
     has_xml = False
+    devdoc = False   # True => реальный генератор .docx через `ecodoc devdoc <code>`
+
+    def validate(self) -> list[Issue]:
+        if getattr(self, "devdoc", False):
+            return [Issue("warning", "форма",
+                          f"«{self.title}» генерируется как .docx отдельной командой "
+                          f"`ecodoc devdoc {self.code}` (или кнопкой «Сгенерировать (.docx)» "
+                          f"в GUI), не через обычный generate.")]
+        return super().validate()
 
 
 @register

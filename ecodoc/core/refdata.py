@@ -45,3 +45,11 @@ def common_wastes() -> list[dict]:
         return _load("substances.json").get("common_wastes", [])
     except FileNotFoundError:
         return []
+
+
+def oktmo_ref() -> dict:
+    """Оффлайн-справочник ОКТМО по ключевым словам адреса (правится экологом)."""
+    try:
+        return _load("oktmo_ref.json").get("entries", {})
+    except FileNotFoundError:
+        return {}

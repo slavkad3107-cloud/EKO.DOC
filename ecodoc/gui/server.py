@@ -73,7 +73,8 @@ def api_org_add(params, body):
         name = found.get("short_name") or found.get("name", "")
         for k in known:
             req[k] = req[k] or found.get(k, "")
-        # ОКТМО по адресу (если есть токен DaData) — иначе тихо пропускаем
+        # ОКТМО по адресу: оффлайн-справочник (бесплатно) → DaData (если токен);
+        # не нашли — тихо пропускаем, впишется вручную
         if req.get("address") and not req.get("oktmo"):
             try:
                 from ecodoc.parsers.oktmo import by_address
@@ -468,8 +469,11 @@ def api_counterparty(params, body):
 
 
 def api_oktmo(params, body):
-    from ecodoc.parsers.oktmo import by_address
-    return {"result": by_address(body["address"])}
+    from ecodoc.parsers.oktmo import OktmoError, by_address
+    try:
+        return {"result": by_address(body["address"])}
+    except OktmoError as e:
+        return {"error": str(e)}
 
 
 def api_open(params, body):

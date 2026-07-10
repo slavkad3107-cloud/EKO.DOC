@@ -828,19 +828,17 @@ async function detectOktmo(){
   collectDataForm();
   const addr = (CTX.organization||{}).address || SITE_ADDR;
   if(!addr){ $("oktmo-msg").textContent = "Сначала заполните адрес"; return; }
-  $("oktmo-msg").textContent = "запрос в DaData…";
+  $("oktmo-msg").textContent = "поиск по справочнику…";
   try{
     const j = await post("oktmo", {address: addr}, 30000);
+    if(j.error){ $("oktmo-msg").textContent = j.error; return; }
     CTX.organization.oktmo = j.result.oktmo;
     renderDataForm();
-    $("oktmo-msg").textContent = "ОКТМО: " + j.result.oktmo + " ("+ j.result.value +")";
+    const src = j.result.source === "offline" ? "справочник" : "DaData";
+    $("oktmo-msg").textContent = "ОКТМО: " + j.result.oktmo + " (" + j.result.value + ") — " + src;
   }catch(e){
-    const m = /токен|dadata|token/i.test(e.message)
-      ? "Определение ОКТМО по адресу требует бесплатный токен DaData "
-        + "(dadata.ru → регистрация → API-ключ), переменная окружения DADATA_TOKEN. "
-        + "Либо впишите ОКТМО вручную."
-      : "Не удалось определить ОКТМО: " + e.message + ". Впишите ОКТМО вручную.";
-    $("oktmo-msg").textContent = m;
+    $("oktmo-msg").textContent = "Не удалось определить ОКТМО: " + e.message
+      + ". Впишите вручную (и при желании добавьте в data/oktmo_ref.json).";
   }
 }
 async function openWs(){

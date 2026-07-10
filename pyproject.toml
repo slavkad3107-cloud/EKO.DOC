@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ecodoc"
-version = "0.20.0"
+version = "0.21.0"
 description = "ЭКО.DOC (продукт «ЭКО Проект») — генератор экологических документов РФ: отчётность, разработка, ИИ-анализ входящих, календарь, сторож форм"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,7 +38,8 @@ include = ["ecodoc*"]
 "ecodoc.gui" = ["index.html"]
 
 [tool.setuptools.data-files]
-"." = ["data/rates_nvos.json", "data/coefficients.json", "data/substances.json"]
+"." = ["data/rates_nvos.json", "data/coefficients.json", "data/substances.json",
+       "data/oktmo_ref.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
