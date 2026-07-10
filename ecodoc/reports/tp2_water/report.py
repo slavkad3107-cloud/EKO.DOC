@@ -72,12 +72,16 @@ class TP2Water(Report):
         out_path = self._ensure_dir(out_path)
         o = self.ctx.organization
         w = self._water()
-        root = etree.Element("Форма2ТПВодхоз", version="0.1")
+        root = etree.Element("Форма2ТПВодхоз", version="0.2", ОКУД="0609060",
+                             НПА="Приказ Росстата № 445 от 02.10.2024")
         org = el(root, "Респондент")
         el(org, "Наименование", o.name)
         el(org, "ИНН", o.inn)
         el(org, "ОКПО", o.okpo)
+        el(org, "ОКТМО", o.oktmo)
         el(org, "Адрес", o.address)
+        el(org, "Адресат", "территориальное Бассейновое водное управление "
+                           "(Модуль респондента ИАС «2-ТП (водхоз)» / ГИС ЦП «Вода»)")
         el(root, "ОтчётныйГод", self.ctx.period.year)
 
         intk = el(root, "ЗаборВоды")
@@ -92,7 +96,13 @@ class TP2Water(Report):
             el(x, "Приёмник", d.get("receiver", ""))
             el(x, "Качество", d.get("quality", ""))
             el(x, "Объём", float(D(d.get("volume", 0))))
+            # сброшенные ЗВ по выпуску (коды по Прил. 5 к Приказу № 445)
+            for zv in d.get("pollutants", []):
+                z = el(x, "ЗВ", код=str(zv.get("code", "")))
+                el(z, "Наименование", zv.get("name", ""))
+                el(z, "Масса", float(D(zv.get("mass", 0))))
         el(root, "ОборотнаяВода", float(D(w.get("recycled", 0))))
+        el(root, "ПовторноПоследовательная", float(D(w.get("reused", 0))))
         el(root, "ИспользованоНаСобственныеНужды", float(D(w.get("used_own", 0))))
         write_tree(root, out_path)
         return out_path
@@ -125,14 +135,33 @@ class TP2Water(Report):
         xlsx.data_row(ws2, r, ["ИТОГО отведено", "", float(total_out)])
         for c in range(1, 4):
             ws2.cell(row=r, column=c).font = xlsx.BOLD
+        # сброшенные ЗВ по выпускам (Приложение 5 к Приказу № 445)
+        zvs = [(d, zv) for d in w.get("discharge", []) for zv in d.get("pollutants", [])]
+        if zvs:
+            r += 2
+            xlsx.cell(ws2, f"A{r}", "Сброшенные загрязняющие вещества по выпускам:",
+                      border=False, bold=True, align="left"); r += 1
+            xlsx.header_row(ws2, r, ["Выпуск (приёмник)", "Код ЗВ / наименование",
+                                     "Масса, т/год"]); r += 1
+            for d, zv in zvs:
+                xlsx.data_row(ws2, r, [d.get("receiver", ""),
+                                       f"{zv.get('code','')} {zv.get('name','')}".strip(),
+                                       float(D(zv.get("mass", 0)))]); r += 1
 
         ws3 = wb.create_sheet("Сводка")
         xlsx.header_row(ws3, 1, ["Показатель", "Значение, тыс. м³/год"],
                         widths=[40, 20])
         xlsx.data_row(ws3, 2, ["Забрано воды, всего", float(total_in)])
         xlsx.data_row(ws3, 3, ["Отведено (сброшено), всего", float(total_out)])
-        xlsx.data_row(ws3, 4, ["Оборотное/повторное использование",
+        xlsx.data_row(ws3, 4, ["Оборотное водоснабжение",
                                float(D(w.get("recycled", 0)))])
-        xlsx.data_row(ws3, 5, ["Использовано на собственные нужды",
+        xlsx.data_row(ws3, 5, ["Повторно-последовательное водоснабжение",
+                               float(D(w.get("reused", 0)))])
+        xlsx.data_row(ws3, 6, ["Использовано на собственные нужды",
                                float(D(w.get("used_own", 0)))])
+        xlsx.data_row(ws3, 8, ["Форма / ОКУД", "2-ТП (водхоз) / 0609060"])
+        xlsx.data_row(ws3, 9, ["Основание", "Приказ Росстата № 445 от 02.10.2024"])
+        xlsx.data_row(ws3, 10, ["Адресат", "территориальное Бассейновое водное "
+                                "управление (Модуль респондента / ГИС ЦП «Вода»)"])
+        xlsx.data_row(ws3, 11, ["Срок (за 2025)", "с первого рабочего дня по 22.01.2026"])
         return xlsx.save(wb, out_path)

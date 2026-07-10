@@ -57,26 +57,47 @@ class WasteReportIII(Report):
             issues.append(Issue("warning", "получатели",
                                 "для переданных отходов не указаны получатели "
                                 f"(extra.waste_receivers): {', '.join(sorted(missing))}"))
+        if not self.ctx.objects:
+            issues.append(Issue("warning", "объект",
+                                "не указан объект НВОС — отчётность привязывается к "
+                                "объекту (код, категория, ОКТМО)"))
+        for w in self.ctx.wastes:
+            bal = (D(w.accumulated_start) + D(w.generated) + D(w.received)
+                   - D(w.used) - D(w.neutralized) - D(w.transferred)
+                   - D(w.placed_norm) - D(w.placed_over))
+            if abs(bal - D(w.accumulated_end)) > D("0.001"):
+                issues.append(Issue("warning", f"баланс/{w.fkko_code}",
+                                    f"наличие на конец {D(w.accumulated_end)} ≠ баланс {bal}"))
         return issues
 
     def render_xml(self, out_path: Path) -> Path:
         out_path = self._ensure_dir(out_path)
         o = self.ctx.organization
-        root = etree.Element("ОтчётностьОтходыIII", version="0.1")
+        root = etree.Element("ОтчётностьОтходыIII", version="0.2")
         org = el(root, "Организация")
         el(org, "Наименование", o.name)
         el(org, "ИНН", o.inn)
         el(org, "ОГРН", o.ogrn)
+        el(org, "ОКПО", o.okpo)
+        el(org, "ОКТМО", o.oktmo)
+        for ob in self.ctx.objects:
+            x = el(org, "ОбъектНВОС", код=ob.code)
+            el(x, "Категория", ob.category)
+            el(x, "Адрес", ob.address)
+            el(x, "ОКТМО", ob.oktmo or o.oktmo)
         el(root, "ОтчётныйГод", self.ctx.period.year)
         items = el(root, "Отходы")
         for w in self.ctx.wastes:
             x = el(items, "Отход", фкко=w.fkko_code, класс=w.hazard_class)
             el(x, "Наименование", w.name)
+            el(x, "НаличиеНачало", D(w.accumulated_start))
             el(x, "Образовано", D(w.generated))
+            el(x, "Поступило", D(w.received))
             el(x, "Утилизировано", D(w.used))
             el(x, "Обезврежено", D(w.neutralized))
             el(x, "Передано", D(w.transferred))
             el(x, "Размещено", D(w.placed_norm) + D(w.placed_over))
+            el(x, "НаличиеКонец", D(w.accumulated_end))
         recv = el(root, "Получатели")
         for r in self._receivers():
             x = el(recv, "Получатель", фкко=r.get("fkko", ""))
@@ -90,18 +111,59 @@ class WasteReportIII(Report):
     def render_print(self, out_path: Path) -> Path:
         out_path = self._ensure_dir(out_path)
         wb = xlsx.new_workbook()
-        ws = wb.create_sheet("Отходы III кат.")
-        xlsx.header_row(ws, 1, ["ФККО", "Наименование", "Класс", "Образовано, т",
-                                "Утилизировано, т", "Обезврежено, т",
-                                "Передано, т", "Размещено, т"],
-                        widths=[14, 34, 7, 13, 14, 13, 12, 12])
+        self._general(wb)
+        self._movement(wb)
+        self._receivers_sheet(wb)
+        return xlsx.save(wb, out_path)
+
+    def _general(self, wb):
+        """Раздел 1 — общие сведения о субъекте и объекте НВОС."""
+        o = self.ctx.organization
+        ws = wb.create_sheet("Общие сведения")
+        ws.column_dimensions["A"].width = 40
+        ws.column_dimensions["B"].width = 56
+        ob = self.ctx.objects[0] if self.ctx.objects else None
+        rows = [
+            ("ОТЧЁТНОСТЬ ОБ ОБРАЗОВАНИИ, УТИЛИЗАЦИИ, ОБЕЗВРЕЖИВАНИИ, "
+             "РАЗМЕЩЕНИИ ОТХОДОВ", ""),
+            ("Отчётный год", self.ctx.period.year),
+            ("Полное наименование", o.name),
+            ("Сокращённое наименование", o.short_name or o.name),
+            ("ИНН / ОГРН / ОКПО", f"{o.inn} / {o.ogrn} / {o.okpo}"),
+            ("ОКВЭД / ОКТМО", f"{o.okved} / {o.oktmo}"),
+            ("Юридический адрес", o.address),
+            ("Телефон / e-mail", f"{o.phone} / {o.email}"),
+            ("Объект НВОС (код / категория)",
+             f"{ob.code} / {ob.category}" if ob else "— не указан"),
+            ("Адрес объекта / ОКТМО", f"{ob.address} / {ob.oktmo}" if ob else "—"),
+            ("Руководитель", f"{o.director_position} {o.director_name}".strip()),
+        ]
+        for i, (k, v) in enumerate(rows, 1):
+            a = ws.cell(row=i, column=1, value=k)
+            ws.cell(row=i, column=2, value=v)
+            if i == 1:
+                a.font = xlsx.BOLD
+
+    def _movement(self, wb):
+        """Раздел 2 — движение отходов (полный баланс масс)."""
+        ws = wb.create_sheet("Движение отходов")
+        xlsx.header_row(ws, 1, ["ФККО", "Наименование", "Кл.", "Нач. года, т",
+                                "Образовано, т", "Поступило, т", "Утилизир., т",
+                                "Обезвр., т", "Передано, т", "Размещено, т",
+                                "Кон. года, т"],
+                        widths=[14, 30, 5, 12, 12, 12, 11, 11, 11, 11, 12])
         r = 2
         for w in self.ctx.wastes:
-            xlsx.data_row(ws, r, [w.fkko_code, w.name, w.hazard_class,
-                                  float(D(w.generated)), float(D(w.used)),
-                                  float(D(w.neutralized)), float(D(w.transferred)),
-                                  float(D(w.placed_norm) + D(w.placed_over))])
+            xlsx.data_row(ws, r, [
+                w.fkko_code, w.name, w.hazard_class,
+                float(D(w.accumulated_start)), float(D(w.generated)),
+                float(D(w.received)), float(D(w.used)), float(D(w.neutralized)),
+                float(D(w.transferred)),
+                float(D(w.placed_norm) + D(w.placed_over)),
+                float(D(w.accumulated_end))])
             r += 1
+
+    def _receivers_sheet(self, wb):
         ws2 = wb.create_sheet("Получатели")
         xlsx.header_row(ws2, 1, ["ФККО", "Получатель", "ИНН", "Лицензия", "Операция"],
                         widths=[14, 34, 14, 26, 24])
@@ -111,4 +173,3 @@ class WasteReportIII(Report):
                                    rec.get("inn", ""), rec.get("license", ""),
                                    rec.get("operation", "")])
             r += 1
-        return xlsx.save(wb, out_path)
