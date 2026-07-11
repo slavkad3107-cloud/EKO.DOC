@@ -248,12 +248,28 @@ def chat_with_fallback(cfg: AIConfig, system: str, user: str) -> tuple[str, str]
     """Вернуть (ответ, 'provider/model'); при отказе основного — идём по fallbacks."""
     attempts = [{"provider": cfg.provider, "model": cfg.model}] + list(cfg.fallbacks)
     last_err = None
+    # провайдеры, которым обязательно нужна явная модель (иначе 400 «model is required»)
+    _need_model = {"ollama", "lmstudio", "openrouter", "deepseek", "groq",
+                   "mistral", "together", "vsegpt", "proxyapi", "openai", "xai"}
     for att in attempts:
+        prov = att["provider"]
+        model = att.get("model", "")
+        if not model and prov in _need_model:
+            # у ollama попробуем автоматически взять первую установленную модель
+            if prov == "ollama":
+                try:
+                    installed = get_provider(AIConfig(**{**cfg.__dict__,
+                                "provider": "ollama", "model": ""})).list_models()
+                    model = installed[0] if installed else ""
+                except Exception:
+                    model = ""
+            if not model:
+                last_err = AIError(f"{prov}: не задана модель — пропущен")
+                continue
         try:
-            c = AIConfig(**{**cfg.__dict__, "provider": att["provider"],
-                            "model": att.get("model", "")})
+            c = AIConfig(**{**cfg.__dict__, "provider": prov, "model": model})
             text = get_provider(c).chat(system, user)
-            return text, f"{att['provider']}/{att.get('model', '')}"
+            return text, f"{prov}/{model}"
         except AIError as e:
             last_err = e
         except (KeyError, IndexError, TypeError) as e:

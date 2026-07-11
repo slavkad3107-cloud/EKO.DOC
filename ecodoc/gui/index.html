@@ -121,9 +121,10 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
   <div class="tabs" id="tabs">
     <button data-t="intake" class="on">Приём документов</button>
     <button data-t="data">Данные</button>
-    <button data-t="gen">Генерация</button>
+    <button data-t="report">Отчётность</button>
+    <button data-t="dev">Разработка</button>
     <button data-t="cal">Календарь</button>
-    <button data-t="disp">Рассеивание</button>
+    <button data-t="disp">УПРЗА</button>
     <button data-t="svc">Сервис</button>
   </div>
 
@@ -153,8 +154,6 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <div class="row">
         <button class="b" onclick="saveCtx()">💾 Сохранить</button>
         <button class="b sec" onclick="loadCtx()">Перечитать</button>
-        <button class="b sec" onclick="snapshotPeriod()" title="Сохранить текущие данные как снимок периода для будущего сравнения">Запомнить период</button>
-        <button class="b sec" onclick="comparePeriods()" title="Сравнить с последним сохранённым снимком">Сравнить с прошлым</button>
         <button class="b sec" onclick="openWs()">Открыть папку площадки</button>
         <span class="spin" id="sp-data">…</span><span id="data-msg" class="hint"></span>
       </div>
@@ -169,20 +168,33 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
     </div>
   </div>
 
-  <div class="tab" id="tab-gen">
+  <div class="tab" id="tab-report">
     <div class="card">
-      <h2>Генерация форм</h2>
+      <h2>Отчётность — формы для сдачи (XML для ЛКПП + печать)</h2>
       <div class="row">
         <button class="b sec" onclick="validateAll()">Проверить всё</button>
         <label><input type="checkbox" id="genpdf" checked> также PDF</label>
         <label><input type="checkbox" id="genforce"> принудительно (при ошибках)</label>
         <span class="spin" id="sp-gen">генерация…</span>
       </div>
-      <h3 style="margin:8px 0 6px;color:var(--acc)">Контур «Отчётность» — формы для сдачи (XML для ЛКПП + печать)</h3>
-      <div class="grid" id="forms-rep"></div>
-      <h3 style="margin:16px 0 6px;color:var(--warn)">Контур «Разработка» — проекты и документы</h3>
-      <div class="grid" id="forms-dev"></div>
+      <h3 style="margin:8px 0 6px;color:var(--acc)">Отходы</h3>
+      <div class="grid" id="forms-waste"></div>
+      <h3 style="margin:14px 0 6px;color:var(--acc)">Воздух</h3>
+      <div class="grid" id="forms-air"></div>
+      <h3 style="margin:14px 0 6px;color:var(--acc)">Вода</h3>
+      <div class="grid" id="forms-water"></div>
+      <h3 style="margin:14px 0 6px;color:var(--acc)">Плата и ПЭК (все среды)</h3>
+      <div class="grid" id="forms-common"></div>
       <pre class="out" id="out-gen" style="display:none"></pre>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-dev">
+    <div class="card">
+      <h2>Разработка — проекты и документы</h2>
+      <div class="hint">Паспорта отходов, тома НДВ/НДС/СЗЗ, программы, планы. Рассеивание — во вкладке «УПРЗА».</div>
+      <div class="grid" id="forms-dev" style="margin-top:8px"></div>
+      <pre class="out" id="out-dev" style="display:none"></pre>
     </div>
   </div>
 
@@ -201,7 +213,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 
   <div class="tab" id="tab-disp">
     <div class="card">
-      <h2>Расчёт рассеивания загрязнения воздуха (МРР-2017) — свой расчёт без УПРЗА</h2>
+      <h2>УПРЗА — расчёт рассеивания загрязнения воздуха (МРР-2017)</h2>
       <div class="hint">Заполните источники выбросов (трубы). «Карта» — суммарное поле
         максимальных концентраций с изолинией ПДК; «Профиль» — по оси факела.
         Для госэкспертизы нужна аттестованная УПРЗА — данные можно выгрузить кнопкой ниже.</div>
@@ -623,7 +635,7 @@ async function doIntake(){
     $("filelist").innerHTML = `✓ Принято ${stored.length} файл(ов). ` +
       `Дальше: <a class="link" onclick="document.querySelector('button[data-t=&quot;data&quot;]').click()">` +
       `проверьте «Данные»</a>, затем <a class="link" ` +
-      `onclick="document.querySelector('button[data-t=&quot;gen&quot;]').click()">«Генерация»</a>.`;
+      `onclick="document.querySelector('button[data-t=&quot;report&quot;]').click()">«Отчётность»</a>.`;
     $("files").value = ""; $("folder").value = "";
     loadCtx().catch(()=>{});
   }catch(e){
@@ -859,9 +871,15 @@ async function openWs(){
   await post("open", {path: j.path}).catch(e=>alert(e.message));
 }
 
-// ── генерация ──
+// ── отчётность / разработка ──
+// распределение отчётных форм по средам (воздух/вода/отходы/общие)
+const FORM_MEDIUM = {
+  "waste-movement":"waste", "cadastre-spb":"waste", "2tp-waste":"waste",
+  "waste-report-iii":"waste", "2tp-air":"air", "2tp-water":"water",
+  "declaration-nvos":"common", "pek":"common"};
 function renderForms(){
-  $("forms-rep").innerHTML = ""; $("forms-dev").innerHTML = "";
+  for (const id of ["forms-waste","forms-air","forms-water","forms-common","forms-dev"])
+    if ($(id)) $(id).innerHTML = "";
   for (const f of META.forms){
     const dev = f.domain === "development";
     const card = document.createElement("div"); card.className = "form-card";
@@ -875,7 +893,8 @@ function renderForms(){
     card.innerHTML = `<div class="t">${f.title}</div>
       <div class="c">${f.code}</div><div class="row">${btns}</div>
       <div id="iss-${f.code}"></div>`;
-    $(dev ? "forms-dev" : "forms-rep").appendChild(card);
+    const target = dev ? "forms-dev" : ("forms-" + (FORM_MEDIUM[f.code] || "common"));
+    ($(target) || $("forms-common")).appendChild(card);
   }
 }
 function renderIssues(code, issues){

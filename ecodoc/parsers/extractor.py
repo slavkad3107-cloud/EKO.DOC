@@ -30,6 +30,10 @@ RE_NVOS = re.compile(r"\b(\d{2}-\d{4}-\d{6}-[А-ЯA-Z])\b")
 RE_FKKO = re.compile(r"\b(\d[\d\s]{9,15}\d)\b")
 RE_CATEGORY = re.compile(r"категори[ияю][\s,]*?(I{1,3}V?|IV|[1-4])\s*категори", re.IGNORECASE)
 RE_EMAIL = re.compile(r"\b([\w.+-]+@[\w-]+\.[\w.-]+)\b")
+# контекст, в котором 11-значное число — НЕ ФККО (телефон/реквизиты)
+_NONFKKO_CTX = re.compile(
+    r"(тел|phone|факс|моб|\+7|8\s*\(|инн|огрн|огрнип|кпп|бик|р/?сч|к/?сч|"
+    r"сч[её]т|л/?с|снилс|whatsapp|viber)\D{0,6}$")
 
 
 def _first(rx: re.Pattern, text: str):
@@ -83,11 +87,16 @@ def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc) -> None:
                 {"code": code, "src": doc.path.name})
 
     # коды ФККО -> черновые позиции отходов (массы заполнит человек).
-    # Строгая проверка структуры отсекает шум (ОКТМО, телефоны, номера строк).
+    # Строгая проверка структуры + контекста отсекает шум (ОКТМО, телефоны,
+    # ИНН/ОГРН/БИК/счета, номера строк).
     names = _fkko_names()
-    for raw in RE_FKKO.findall(t):
-        digits = re.sub(r"\s", "", raw)
+    for m in RE_FKKO.finditer(t):
+        digits = re.sub(r"\s", "", m.group(1))
         if not _fkko_valid(digits):
+            continue
+        # контекст перед числом — если это телефон/реквизит счёта, пропускаем
+        before = t[max(0, m.start() - 40):m.start()].lower()
+        if _NONFKKO_CTX.search(before):
             continue
         if any(w.fkko_code == digits for w in ctx.wastes):
             continue
@@ -111,6 +120,11 @@ def _fkko_valid(digits: str) -> bool:
     if digits[0] == "0":                     # реальные ФККО начинаются с 1–9
         return False
     if digits[-1] not in "12345":            # класс опасности 1–5
+        return False
+    # блоки ФККО 7/8/9 имеют ограниченный набор подгрупп — отсекаем «телефонные»
+    # префиксы (79…, 89…, 78… и т.п.), которые структурно не бывают ФККО
+    _SUBGROUPS = {"7": "12345", "8": "1234", "9": "12345"}
+    if digits[0] in _SUBGROUPS and digits[1] not in _SUBGROUPS[digits[0]]:
         return False
     if digits.count("0") >= 6:               # групповой заголовок / круглый шум
         return False
