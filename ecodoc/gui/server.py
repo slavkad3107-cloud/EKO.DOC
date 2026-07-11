@@ -265,6 +265,26 @@ def api_generate(params, body):
     return out
 
 
+def api_submit(params, body):
+    """Собрать пакет к подаче в ЛКПП: XML + печать + МЧД + ЧЕКЛИСТ.md."""
+    from ecodoc.submit import build_package
+    cls = _get_form(body["form"])
+    ctx = workspace.load_context(body["org"], body["site"])
+    report = cls(ctx)
+    if not getattr(report, "implemented", True):
+        return {"error": f"Форма «{report.title}» — каркас, подача недоступна."}
+    out_dir = workspace.site_dir(body["org"], body["site"]) / "out"
+    res = build_package(report, out_dir)
+    return {
+        "dir": str(res["dir"]),
+        "files": {k: str(v) for k, v in res["files"].items()},
+        "checklist": str(res["checklist"]),
+        "issues": [{"level": i.level, "field": i.field, "message": i.message}
+                   for i in res["issues"]],
+        "errors": len(res["errors"]),
+    }
+
+
 def api_calendar(params, body):
     from datetime import date
 
@@ -509,7 +529,7 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "upraza_export": api_upraza_export,
                "counterparty": api_counterparty, "oktmo": api_oktmo,
                "hazard_class": api_hazard_class, "compare": api_compare,
-               "devdoc": api_devdoc, "open": api_open}
+               "devdoc": api_devdoc, "submit": api_submit, "open": api_open}
 
 
 class Handler(BaseHTTPRequestHandler):

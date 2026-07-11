@@ -868,6 +868,7 @@ function renderForms(){
     const btns = f.implemented
       ? `<button class="b sec" onclick="doValidate('${f.code}')">Проверить</button>
          <button class="b" onclick="doGenerate('${f.code}')">Сгенерировать</button>`
+         + (dev ? "" : ` <button class="b sec" onclick="doSubmit('${f.code}')" title="XML + МЧД + чек-лист для загрузки в ЛКПП">Пакет к подаче</button>`)
       : f.devdoc
       ? `<button class="b" onclick="doDevDoc('${f.code}')">Сгенерировать (.docx)</button>`
       : '<span class="hint">каркас — генерация в следующих версиях</span>';
@@ -894,6 +895,21 @@ async function doDevDoc(kind){
     const j = await post("devdoc", {org:ORG, site:SITE, kind}, 0);
     show("out-gen", "Документ (.docx): " + j.path);
     post("open", {path:j.path}).catch(()=>{});
+  }catch(e){ show("out-gen", "Ошибка: " + e.message); }
+  spin("sp-gen",0);
+}
+async function doSubmit(code){
+  needSite(); spin("sp-gen",1);
+  try{
+    const j = await post("submit", {org:ORG, site:SITE, form:code}, 0);
+    if (j.error){ show("out-gen", "Ошибка: " + j.error); spin("sp-gen",0); return; }
+    renderIssues(code, j.issues);
+    let t = "Пакет к подаче в ЛКПП: " + j.dir + "\n";
+    for (const [k,v] of Object.entries(j.files||{})) t += "  " + k + ": " + v.split(/[\\/]/).pop() + "\n";
+    t += "  чек-лист: ЧЕКЛИСТ.md\n";
+    t += j.errors ? ("\n⚠ " + j.errors + " ошибок preflight — см. ЧЕКЛИСТ.md") : "\n✅ preflight без ошибок — можно загружать в ЛКПП и подписывать.";
+    show("out-gen", t);
+    post("open", {path:j.dir}).catch(()=>{});
   }catch(e){ show("out-gen", "Ошибка: " + e.message); }
   spin("sp-gen",0);
 }
