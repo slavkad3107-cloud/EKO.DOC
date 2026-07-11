@@ -34,8 +34,9 @@ SYSTEM = """Ты — ассистент инженера-эколога РФ. И
  "wastes": [{"fkko":"11 цифр", "name":"", "hazard_class":1-5,
              "generated":"т", "transferred":"т", "used":"т", "neutralized":"т"}],
  "disposal_acts": [{"date":"ДД.ММ.ГГГГ", "counterparty":"", "inn":"",
-                    "license":"", "fkko":"", "waste_name":"", "mass_t":"",
-                    "operation":"утилизация|обезвреживание|размещение|обработка"}],
+                    "license":"", "carrier":"перевозчик", "fkko":"", "waste_name":"",
+                    "mass_t":"", "volume_m3":"", "hazard_class":1-5,
+                    "operation":"утилизация|обезвреживание|размещение|хранение|обработка"}],
  "lab_results": [{"kind":"КХА|биотест|хим", "protocol_no":"", "date":"",
                   "lab":"", "object":"", "substances":[{"name":"", "value":"", "unit":""}]}],
  "quotes": {"<путь.к.полю>": "дословная короткая цитата из текста"}
@@ -161,17 +162,43 @@ def _merge_objects(ctx: ReportContext, data: dict, src: str, rep: ExtractionRepo
                 rep.accepted.append(Accepted(f"объект {code}.{attr}", val, src))
 
 
+def _merge_acts(ctx: ReportContext, data: dict, src: str, rep: ExtractionReport):
+    """Справки-акты об обращении с отходами — первичный ввод (WasteAct).
+    Дедуп по (ФККО, дата, получатель, масса), чтобы повторный анализ не двоил."""
+    from ecodoc.core.models import WasteAct
+    seen = {(a.fkko_code, a.date, a.receiver, str(a.mass)) for a in ctx.waste_acts}
+    for act in data.get("disposal_acts") or []:
+        fkko = re.sub(r"\D", "", str(act.get("fkko") or ""))
+        mass = _dec(act.get("mass_t"))
+        if len(fkko) != 11 or mass is None or mass == 0:
+            continue
+        hz = act.get("hazard_class")
+        hazard = int(hz) if hz in (1, 2, 3, 4, 5) else (
+            int(fkko[-1]) if fkko[-1] in "12345" else 5)
+        receiver = str(act.get("counterparty") or "").strip()
+        key = (fkko, str(act.get("date") or ""), receiver, str(mass))
+        if key in seen:
+            continue
+        seen.add(key)
+        ctx.waste_acts.append(WasteAct(
+            name=str(act.get("waste_name") or "").strip(), fkko_code=fkko,
+            hazard_class=hazard, mass=mass,
+            volume_m3=_dec(act.get("volume_m3")) or 0,
+            operation=str(act.get("operation") or "").strip(),
+            carrier=str(act.get("carrier") or "").strip(), receiver=receiver,
+            receiver_inn=str(act.get("inn") or "").strip(),
+            license=str(act.get("license") or "").strip(),
+            date=str(act.get("date") or "").strip()))
+        rep.accepted.append(Accepted(
+            f"акт {fkko} ({act.get('operation','')})", f"{mass} т → {receiver}", src))
+
+
 def _merge_wastes(ctx: ReportContext, data: dict, quotes: dict, src: str,
                   rep: ExtractionReport):
-    # (элемент, префикс ключа в quotes) — у актов свой индекс в своём массиве
+    # агрегированное движение из документа (напр. готовый журнал); акты идут
+    # в ctx.waste_acts отдельно (_merge_acts) и потом сворачиваются apply_acts
     items = [(w, f"wastes[{j}]")
              for j, w in enumerate(data.get("wastes") or [])]
-    # акты об утилизации — это тоже движение отхода (передано)
-    for j, act in enumerate(data.get("disposal_acts") or []):
-        items.append(({"fkko": act.get("fkko", ""),
-                       "name": act.get("waste_name", ""),
-                       "transferred": act.get("mass_t", "")},
-                      f"disposal_acts[{j}]"))
     for w, qkey in items:
         fkko = re.sub(r"\D", "", str(w.get("fkko") or ""))
         if len(fkko) != 11:
@@ -276,6 +303,19 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
         quotes = _verify_quotes(data.get("quotes") or {}, chunk)
         _merge_org(ctx, data, quotes, label, rep)
         _merge_objects(ctx, data, label, rep)
+        _merge_acts(ctx, data, label, rep)
         _merge_wastes(ctx, data, quotes, label, rep)
         _store_extras(ctx, data, label, rep)
+    # свернуть собранные акты в движение (акты первичны)
+    if ctx.waste_acts:
+        from ecodoc.core.waste_agg import aggregate_acts
+        wastes, receivers = aggregate_acts(ctx.waste_acts)
+        ctx.wastes = wastes
+        if receivers:
+            if not isinstance(ctx.extra, dict):
+                ctx.extra = {}
+            ctx.extra["waste_receivers"] = receivers
+        rep.accepted.append(Accepted(
+            "движение отходов", f"рассчитано из {len(ctx.waste_acts)} актов "
+            f"({len(wastes)} видов отходов)", "агрегация"))
     return rep

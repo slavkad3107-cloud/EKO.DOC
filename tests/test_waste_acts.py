@@ -60,6 +60,25 @@ def test_acts_are_authoritative(tmp_path):
     assert float(ctx.wastes[0].generated) == 16.0   # пересчитано из актов
 
 
+def test_analyzer_extracts_acts():
+    """ИИ-анализатор кладёт disposal_acts в ctx.waste_acts (с дедупом)."""
+    from ecodoc.core.models import ReportContext, Organization, ReportPeriod
+    from ecodoc.ai.analyzer import _merge_acts, ExtractionReport
+    ctx = ReportContext(organization=Organization(name="Т", inn="7814167570"),
+                        period=ReportPeriod(year=2025))
+    data = {"disposal_acts": [
+        {"date": "15.03.2025", "counterparty": "Меркурий", "carrier": "Спецтранс",
+         "fkko": "4 71 101 01 52 1", "waste_name": "Лампы", "mass_t": "0.1",
+         "hazard_class": 1, "operation": "обезвреживание"},
+    ]}
+    _merge_acts(ctx, data, "справка.pdf", ExtractionReport())
+    _merge_acts(ctx, data, "справка.pdf", ExtractionReport())   # дедуп
+    assert len(ctx.waste_acts) == 1
+    a = ctx.waste_acts[0]
+    assert a.fkko_code == "47110101521" and float(a.mass) == 0.1
+    assert a.operation == "обезвреживание" and a.carrier == "Спецтранс"
+
+
 def test_no_acts_keeps_manual(tmp_path):
     """Актов нет — заполненное вручную движение сохраняется."""
     data = {
