@@ -80,8 +80,8 @@ def from_json(path: str | Path) -> ReportContext:
 
     dec_fields = ("accumulated_start", "accumulated_start_nakopl", "generated",
                   "received", "processed", "used", "neutralized", "transferred",
-                  "transferred_storage", "transferred_burial", "placed_norm",
-                  "placed_over", "accumulated_end")
+                  "transferred_util", "transferred_neutral", "transferred_storage",
+                  "transferred_burial", "placed_norm", "placed_over", "accumulated_end")
     for wd in data.get("wastes", []):
         w = _build(WasteFlow, wd)
         for a in dec_fields:

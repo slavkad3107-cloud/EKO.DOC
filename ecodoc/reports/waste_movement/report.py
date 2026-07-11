@@ -243,10 +243,12 @@ class WasteMovement(Report):
             xlsx.cell(ws, f"B{r}", w.name, align="left")
             xlsx.cell(ws, f"C{r}", w.fkko_code)
             xlsx.cell(ws, f"D{r}", w.hazard_class)
-            xlsx.cell(ws, f"E{r}", _num(w.transferred))
-            for col in "FGHI":
-                xlsx.cell(ws, f"{col}{r}", 0.0)
-            xlsx.cell(ws, f"J{r}", _num(w.transferred_burial))
+            xlsx.cell(ws, f"E{r}", _num(w.transferred))         # всего
+            xlsx.cell(ws, f"F{r}", 0.0)                          # для обработки
+            xlsx.cell(ws, f"G{r}", _num(w.transferred_util))    # для утилизации
+            xlsx.cell(ws, f"H{r}", _num(w.transferred_neutral))  # для обезвреживания
+            xlsx.cell(ws, f"I{r}", _num(w.transferred_storage))  # для хранения
+            xlsx.cell(ws, f"J{r}", _num(w.transferred_burial))   # для захоронения
             xlsx.cell(ws, f"K{r}", info.get("receiver", ""), align="left")
             xlsx.cell(ws, f"L{r}", info.get("contract", ""), align="left")
             xlsx.cell(ws, f"M{r}", info.get("contract_term", ""), align="left")

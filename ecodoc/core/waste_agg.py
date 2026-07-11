@@ -47,6 +47,10 @@ def aggregate_acts(acts: list[WasteAct]) -> tuple[list[WasteFlow], list[dict]]:
             w.transferred_burial += m
         elif "хранени" in op:
             w.transferred_storage += m
+        elif "утилиз" in op or "рецикл" in op:
+            w.transferred_util += m
+        elif "обезвреж" in op:
+            w.transferred_neutral += m
         # получатель (для Прил.3 / кадастра) — уникальный по (код, получатель)
         if a.receiver:
             rk = (code, a.receiver)

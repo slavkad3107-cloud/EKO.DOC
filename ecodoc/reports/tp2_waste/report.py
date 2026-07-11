@@ -256,6 +256,8 @@ class TP2Waste(Report):
             if tko:
                 g[cols[13]] = trans                # 14 — ТКО региональному оператору
             else:
+                g[cols[16]] = rc(w.transferred_util)     # 17 — для утилизации
+                g[cols[18]] = rc(w.transferred_neutral)  # 19 — для обезвреживания
                 g[cols[20]] = rc(w.transferred_storage)  # 21 — для хранения
                 g[cols[22]] = rc(w.transferred_burial)   # 23 — для захоронения
             g[cols[27]] = rc(D(w.placed_norm) + D(w.placed_over))  # 28 — размещ. захоронение
