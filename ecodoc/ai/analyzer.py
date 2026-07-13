@@ -308,14 +308,30 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
         _store_extras(ctx, data, label, rep)
     # свернуть собранные акты в движение (акты первичны)
     if ctx.waste_acts:
-        from ecodoc.core.waste_agg import aggregate_acts
-        wastes, receivers = aggregate_acts(ctx.waste_acts)
+        from ecodoc.core.waste_agg import aggregate_acts, period_breakdown
+        year = getattr(ctx.period, "year", None) or None
+        quarter = getattr(ctx.period, "quarter", None) or None
+        wastes, receivers = aggregate_acts(ctx.waste_acts, year=year, quarter=quarter)
         ctx.wastes = wastes
         if receivers:
             if not isinstance(ctx.extra, dict):
                 ctx.extra = {}
             ctx.extra["waste_receivers"] = receivers
+        per = f"за {year} год" if year else "период не задан (укажите год!)"
+        if quarter:
+            per = f"за {quarter} кв. {year}"
         rep.accepted.append(Accepted(
             "движение отходов", f"рассчитано из {len(ctx.waste_acts)} актов "
-            f"({len(wastes)} видов отходов)", "агрегация"))
+            f"({len(wastes)} видов) {per}", "агрегация"))
+        # разбивка по кварталам (для контроля «данные по периодам»)
+        bd = period_breakdown(ctx.waste_acts, year)
+        if year and bd["total"]:
+            qs = " | ".join(f"{q}кв {v:g}т" for q, v in bd["quarters"].items() if v)
+            rep.accepted.append(Accepted(
+                "по кварталам", f"{qs or 'даты актов не распознаны'}; "
+                f"всего {bd['total']:g} т" + (f"; без даты {bd['no_date']:g} т"
+                if bd["no_date"] else ""), "агрегация"))
+        if not year:
+            rep.errors.append("⚠ Отчётный год НЕ задан — во вкладке «Данные» "
+                              "укажите год; отчётность формируется за конкретный год.")
     return rep

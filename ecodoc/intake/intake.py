@@ -297,7 +297,7 @@ def _err_reason(msg: str, p: Path) -> str:
 
 def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
              use_ai: bool, forms: list[str] | None, ocr: bool,
-             lines: list[str]) -> str:
+             lines: list[str], keep_sources: bool = False) -> str:
     in_workspace = bool(org and site)
     # 2. извлечение текста ПАРАЛЛЕЛЬНО (OCR сканов — узкое место; Tesseract
     #    работает как подпроцесс и отпускает GIL, поэтому потоки реально
@@ -380,4 +380,30 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     if in_workspace:
         workspace.save_context(org, site, ctx)
         lines.append(f"\nКонтекст сохранён: {workspace.site_dir(org, site) / 'context.json'}")
+        # исходники не храним в папке программы — данные уже в базе (context.json)
+        if not keep_sources:
+            n = _purge_sources(workspace.site_dir(org, site) / "attachments")
+            if n:
+                lines.append(f"Исходные файлы не сохранены (обработано и удалено: {n}) — "
+                             "данные извлечены в базу context.json.")
     return "\n".join(lines)
+
+
+def _purge_sources(att_dir: Path) -> int:
+    """Удалить сохранённые исходники после извлечения (данные уже в базе
+    context.json). Оставляем только отчёты приёма (приём_*). Реестр intake.json
+    тоже чистим, чтобы повторная загрузка тех же файлов переизвлекалась
+    (дублирование не грозит: акты дедуплицируются по ФККО/дате/получателю/массе).
+    Возвращает число удалённых файлов."""
+    if not att_dir.exists():
+        return 0
+    removed = 0
+    for p in att_dir.iterdir():
+        if p.is_dir():
+            shutil.rmtree(p, ignore_errors=True)
+        elif p.is_file() and not p.name.startswith("приём_"):
+            try:
+                p.unlink(); removed += 1
+            except OSError:
+                pass
+    return removed
