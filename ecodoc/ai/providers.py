@@ -244,6 +244,23 @@ def get_provider(cfg: AIConfig) -> Provider:
     return PROVIDERS[cfg.provider](cfg)
 
 
+_OLLAMA_MODEL_CACHE: dict = {}
+
+
+def _ollama_default_model(cfg: AIConfig) -> str:
+    """Первая установленная модель Ollama; результат кэшируется на процесс."""
+    if "model" in _OLLAMA_MODEL_CACHE:
+        return _OLLAMA_MODEL_CACHE["model"]
+    try:
+        installed = get_provider(AIConfig(**{**cfg.__dict__, "provider": "ollama",
+                                             "model": ""})).list_models()
+        model = installed[0] if installed else ""
+    except Exception:
+        model = ""
+    _OLLAMA_MODEL_CACHE["model"] = model
+    return model
+
+
 def chat_with_fallback(cfg: AIConfig, system: str, user: str) -> tuple[str, str]:
     """Вернуть (ответ, 'provider/model'); при отказе основного — идём по fallbacks."""
     attempts = [{"provider": cfg.provider, "model": cfg.model}] + list(cfg.fallbacks)
@@ -255,14 +272,10 @@ def chat_with_fallback(cfg: AIConfig, system: str, user: str) -> tuple[str, str]
         prov = att["provider"]
         model = att.get("model", "")
         if not model and prov in _need_model:
-            # у ollama попробуем автоматически взять первую установленную модель
+            # у ollama автоматически берём первую установленную модель
+            # (список кэшируется — иначе HTTP-запрос на каждый анализируемый файл)
             if prov == "ollama":
-                try:
-                    installed = get_provider(AIConfig(**{**cfg.__dict__,
-                                "provider": "ollama", "model": ""})).list_models()
-                    model = installed[0] if installed else ""
-                except Exception:
-                    model = ""
+                model = _ollama_default_model(cfg)
             if not model:
                 last_err = AIError(f"{prov}: не задана модель — пропущен")
                 continue

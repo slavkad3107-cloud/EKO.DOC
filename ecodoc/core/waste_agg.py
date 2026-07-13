@@ -131,10 +131,43 @@ def period_breakdown(acts: list[WasteAct], year=None) -> dict:
             "total": float(total), "no_date": float(no_date)}
 
 
+# поля, которые СЧИТАЮТСЯ из актов (перезаписываются агрегацией)
+_ACT_FIELDS = ("generated", "transferred", "transferred_util",
+               "transferred_neutral", "transferred_storage", "transferred_burial")
+
+
+def _merge_flows(existing: list[WasteFlow], computed: list[WasteFlow]) -> list[WasteFlow]:
+    """Слить рассчитанное из актов движение с существующим (ручным/из журналов).
+
+    Из актов берутся только их поля (_ACT_FIELDS); остальное — остатки на
+    начало/конец, размещено (лимит/сверх), принято, обработано, утилизировано
+    собственными силами, описательные поля — сохраняется из существующей
+    позиции с тем же ФККО (иначе ручной ввод стирался бы при каждой загрузке).
+    Ручные позиции без актов остаются как есть."""
+    by_code = {w.fkko_code: w for w in existing}
+    out: list[WasteFlow] = []
+    seen: set = set()
+    for c in computed:
+        prev = by_code.get(c.fkko_code)
+        if prev is not None:
+            for f in _ACT_FIELDS:
+                setattr(prev, f, getattr(c, f))
+            if not prev.name and c.name:
+                prev.name = c.name
+            out.append(prev)
+        else:
+            out.append(c)
+        seen.add(c.fkko_code)
+    # ручные позиции, по которым актов нет (напр. только остатки)
+    out.extend(w for w in existing if w.fkko_code not in seen)
+    return out
+
+
 def apply_acts(ctx) -> bool:
-    """Если заданы справки-акты — рассчитать движение (wastes) и получателей из
-    них (акты первичны). Если актов нет — оставить заполненное вручную движение.
-    Возвращает True, если применено."""
+    """Если заданы справки-акты — рассчитать из них движение (образовано/
+    передано по видам) и слить с существующим движением, сохранив ручные поля
+    (остатки, размещение, принято и т.п.). Если актов нет — оставить движение
+    как есть. Возвращает True, если применено."""
     acts = getattr(ctx, "waste_acts", None) or []
     if not acts:
         return False
@@ -142,7 +175,7 @@ def apply_acts(ctx) -> bool:
     year = getattr(per, "year", None) or None
     quarter = getattr(per, "quarter", None) or None
     wastes, receivers = aggregate_acts(acts, year=year, quarter=quarter)
-    ctx.wastes = wastes
+    ctx.wastes = _merge_flows(ctx.wastes or [], wastes)
     if receivers:
         if not isinstance(ctx.extra, dict):
             ctx.extra = {}

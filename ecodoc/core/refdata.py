@@ -47,9 +47,25 @@ def common_wastes() -> list[dict]:
         return []
 
 
+_OKTMO_CACHE: dict = {"mtime": None, "entries": {}}
+
+
 def oktmo_ref() -> dict:
-    """Оффлайн-справочник ОКТМО по ключевым словам адреса (правится экологом)."""
+    """Оффлайн-справочник ОКТМО по ключевым словам адреса (правится экологом).
+
+    Перечитывается при изменении файла (по mtime) — без перезапуска приложения:
+    эколог дописал строку в oktmo_ref.json → кнопка «Определить ОКТМО» сразу
+    видит новую запись."""
+    path = DATA_DIR / "oktmo_ref.json"
     try:
-        return _load("oktmo_ref.json").get("entries", {})
-    except FileNotFoundError:
+        mtime = path.stat().st_mtime
+    except OSError:
         return {}
+    if _OKTMO_CACHE["mtime"] != mtime:
+        try:
+            with path.open(encoding="utf-8") as f:
+                _OKTMO_CACHE["entries"] = json.load(f).get("entries", {})
+            _OKTMO_CACHE["mtime"] = mtime
+        except (json.JSONDecodeError, OSError):
+            return _OKTMO_CACHE["entries"]
+    return _OKTMO_CACHE["entries"]

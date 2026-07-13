@@ -12,10 +12,15 @@ import hashlib
 import json
 import shutil
 import tempfile
+import threading
 from datetime import date
 from pathlib import Path
 
 from ecodoc.core import workspace
+
+# сервер GUI многопоточный (ThreadingHTTPServer): реестр attachments и чистка
+# исходников защищаются одним замком, чтобы параллельная партия не терялась
+_ATT_LOCK = threading.Lock()
 from ecodoc.core.models import ReportContext
 from ecodoc.intake import requirements
 from ecodoc.parsers import extractor
@@ -216,7 +221,6 @@ def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
     names, lines = [], []
     tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_arc_"))
     budget = _Budget()
-    reg, by_sha, reg_names = _load_registry(att)   # реестр — один раз на батч
     today = date.today().isoformat()
     try:
         queue: list[Path] = []
@@ -230,16 +234,21 @@ def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
                 queue += _extract_archive(src, tmpdir, lines, budget)
             else:
                 queue.append(src)
-        for src in queue:
-            if src.name.startswith("~$"):
-                continue
-            try:
-                name, _is_new = _register_one(att, src, by_sha, reg_names,
-                                              reg, today)
-                names.append(name)
-            except OSError as e:
-                lines.append(f"✖ не сохранён {src.name}: {e}")
-        _save_registry(att, reg)                   # запись реестра — один раз
+        # реестр + запись файлов под замком: сервер многопоточный
+        # (ThreadingHTTPServer) — параллельная партия/чистка не должны
+        # потерять записи реестра
+        with _ATT_LOCK:
+            reg, by_sha, reg_names = _load_registry(att)
+            for src in queue:
+                if src.name.startswith("~$"):
+                    continue
+                try:
+                    name, _is_new = _register_one(att, src, by_sha, reg_names,
+                                                  reg, today)
+                    names.append(name)
+                except OSError as e:
+                    lines.append(f"✖ не сохранён {src.name}: {e}")
+            _save_registry(att, reg)               # запись реестра — один раз
         lines.append(f"Принято файлов: {len(names)}")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -398,12 +407,13 @@ def _purge_sources(att_dir: Path) -> int:
     if not att_dir.exists():
         return 0
     removed = 0
-    for p in att_dir.iterdir():
-        if p.is_dir():
-            shutil.rmtree(p, ignore_errors=True)
-        elif p.is_file() and not p.name.startswith("приём_"):
-            try:
-                p.unlink(); removed += 1
-            except OSError:
-                pass
+    with _ATT_LOCK:
+        for p in att_dir.iterdir():
+            if p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+            elif p.is_file() and not p.name.startswith("приём_"):
+                try:
+                    p.unlink(); removed += 1
+                except OSError:
+                    pass
     return removed

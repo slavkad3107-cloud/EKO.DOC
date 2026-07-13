@@ -157,7 +157,6 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
         <button class="b sec" onclick="openWs()">Открыть папку площадки</button>
         <span class="spin" id="sp-data">…</span><span id="data-msg" class="hint"></span>
       </div>
-      <div id="cmp-out" class="hint" style="display:none;white-space:pre-wrap"></div>
       <div id="dataform"></div>
       <details style="margin-top:12px">
         <summary style="cursor:pointer;color:var(--mut)">Расширенно: все поля в формате JSON (для опытных)</summary>
@@ -808,9 +807,9 @@ async function saveCtx(){
     collectDataForm();
     foldWater();
     await post("context_save", {org:ORG, site:SITE, context:CTX});
-    seedWater();
-    $("data-msg").textContent = "Сохранено ✓";
-    $("ctx").value = JSON.stringify(CTX, null, 2);
+    // перечитать: сервер пересчитал движение из справок-актов
+    await loadCtx();
+    $("data-msg").textContent = "Сохранено ✓ (движение пересчитано из актов)";
   }catch(e){ $("data-msg").textContent = "Ошибка: " + e.message; }
   spin("sp-data",0);
 }
@@ -818,35 +817,6 @@ function applyRawJson(){
   try{ CTX = JSON.parse($("ctx").value); seedWater(); renderDataForm();
     $("data-msg").textContent = "JSON применён — не забудьте «Сохранить»"; }
   catch(e){ alert("Ошибка в JSON: " + e.message); }
-}
-async function snapshotPeriod(){
-  needSite(); collectDataForm(); foldWater(); spin("sp-data",1);
-  try{
-    await post("context_save", {org:ORG, site:SITE, context:CTX});
-    seedWater();
-    const j = await post("compare", {org:ORG, site:SITE, save:true}, 0);
-    $("data-msg").textContent = "Снимок сохранён: " + j.saved;
-  }catch(e){ $("data-msg").textContent = "Ошибка: " + e.message; }
-  spin("sp-data",0);
-}
-async function comparePeriods(){
-  needSite(); collectDataForm(); foldWater(); spin("sp-data",1);
-  try{
-    await post("context_save", {org:ORG, site:SITE, context:CTX});
-    seedWater();
-    const j = await post("compare", {org:ORG, site:SITE}, 0);
-    const box = $("cmp-out"); box.style.display="block";
-    if(j.note){ box.textContent = j.note; }
-    else if(!j.diffs.length){ box.textContent = "Отличий от снимка "+j.snapshot+" нет."; }
-    else{
-      box.textContent = "Сравнение со снимком "+j.snapshot+":\n" +
-        j.diffs.map(d=>{
-          const arrow = d.cur>d.prev ? "▲" : "▼";
-          return `  ${arrow} ${d.name}: ${d.prev} → ${d.cur} т (${d.pct>0?'+':''}${d.pct}%)`;
-        }).join("\n");
-    }
-  }catch(e){ $("cmp-out").style.display="block"; $("cmp-out").textContent="Ошибка: "+e.message; }
-  spin("sp-data",0);
 }
 async function detectOktmo(){
   collectDataForm();
@@ -912,9 +882,9 @@ async function doDevDoc(kind){
   needSite(); spin("sp-gen",1);
   try{
     const j = await post("devdoc", {org:ORG, site:SITE, kind}, 0);
-    show("out-gen", "Документ (.docx): " + j.path);
+    show("out-dev", "Документ (.docx): " + j.path);
     post("open", {path:j.path}).catch(()=>{});
-  }catch(e){ show("out-gen", "Ошибка: " + e.message); }
+  }catch(e){ show("out-dev", "Ошибка: " + e.message); }
   spin("sp-gen",0);
 }
 async function doSubmit(code){

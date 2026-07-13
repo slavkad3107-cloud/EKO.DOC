@@ -308,11 +308,13 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
         _store_extras(ctx, data, label, rep)
     # свернуть собранные акты в движение (акты первичны)
     if ctx.waste_acts:
-        from ecodoc.core.waste_agg import aggregate_acts, period_breakdown
+        from ecodoc.core.waste_agg import (_merge_flows, aggregate_acts,
+                                           period_breakdown)
         year = getattr(ctx.period, "year", None) or None
         quarter = getattr(ctx.period, "quarter", None) or None
         wastes, receivers = aggregate_acts(ctx.waste_acts, year=year, quarter=quarter)
-        ctx.wastes = wastes
+        # слияние: акты дают образовано/передано, ручные остатки/размещение живут
+        ctx.wastes = _merge_flows(ctx.wastes or [], wastes)
         if receivers:
             if not isinstance(ctx.extra, dict):
                 ctx.extra = {}

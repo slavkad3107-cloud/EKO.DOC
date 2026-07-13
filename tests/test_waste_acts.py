@@ -113,6 +113,53 @@ def test_analyzer_extracts_acts():
     assert a.operation == "обезвреживание" and a.carrier == "Спецтранс"
 
 
+def test_merge_preserves_manual_fields(tmp_path):
+    """Ручные поля движения (размещено/остатки) НЕ стираются пересчётом из
+    актов — иначе плата за размещение и остатки 1028 терялись бы при каждой
+    загрузке контекста (регрессия аудита)."""
+    data = {
+        "organization": {"name": "Т", "inn": "7814167570"},
+        "period": {"year": 2025},
+        "wastes": [{"fkko_code": "73310001724", "name": "ТКО", "hazard_class": 4,
+                    "generated": "1", "placed_norm": "7.5",
+                    "accumulated_start": "2.0", "accumulated_end": "0.5"}],
+        "waste_acts": [{"fkko_code": "73310001724", "name": "ТКО", "hazard_class": 4,
+                        "mass": "16", "operation": "размещение", "date": "15.03.2025"}],
+    }
+    p = tmp_path / "ctx.json"
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    ctx = serialize.from_json(p)
+    w = ctx.wastes[0]
+    assert float(w.generated) == 16.0            # из актов
+    assert float(w.transferred_burial) == 16.0   # из актов
+    assert float(w.placed_norm) == 7.5           # ручное сохранено
+    assert float(w.accumulated_start) == 2.0     # ручное сохранено
+    assert float(w.accumulated_end) == 0.5       # ручное сохранено
+    # roundtrip: save → load ещё раз — ничего не теряется
+    p2 = tmp_path / "ctx2.json"
+    serialize.to_json(ctx, p2)
+    ctx2 = serialize.from_json(p2)
+    assert float(ctx2.wastes[0].placed_norm) == 7.5
+    assert float(ctx2.wastes[0].generated) == 16.0
+
+
+def test_merge_keeps_actless_manual_rows(tmp_path):
+    """Ручная позиция БЕЗ актов (только остатки) не выбрасывается."""
+    data = {
+        "organization": {"name": "Т", "inn": "7814167570"},
+        "period": {"year": 2025},
+        "wastes": [{"fkko_code": "47110101521", "name": "Лампы (остаток)",
+                    "hazard_class": 1, "accumulated_start": "0.05"}],
+        "waste_acts": [{"fkko_code": "73310001724", "name": "ТКО", "hazard_class": 4,
+                        "mass": "16", "operation": "размещение"}],
+    }
+    p = tmp_path / "ctx.json"
+    p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    ctx = serialize.from_json(p)
+    codes = {w.fkko_code for w in ctx.wastes}
+    assert codes == {"47110101521", "73310001724"}
+
+
 def test_no_acts_keeps_manual(tmp_path):
     """Актов нет — заполненное вручную движение сохраняется."""
     data = {
