@@ -193,9 +193,12 @@ class WasteMovement(Report):
             xlsx.cell(ws, f"C{dr}", _num(w.used))
             xlsx.cell(ws, f"D{dr}", _num(w.neutralized))
             xlsx.cell(ws, f"E{dr}", _num(w.transferred))
+            # размещено: всего(12) = хранение(13) + захоронение(14).
+            # Модель не делит собственное размещение — относим к захоронению
+            # (типовой случай размещения у полигона), хранение = 0
             xlsx.cell(ws, f"F{dr}", placed)
-            xlsx.cell(ws, f"G{dr}", _num(w.placed_norm))
-            xlsx.cell(ws, f"H{dr}", 0.0)
+            xlsx.cell(ws, f"G{dr}", 0.0)
+            xlsx.cell(ws, f"H{dr}", placed)
             xlsx.cell(ws, f"I{dr}", _num(w.accumulated_end))
             xlsx.cell(ws, f"J{dr}", 0.0)
             dr += 1
@@ -244,7 +247,7 @@ class WasteMovement(Report):
             xlsx.cell(ws, f"C{r}", w.fkko_code)
             xlsx.cell(ws, f"D{r}", w.hazard_class)
             xlsx.cell(ws, f"E{r}", _num(w.transferred))         # всего
-            xlsx.cell(ws, f"F{r}", 0.0)                          # для обработки
+            xlsx.cell(ws, f"F{r}", _num(w.transferred_processing))  # для обработки
             xlsx.cell(ws, f"G{r}", _num(w.transferred_util))    # для утилизации
             xlsx.cell(ws, f"H{r}", _num(w.transferred_neutral))  # для обезвреживания
             xlsx.cell(ws, f"I{r}", _num(w.transferred_storage))  # для хранения

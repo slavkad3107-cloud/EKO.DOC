@@ -389,31 +389,40 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     if in_workspace:
         workspace.save_context(org, site, ctx)
         lines.append(f"\nКонтекст сохранён: {workspace.site_dir(org, site) / 'context.json'}")
-        # исходники не храним в папке программы — данные уже в базе (context.json)
+        # исходники не храним в папке программы — данные уже в базе (context.json).
+        # Удаляем ТОЛЬКО обработанные в этом вызове файлы: GUI анализирует
+        # чанками по 40, и чистка всего каталога стёрла бы ещё не
+        # проанализированные файлы следующих чанков.
         if not keep_sources:
-            n = _purge_sources(workspace.site_dir(org, site) / "attachments")
+            analyzed = [p.name for p in stored]
+            n = _purge_sources(workspace.site_dir(org, site) / "attachments",
+                               analyzed)
             if n:
                 lines.append(f"Исходные файлы не сохранены (обработано и удалено: {n}) — "
                              "данные извлечены в базу context.json.")
     return "\n".join(lines)
 
 
-def _purge_sources(att_dir: Path) -> int:
-    """Удалить сохранённые исходники после извлечения (данные уже в базе
-    context.json). Оставляем только отчёты приёма (приём_*). Реестр intake.json
-    тоже чистим, чтобы повторная загрузка тех же файлов переизвлекалась
-    (дублирование не грозит: акты дедуплицируются по ФККО/дате/получателю/массе).
-    Возвращает число удалённых файлов."""
-    if not att_dir.exists():
+def _purge_sources(att_dir: Path, names: list[str]) -> int:
+    """Удалить ПРОАНАЛИЗИРОВАННЫЕ исходники (данные уже в базе context.json)
+    и их записи из реестра intake.json. Файлы других чанков и отчёты приёма
+    (приём_*) не трогаются. Возвращает число удалённых файлов."""
+    if not att_dir.exists() or not names:
         return 0
     removed = 0
+    targets = set(names)
     with _ATT_LOCK:
-        for p in att_dir.iterdir():
-            if p.is_dir():
-                shutil.rmtree(p, ignore_errors=True)
-            elif p.is_file() and not p.name.startswith("приём_"):
+        for name in targets:
+            p = att_dir / name
+            if p.is_file() and not name.startswith("приём_") and name != "intake.json":
                 try:
                     p.unlink(); removed += 1
                 except OSError:
                     pass
+        # реестр: убрать записи удалённых файлов, чтобы повторная загрузка
+        # тех же документов переизвлекалась (акты дедуплицируются сами)
+        reg, _by_sha, _names = _load_registry(att_dir)
+        keep = [row for row in reg if row.get("file") not in targets]
+        if len(keep) != len(reg):
+            _save_registry(att_dir, keep)
     return removed

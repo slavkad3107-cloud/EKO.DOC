@@ -162,11 +162,27 @@ def _merge_objects(ctx: ReportContext, data: dict, src: str, rep: ExtractionRepo
                 rep.accepted.append(Accepted(f"объект {code}.{attr}", val, src))
 
 
+def _act_key(fkko, date, receiver, mass) -> tuple:
+    """Нормализованный ключ дедупа акта: «16»/«16.0», «15.03.2025»/«15.3.25»
+    и код с пробелами не должны давать разные ключи (иначе повторная загрузка
+    того же документа задваивает массы)."""
+    from decimal import Decimal
+    try:
+        m = str(Decimal(str(mass)).normalize())
+    except Exception:
+        m = str(mass)
+    return (re.sub(r"\D", "", str(fkko or "")),
+            re.sub(r"\D", "", str(date or "")),
+            str(receiver or "").strip().lower(),
+            m)
+
+
 def _merge_acts(ctx: ReportContext, data: dict, src: str, rep: ExtractionReport):
     """Справки-акты об обращении с отходами — первичный ввод (WasteAct).
-    Дедуп по (ФККО, дата, получатель, масса), чтобы повторный анализ не двоил."""
+    Дедуп по нормализованному (ФККО, дата, получатель, масса)."""
     from ecodoc.core.models import WasteAct
-    seen = {(a.fkko_code, a.date, a.receiver, str(a.mass)) for a in ctx.waste_acts}
+    seen = {_act_key(a.fkko_code, a.date, a.receiver, a.mass)
+            for a in ctx.waste_acts}
     for act in data.get("disposal_acts") or []:
         fkko = re.sub(r"\D", "", str(act.get("fkko") or ""))
         mass = _dec(act.get("mass_t"))
@@ -176,7 +192,7 @@ def _merge_acts(ctx: ReportContext, data: dict, src: str, rep: ExtractionReport)
         hazard = int(hz) if hz in (1, 2, 3, 4, 5) else (
             int(fkko[-1]) if fkko[-1] in "12345" else 5)
         receiver = str(act.get("counterparty") or "").strip()
-        key = (fkko, str(act.get("date") or ""), receiver, str(mass))
+        key = _act_key(fkko, act.get("date"), receiver, mass)
         if key in seen:
             continue
         seen.add(key)
@@ -308,8 +324,8 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
         _store_extras(ctx, data, label, rep)
     # свернуть собранные акты в движение (акты первичны)
     if ctx.waste_acts:
-        from ecodoc.core.waste_agg import (_merge_flows, aggregate_acts,
-                                           period_breakdown)
+        from ecodoc.core.waste_agg import (_merge_flows, _merge_receivers,
+                                           aggregate_acts, period_breakdown)
         year = getattr(ctx.period, "year", None) or None
         quarter = getattr(ctx.period, "quarter", None) or None
         wastes, receivers = aggregate_acts(ctx.waste_acts, year=year, quarter=quarter)
@@ -318,7 +334,8 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
         if receivers:
             if not isinstance(ctx.extra, dict):
                 ctx.extra = {}
-            ctx.extra["waste_receivers"] = receivers
+            ctx.extra["waste_receivers"] = _merge_receivers(
+                ctx.extra.get("waste_receivers"), receivers)
         per = f"за {year} год" if year else "период не задан (укажите год!)"
         if quarter:
             per = f"за {quarter} кв. {year}"

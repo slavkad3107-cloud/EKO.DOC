@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import ssl
+import time
 import urllib.request
 import uuid
 
@@ -174,7 +175,13 @@ class GigaChatProvider(Provider):
             return ssl._create_unverified_context()
         return None  # системное хранилище; если нет сертификата — ошибка ниже
 
+    _token_cache: dict = {}     # class-level: {"value": str, "exp": epoch}
+
     def _token(self) -> str:
+        # токен живёт ~30 мин — кэшируем на 25, иначе 2×N HTTP на N чанков
+        hit = GigaChatProvider._token_cache
+        if hit.get("value") and hit.get("exp", 0) > time.time():
+            return hit["value"]
         auth = api_key(self.cfg)
         if not auth:
             raise AIError("gigachat: не задан GIGACHAT_AUTH_KEY")
@@ -188,7 +195,10 @@ class GigaChatProvider(Provider):
         try:
             with urllib.request.urlopen(req, timeout=30,
                                         context=self._ssl_ctx()) as r:
-                return json.loads(r.read())["access_token"]
+                token = json.loads(r.read())["access_token"]
+                GigaChatProvider._token_cache = {"value": token,
+                                                 "exp": time.time() + 25 * 60}
+                return token
         except ssl.SSLError as e:
             raise AIError(
                 "gigachat: TLS-сертификат Сбера не прошёл проверку. Установите "
@@ -246,6 +256,24 @@ def get_provider(cfg: AIConfig) -> Provider:
 
 _OLLAMA_MODEL_CACHE: dict = {}
 
+# «остывание» провайдера: после сетевого сбоя не долбим его каждый чанк
+# (иначе N файлов × таймаут). Ключ — provider, значение — epoch, до которого
+# провайдер пропускается. Ошибки формата/ключа не кулдаунят (могут быть
+# специфичны для одного запроса).
+_COOLDOWN: dict = {}
+_COOLDOWN_SEC = 300
+
+
+def _cooling(provider: str) -> bool:
+    return _COOLDOWN.get(provider, 0) > time.time()
+
+
+def _mark_dead(provider: str, err: Exception) -> None:
+    text = str(err).lower()
+    if any(w in text for w in ("timeout", "timed out", "недоступ", "connection",
+                               "unreachable", "refused", "getaddrinfo")):
+        _COOLDOWN[provider] = time.time() + _COOLDOWN_SEC
+
 
 def _ollama_default_model(cfg: AIConfig) -> str:
     """Первая установленная модель Ollama; результат кэшируется на процесс."""
@@ -271,6 +299,9 @@ def chat_with_fallback(cfg: AIConfig, system: str, user: str) -> tuple[str, str]
     for att in attempts:
         prov = att["provider"]
         model = att.get("model", "")
+        if _cooling(prov):
+            last_err = AIError(f"{prov}: недоступен (повтор через ~5 мин)")
+            continue
         if not model and prov in _need_model:
             # у ollama автоматически берём первую установленную модель
             # (список кэшируется — иначе HTTP-запрос на каждый анализируемый файл)
@@ -285,6 +316,7 @@ def chat_with_fallback(cfg: AIConfig, system: str, user: str) -> tuple[str, str]
             return text, f"{prov}/{model}"
         except AIError as e:
             last_err = e
+            _mark_dead(prov, e)   # сетевой сбой → «остывание», не долбим каждый чанк
         except (KeyError, IndexError, TypeError) as e:
             # неожиданная форма ответа провайдера — идём к следующему
             last_err = AIError(f"{att['provider']}: неожиданный ответ ({e!r})")

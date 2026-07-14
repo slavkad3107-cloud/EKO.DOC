@@ -191,7 +191,8 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
   <div class="tab" id="tab-dev">
     <div class="card">
       <h2>Разработка — проекты и документы</h2>
-      <div class="hint">Паспорта отходов, тома НДВ/НДС/СЗЗ, программы, планы. Рассеивание — во вкладке «УПРЗА».</div>
+      <div class="hint">Паспорта отходов, тома НДВ/НДС/СЗЗ, программы, планы. Рассеивание — во вкладке «УПРЗА».
+        <span class="spin" id="sp-dev">генерация…</span></div>
       <div class="grid" id="forms-dev" style="margin-top:8px"></div>
       <pre class="out" id="out-dev" style="display:none"></pre>
     </div>
@@ -325,7 +326,11 @@ const api = async (name, opts, timeoutMs=90000) => {
   try{
     const r = await fetch("/api/" + name, {...opts, signal: ctrl.signal});
     const j = await r.json();
-    if (j.error) throw new Error(j.error);
+    if (j.error){
+      const err = new Error(j.error);
+      err.data = j;             // не терять остальной ответ (напр. issues)
+      throw err;
+    }
     return j;
   }catch(e){
     if (e.name === "AbortError")
@@ -431,7 +436,15 @@ function onSelect(){
       a.target = "_blank";
       el.appendChild(a);
     }
-  }).catch(()=>{});
+  }).catch(e=>{
+    // НЕ оставлять на экране данные предыдущей площадки: «Сохранить»
+    // записал бы их в чужой context.json
+    CTX = null;
+    $("dataform").innerHTML = "";
+    $("ctx").value = "";
+    $("data-msg").textContent = "Ошибка загрузки данных площадки: " + e.message +
+      " — нажмите «Перечитать».";
+  });
 }
 async function addOrg(){
   const name = $("neworg").value.trim(); if(!name) return;
@@ -705,7 +718,7 @@ function renderDataForm(){
   // справки-акты на отходы — первичный ввод (движение считается из них)
   h += tableSection("Справки-акты на отходы (первичный ввод)", "waste_acts", CTX.waste_acts||[],
     [["name","Наименование отхода"],["fkko_code","ФККО"],["hazard_class","Класс",,"num"],
-     ["mass","Масса, т",,"num"],["operation","Вид обращения"],
+     ["mass","Масса, т",,"num"],["date","Дата (ДД.ММ.ГГГГ)"],["operation","Вид обращения"],
      ["carrier","Перевозчик"],["receiver","Приёмщик/полигон"]]);
   h += '<div class="hint" style="margin:-4px 0 8px">Вид обращения: '+
     'утилизация / обезвреживание / размещение / хранение. Из актов '+
@@ -750,7 +763,7 @@ function rowHtml(key, r, cols, ri){
     } else if (key==="pollutants" && f==="name"){
       h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" `+
         `list="subst-list" onchange="fillSubstance(this)"></td>`;
-    } else if (key==="wastes" && f==="name"){
+    } else if ((key==="wastes" || key==="waste_acts") && f==="name"){
       h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" `+
         `list="waste-list" onchange="fillWaste(this)"></td>`;
     } else {
@@ -879,13 +892,13 @@ async function doValidate(code){
   }catch(e){ alert(e.message); }
 }
 async function doDevDoc(kind){
-  needSite(); spin("sp-gen",1);
+  needSite(); spin("sp-dev",1);
   try{
     const j = await post("devdoc", {org:ORG, site:SITE, kind}, 0);
     show("out-dev", "Документ (.docx): " + j.path);
     post("open", {path:j.path}).catch(()=>{});
   }catch(e){ show("out-dev", "Ошибка: " + e.message); }
-  spin("sp-gen",0);
+  spin("sp-dev",0);
 }
 async function doSubmit(code){
   needSite(); spin("sp-gen",1);
@@ -924,7 +937,11 @@ async function doGenerate(code){
     if (j.pdf_error) t += "PDF:    не удалось — " + j.pdf_error + "\n";
     show("out-gen", t || "Готово");
     if (j.xml) post("open", {path:j.xml}).catch(()=>{});
-  }catch(e){ show("out-gen", "Ошибка: " + e.message); }
+  }catch(e){
+    // показать присланные вместе с ошибкой замечания валидации
+    if (e.data && e.data.issues) renderIssues(code, e.data.issues);
+    show("out-gen", "Ошибка: " + e.message);
+  }
   spin("sp-gen",0);
 }
 

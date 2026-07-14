@@ -144,7 +144,11 @@ def _decode_to_tmp(files: list[dict], tmpdir: Path) -> list[str]:
         name = Path(str(f["name"]).replace("\\", "/")).name  # только имя
         if not name or name in (".", ".."):
             name = f"файл_{i + 1}"
-        p = tmpdir / name
+        # каждый файл в свой подкаталог: при загрузке «папки целиком»
+        # одноимённые файлы из разных подпапок не должны затирать друг друга
+        sub = tmpdir / str(i)
+        sub.mkdir(exist_ok=True)
+        p = sub / name
         p.write_bytes(base64.b64decode(f["b64"]))
         paths.append(str(p))
     return paths
@@ -346,37 +350,6 @@ def api_hazard_class(params, body):
             "components": r.components, "warnings": r.warnings}
 
 
-def api_compare(params, body):
-    """Сравнить отходы/выбросы текущего контекста с сохранённым снимком."""
-    import json as _json
-
-    site = workspace.site_dir(body["org"], body["site"])
-    snap_dir = site / "history"
-    ctx = workspace.load_context(body["org"], body["site"])
-    if body.get("save"):
-        snap_dir.mkdir(parents=True, exist_ok=True)
-        yr = ctx.period.year or "XXXX"
-        from ecodoc.core import serialize
-        serialize.to_json(ctx, snap_dir / f"snapshot_{yr}.json")
-        return {"saved": f"snapshot_{yr}.json"}
-    snaps = sorted(snap_dir.glob("snapshot_*.json")) if snap_dir.exists() else []
-    if not snaps:
-        return {"diffs": [], "note": "Нет сохранённых снимков для сравнения. "
-                "Сохраните текущие данные снимком (кнопка «Запомнить период»)."}
-    prev = _json.loads(snaps[-1].read_text(encoding="utf-8-sig"))
-    diffs = []
-    prev_w = {w["fkko_code"]: w for w in prev.get("wastes", [])}
-    for w in ctx.wastes:
-        p = prev_w.get(w.fkko_code)
-        cur = float(w.generated or 0)
-        old = float(p.get("generated", 0)) if p else 0
-        if cur != old:
-            pct = ((cur - old) / old * 100) if old else 100
-            diffs.append({"kind": "отход", "name": w.name or w.fkko_code,
-                          "prev": old, "cur": cur, "pct": round(pct, 1)})
-    return {"diffs": diffs, "snapshot": snaps[-1].name}
-
-
 def api_watch(params, body):
     from ecodoc.watch import watcher
     return {"text": watcher.run_check()}
@@ -528,7 +501,7 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "dispersion_map": api_dispersion_map,
                "upraza_export": api_upraza_export,
                "counterparty": api_counterparty, "oktmo": api_oktmo,
-               "hazard_class": api_hazard_class, "compare": api_compare,
+               "hazard_class": api_hazard_class,
                "devdoc": api_devdoc, "submit": api_submit, "open": api_open}
 
 

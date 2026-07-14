@@ -105,6 +105,7 @@ class WasteFlow:
     used: Decimal = Decimal("0")                # утилизировано
     neutralized: Decimal = Decimal("0")         # обезврежено
     transferred: Decimal = Decimal("0")         # передано others (всего)
+    transferred_processing: Decimal = Decimal("0")  # из переданного — на обработку
     transferred_util: Decimal = Decimal("0")     # из переданного — на утилизацию
     transferred_neutral: Decimal = Decimal("0")  # из переданного — на обезвреживание
     transferred_storage: Decimal = Decimal("0")  # из переданного — на хранение

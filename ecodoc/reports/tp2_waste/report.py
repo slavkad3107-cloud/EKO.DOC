@@ -56,8 +56,10 @@ def _round_class(v, hazard_class) -> float:
 
 
 def _is_tko(fkko) -> bool:
-    """ТКО — блок ФККО «7 3…» (передаётся региональному оператору, графа 14)."""
-    return str(fkko or "").replace(" ", "").startswith("73")
+    """ТКО — блок ФККО «7 3…» (передаётся региональному оператору, графа 14).
+    Единое определение для всех форм — core/waste_agg.is_tko."""
+    from ecodoc.core.waste_agg import is_tko
+    return is_tko(fkko)
 
 
 @register
@@ -96,7 +98,8 @@ class TP2Waste(Report):
                                 "на учёте, укажите код, иначе РПН отклонит «объект не стоит на учёте»"))
         # баланс масс по каждому отходу (наличие на конец = приход − расход)
         for w in self.ctx.wastes:
-            bal = (D(w.accumulated_start) + D(w.generated) + D(w.received)
+            bal = (D(w.accumulated_start) + D(w.accumulated_start_nakopl)
+                   + D(w.generated) + D(w.received)
                    - D(w.used) - D(w.neutralized) - D(w.transferred)
                    - D(w.placed_norm) - D(w.placed_over))
             if abs(bal - D(w.accumulated_end)) > D("0.001"):
@@ -150,13 +153,16 @@ class TP2Waste(Report):
             el(fact, "NONE_FKKO_NAME", w.name)
             el(fact, "WST_CODE", str(w.fkko_code).replace(" ", ""))
             el(fact, "WSTYPE", hc)
-            el(fact, "TP2_BP_ACCUM_WASTE", _fmt_class(w.accumulated_start, hc))
+            # наличие на начало = хранение + накопление
+            el(fact, "TP2_BP_ACCUM_WASTE",
+               _fmt_class(D(w.accumulated_start) + D(w.accumulated_start_nakopl), hc))
             el(fact, "TP2_FORMING", _fmt_class(w.generated, hc))
             el(fact, "TP2_ARRIVAL", _fmt_class(w.received, hc))
             el(fact, "TP2_TRANSF", _fmt_class(w.transferred, hc))
-            el(fact, "TP2_TR_ISPOTX", _fmt_class(w.used, hc))
-            el(fact, "TP2_TR_SOTX", _fmt_class(w.neutralized, hc))
-            # передано на захоронение (не «всего передано» — это TP2_TRANSF)
+            # TR_* = ПЕРЕДАНО другим (для утилизации/обезвреживания/захоронения),
+            # а не собственные утилизация/обезвреживание
+            el(fact, "TP2_TR_ISPOTX", _fmt_class(w.transferred_util, hc))
+            el(fact, "TP2_TR_SOTX", _fmt_class(w.transferred_neutral, hc))
             el(fact, "TP2_TR_DISP", _fmt_class(w.transferred_burial, hc))
             el(fact, "TP2_RAZM", _fmt_class(D(w.placed_norm) + D(w.placed_over), hc))
             el(fact, "TP2_RAZM_STOR", "0.0")
@@ -247,7 +253,8 @@ class TP2Waste(Report):
             tko = _is_tko(w.fkko_code)
             trans = rc(w.transferred)
             g = {c: 0.0 for c in cols}
-            g[cols[0]] = rc(w.accumulated_start)   # 1
+            # 1 — наличие на начало (хранение + накопление)
+            g[cols[0]] = rc(D(w.accumulated_start) + D(w.accumulated_start_nakopl))
             g[cols[1]] = rc(w.generated)           # 2
             g[cols[2]] = rc(w.received)            # 3
             g[cols[8]] = rc(w.processed)           # 9
@@ -256,6 +263,7 @@ class TP2Waste(Report):
             if tko:
                 g[cols[13]] = trans                # 14 — ТКО региональному оператору
             else:
+                g[cols[14]] = rc(w.transferred_processing)  # 15 — для обработки
                 g[cols[16]] = rc(w.transferred_util)     # 17 — для утилизации
                 g[cols[18]] = rc(w.transferred_neutral)  # 19 — для обезвреживания
                 g[cols[20]] = rc(w.transferred_storage)  # 21 — для хранения
@@ -265,15 +273,18 @@ class TP2Waste(Report):
             return g
 
         r = 4
-        self._agg_row(ws, r, "1", "ВСЕГО", self.ctx.wastes, gv, cols); r += 1
+        row_no = 1
+        self._agg_row(ws, r, str(row_no), "ВСЕГО", self.ctx.wastes, gv, cols)
+        r += 1; row_no += 1
         for cl in (1, 2, 3, 4, 5):
             group = [w for w in self.ctx.wastes if int(w.hazard_class) == cl]
             if group:
-                self._agg_row(ws, r, str(r - 2), f"Всего по {cl} классу опасности",
-                              group, gv, cols); r += 1
+                self._agg_row(ws, r, str(row_no), f"Всего по {cl} классу опасности",
+                              group, gv, cols)
+                r += 1; row_no += 1
         for w in self.ctx.wastes:
             g = gv(w)
-            xlsx.cell(ws, f"A{r}", r - 2)
+            xlsx.cell(ws, f"A{r}", row_no); row_no += 1
             xlsx.cell(ws, f"B{r}", w.name, align="left")
             xlsx.cell(ws, f"C{r}", str(w.fkko_code).replace(" ", ""))
             xlsx.cell(ws, f"D{r}", w.hazard_class)

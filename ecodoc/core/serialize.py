@@ -33,9 +33,22 @@ def _enc(obj):
 def to_json(ctx: ReportContext, path: str | Path) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_enc(ctx), ensure_ascii=False, indent=2),
-                    encoding="utf-8")
+    # атомарная запись: context.json — единственная база площадки; сбой на
+    # середине записи не должен оставить битый файл
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(_enc(ctx), ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    tmp.replace(path)
     return path
+
+
+def _dec(v) -> Decimal:
+    """Decimal из значения формы: терпит запятую («1,5»), пробелы и пустоту."""
+    s = str(v if v not in (None, "") else 0).replace(",", ".").replace(" ", "")
+    try:
+        return Decimal(s)
+    except Exception:
+        return Decimal(0)
 
 
 def _build(cls, data: dict):
@@ -74,18 +87,19 @@ def from_json(path: str | Path) -> ReportContext:
         p = _build(Pollutant, pd)
         p.medium = Medium(pd.get("medium", "air"))
         for a in ("mass_norm", "mass_limit", "mass_over"):
-            setattr(p, a, Decimal(str(pd.get(a, 0) or 0)))
-        p.k_ot = Decimal(str(pd["k_ot"])) if pd.get("k_ot") not in (None, "") else None
+            setattr(p, a, _dec(pd.get(a)))
+        p.k_ot = _dec(pd["k_ot"]) if pd.get("k_ot") not in (None, "") else None
         ctx.pollutants.append(p)
 
     dec_fields = ("accumulated_start", "accumulated_start_nakopl", "generated",
                   "received", "processed", "used", "neutralized", "transferred",
-                  "transferred_util", "transferred_neutral", "transferred_storage",
-                  "transferred_burial", "placed_norm", "placed_over", "accumulated_end")
+                  "transferred_processing", "transferred_util", "transferred_neutral",
+                  "transferred_storage", "transferred_burial", "placed_norm",
+                  "placed_over", "accumulated_end")
     for wd in data.get("wastes", []):
         w = _build(WasteFlow, wd)
         for a in dec_fields:
-            setattr(w, a, Decimal(str(wd.get(a, 0) or 0)))
+            setattr(w, a, _dec(wd.get(a)))
         w.hazard_class = _to_int(w.hazard_class) or 5   # из формы приходит строкой
         ctx.wastes.append(w)
 
@@ -93,7 +107,7 @@ def from_json(path: str | Path) -> ReportContext:
     for ad in data.get("waste_acts", []):
         a = _build(WasteAct, ad)
         for fld in ("mass", "volume_m3", "density"):
-            setattr(a, fld, Decimal(str(ad.get(fld, 0) or 0)))
+            setattr(a, fld, _dec(ad.get(fld)))
         a.hazard_class = _to_int(a.hazard_class) or 5
         ctx.waste_acts.append(a)
 

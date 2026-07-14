@@ -23,18 +23,36 @@ def _op(act: WasteAct) -> str:
     return (act.operation or "").strip().lower()
 
 
-_RE_DATE = re.compile(r"(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})")
+def norm_fkko(code) -> str:
+    """Нормализовать код ФККО: только цифры («4 71 101 01 52 1» == «47110101521»).
+    Иначе один отход из ручного ввода и из ИИ раздваивается."""
+    return re.sub(r"\D", "", str(code or ""))
+
+
+def is_tko(fkko) -> bool:
+    """ТКО — блок ФККО «7 3…» (единое определение для декларации/2-ТП/кадастра)."""
+    return norm_fkko(fkko).startswith("73")
+
+
+_RE_DATE = re.compile(r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})\b")
+_RE_DATE_ISO = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
 
 
 def act_year_quarter(act: WasteAct):
-    """(год, квартал) из даты акта ДД.ММ.ГГГГ, или (None, None) если нет даты."""
-    m = _RE_DATE.search(str(act.date or ""))
-    if not m:
-        return None, None
-    mon = int(m.group(2))
-    yr = int(m.group(3))
-    if yr < 100:
-        yr += 2000
+    """(год, квартал) из даты акта: ДД.ММ.ГГГГ или ISO ГГГГ-ММ-ДД.
+    (None, None) — если даты нет/не распознана."""
+    s = str(act.date or "")
+    m = _RE_DATE_ISO.search(s)          # сначала ISO — иначе «2025-02-01»
+    if m:                                # парсился бы как год 2001
+        yr, mon = int(m.group(1)), int(m.group(2))
+    else:
+        m = _RE_DATE.search(s)
+        if not m:
+            return None, None
+        mon = int(m.group(2))
+        yr = int(m.group(3))
+        if yr < 100:
+            yr += 2000
     q = (mon - 1) // 3 + 1 if 1 <= mon <= 12 else None
     return yr, q
 
@@ -67,7 +85,7 @@ def aggregate_acts(acts: list[WasteAct], year=None, quarter=None) -> tuple[list[
     for a in acts:
         if not _in_period(a, year, quarter):
             continue
-        code = str(a.fkko_code or "").strip()
+        code = norm_fkko(a.fkko_code)     # нормализация: пробелы в коде не двоят отход
         if not code and not a.name:
             continue
         key = code or a.name
@@ -88,6 +106,8 @@ def aggregate_acts(acts: list[WasteAct], year=None, quarter=None) -> tuple[list[
             w.transferred_util += m
         elif "обезвреж" in op:
             w.transferred_neutral += m
+        elif "обработ" in op or "сортиров" in op:
+            w.transferred_processing += m
         # получатель (для Прил.3 / кадастра) — уникальный по (код, получатель)
         if a.receiver:
             rk = (code, a.receiver)
@@ -133,7 +153,14 @@ def period_breakdown(acts: list[WasteAct], year=None) -> dict:
 
 # поля, которые СЧИТАЮТСЯ из актов (перезаписываются агрегацией)
 _ACT_FIELDS = ("generated", "transferred", "transferred_util",
-               "transferred_neutral", "transferred_storage", "transferred_burial")
+               "transferred_neutral", "transferred_storage",
+               "transferred_burial", "transferred_processing")
+
+
+def _flow_key(w: WasteFlow) -> str:
+    """Ключ слияния: нормализованный ФККО, а для позиций без кода — имя
+    (тот же ключ, что в aggregate_acts — иначе безкодовые позиции дублируются)."""
+    return norm_fkko(w.fkko_code) or (w.name or "").strip().lower()
 
 
 def _merge_flows(existing: list[WasteFlow], computed: list[WasteFlow]) -> list[WasteFlow]:
@@ -144,22 +171,52 @@ def _merge_flows(existing: list[WasteFlow], computed: list[WasteFlow]) -> list[W
     собственными силами, описательные поля — сохраняется из существующей
     позиции с тем же ФККО (иначе ручной ввод стирался бы при каждой загрузке).
     Ручные позиции без актов остаются как есть."""
-    by_code = {w.fkko_code: w for w in existing}
+    by_key = {}
+    for w in existing:
+        by_key.setdefault(_flow_key(w), w)
     out: list[WasteFlow] = []
     seen: set = set()
     for c in computed:
-        prev = by_code.get(c.fkko_code)
+        k = _flow_key(c)
+        prev = by_key.get(k)
         if prev is not None:
             for f in _ACT_FIELDS:
                 setattr(prev, f, getattr(c, f))
             if not prev.name and c.name:
                 prev.name = c.name
+            if not norm_fkko(prev.fkko_code) and c.fkko_code:
+                prev.fkko_code = c.fkko_code
             out.append(prev)
         else:
             out.append(c)
-        seen.add(c.fkko_code)
+        seen.add(k)
     # ручные позиции, по которым актов нет (напр. только остатки)
-    out.extend(w for w in existing if w.fkko_code not in seen)
+    out.extend(w for w in existing if _flow_key(w) not in seen)
+    return out
+
+
+def _merge_receivers(existing: list, computed: list) -> list:
+    """Обновить перечень получателей из актов, сохранив ручные дополнения.
+
+    Записи из актов авторитетны по составу (какие пары ФККО→получатель есть),
+    но ручные поля (договор, лицензия и т.п.), заполненные в существующей
+    записи, не затираются пустыми."""
+    old_by_key = {(norm_fkko(r.get("fkko")), (r.get("receiver") or "").strip()): r
+                  for r in (existing or []) if isinstance(r, dict)}
+    out = []
+    for r in computed:
+        key = (norm_fkko(r.get("fkko")), (r.get("receiver") or "").strip())
+        prev = old_by_key.pop(key, None)
+        if prev:
+            merged = dict(prev)
+            for k, v in r.items():
+                if v:                      # непустое из актов обновляет
+                    merged[k] = v
+            out.append(merged)
+        else:
+            out.append(r)
+    # ручные записи, которых нет в актах (напр. получатель прошлых лет) — оставить
+    out.extend(old_by_key.values())
     return out
 
 
@@ -179,5 +236,6 @@ def apply_acts(ctx) -> bool:
     if receivers:
         if not isinstance(ctx.extra, dict):
             ctx.extra = {}
-        ctx.extra.setdefault("waste_receivers", receivers)
+        ctx.extra["waste_receivers"] = _merge_receivers(
+            ctx.extra.get("waste_receivers"), receivers)
     return True

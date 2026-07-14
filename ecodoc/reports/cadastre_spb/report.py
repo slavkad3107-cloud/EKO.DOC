@@ -354,7 +354,7 @@ class CadastreSPB(Report):
 
 
 def _tko(w) -> float:
-    """Масса, переданная региональному оператору ТКО (ФККО 7 33 100 01 72 4 и пр. ТКО)."""
-    code = str(getattr(w, "fkko_code", "")).replace(" ", "")
-    is_tko = code.startswith("733") or code.startswith("735")  # ТКО-группы ФККО
-    return float(D(w.transferred)) if is_tko else 0.0
+    """Масса, переданная региональному оператору ТКО (единое определение ТКО
+    для всех форм — блок ФККО «7 3…», см. core/waste_agg.is_tko)."""
+    from ecodoc.core.waste_agg import is_tko
+    return float(D(w.transferred)) if is_tko(getattr(w, "fkko_code", "")) else 0.0

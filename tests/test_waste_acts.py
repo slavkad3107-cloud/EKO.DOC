@@ -84,14 +84,25 @@ def test_aggregate_by_period():
     assert bd["total"] == 30.0 and bd["no_date"] == 0.1
 
 
-def test_purge_sources(tmp_path):
+def test_purge_sources_only_analyzed(tmp_path):
+    """Чистка удаляет ТОЛЬКО проанализированные файлы (GUI анализирует чанками
+    по 40 — файлы следующих чанков должны пережить чистку первого)."""
+    import json as _json
     from ecodoc.intake.intake import _purge_sources
-    (tmp_path / "doc.pdf").write_text("x")
-    (tmp_path / "intake.json").write_text("[]")
+    (tmp_path / "чанк1.pdf").write_text("x")
+    (tmp_path / "чанк2.pdf").write_text("y")          # ещё НЕ анализировался
+    (tmp_path / "intake.json").write_text(_json.dumps(
+        [{"file": "чанк1.pdf", "sha1": "a"}, {"file": "чанк2.pdf", "sha1": "b"}]),
+        encoding="utf-8")
     (tmp_path / "приём_1.txt").write_text("отчёт")
-    n = _purge_sources(tmp_path)
+    n = _purge_sources(tmp_path, ["чанк1.pdf"])
     left = sorted(p.name for p in tmp_path.iterdir())
-    assert n == 2 and left == ["приём_1.txt"]     # исходники + реестр удалены
+    assert n == 1
+    assert "чанк2.pdf" in left                        # второй чанк цел
+    assert "чанк1.pdf" not in left                    # обработанный удалён
+    # реестр: запись удалённого файла вычищена, второй остался
+    reg = _json.loads((tmp_path / "intake.json").read_text(encoding="utf-8"))
+    assert [r["file"] for r in reg] == ["чанк2.pdf"]
 
 
 def test_analyzer_extracts_acts():

@@ -150,19 +150,31 @@ def _extract_doc(p: Path) -> ExtractedDoc:
     try:
         import win32com.client  # type: ignore
 
-        word = win32com.client.DispatchEx("Word.Application")
-        word.Visible = False
+        # извлечение идёт из потоков ThreadPoolExecutor — COM в потоке требует
+        # CoInitialize, иначе DispatchEx падает CoInitialize has not been called
         try:
-            word.DisplayAlerts = False
+            import pythoncom  # type: ignore
+            pythoncom.CoInitialize()
+            _com_inited = True
         except Exception:
-            pass
+            _com_inited = False
         try:
-            doc = word.Documents.Open(str(short), ReadOnly=True,
-                                      AddToRecentFiles=False, ConfirmConversions=False)
-            text = doc.Content.Text
-            doc.Close(False)
+            word = win32com.client.DispatchEx("Word.Application")
+            word.Visible = False
+            try:
+                word.DisplayAlerts = False
+            except Exception:
+                pass
+            try:
+                doc = word.Documents.Open(str(short), ReadOnly=True,
+                                          AddToRecentFiles=False, ConfirmConversions=False)
+                text = doc.Content.Text
+                doc.Close(False)
+            finally:
+                word.Quit()
         finally:
-            word.Quit()
+            if _com_inited:
+                pythoncom.CoUninitialize()
         return ExtractedDoc(p, text, [text], "doc-com")
     except Exception as com_exc:
         # запасной путь: LibreOffice → txt

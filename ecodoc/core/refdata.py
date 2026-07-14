@@ -6,19 +6,28 @@
 from __future__ import annotations
 
 import json
-from functools import lru_cache
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
 
+# кэш по mtime: эколог правит ставки/коэффициенты в data/*.json на живом
+# приложении — изменения подхватываются без перезапуска (lru_cache навсегда
+# замораживал старые значения)
+_CACHE: dict = {}
 
-@lru_cache(maxsize=None)
+
 def _load(name: str) -> dict:
     path = DATA_DIR / name
     if not path.exists():
         raise FileNotFoundError(f"Справочник не найден: {path}")
+    mtime = path.stat().st_mtime
+    hit = _CACHE.get(name)
+    if hit and hit[0] == mtime:
+        return hit[1]
     with path.open(encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    _CACHE[name] = (mtime, data)
+    return data
 
 
 def rates_nvos() -> dict:
