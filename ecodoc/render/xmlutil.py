@@ -59,8 +59,11 @@ def data_packet_ni(ctx, doc_type: int, body_fn, *, exp_date: str,
     # у ИП нет КПП, ОГРН — это ОГРНИП.
     is_ip = o.is_individual
 
+    # код территориального органа РПН — из данных площадки (extra.rpn_to);
+    # жёсткая «1» была неверна для организаций других регионов
+    rpn_to = str(e.get("rpn_to", "") or "1")
     root = etree.Element("DATA_PACKET_NI", Version=version, Program=program,
-                         ExpDate=exp_date, DocType=str(doc_type), RPN_TO="1",
+                         ExpDate=exp_date, DocType=str(doc_type), RPN_TO=rpn_to,
                          YEAR=str(year), RPT_PERIOD=str(rpt_period),
                          CALC_TYPE="0", NUMB_COR_RPT="",
                          INN=o.inn or "", KPP="" if is_ip else (o.kpp or ""),

@@ -74,6 +74,26 @@ def test_print_official_sheets(tmp_path):
     assert "048 1 12 01042 01 6000 120" in kbk
 
 
+def test_k_st_applies_to_waste_placement():
+    """Кст (стимулирующий коэффициент) умножает плату за размещение."""
+    from ecodoc.core.models import (Organization, ReportContext, ReportPeriod,
+                                    WasteFlow)
+    ctx = ReportContext(
+        organization=Organization(name="Т", inn="7801234564", oktmo="40324000"),
+        period=ReportPeriod(year=2025),
+        wastes=[
+            WasteFlow(fkko_code="34620001000", name="без Кст", hazard_class=4,
+                      placed_norm="10"),
+            WasteFlow(fkko_code="34620001001", name="Кст 0.3", hazard_class=4,
+                      placed_norm="10", k_st="0.3"),
+        ])
+    res = calculate(ctx)
+    plain = next(l for l in res.lines if l.name == "без Кст")
+    stim = next(l for l in res.lines if l.name == "Кст 0.3")
+    assert stim.k_extra == D("0.3")
+    assert stim.amount == money(plain.amount * D("0.3"))
+
+
 def test_declaration_sections_tko_split(tmp_path):
     """ТКО (ФККО «7 3…») уходит в Р6, отходы производства — в Р5."""
     from ecodoc.core.models import ReportContext, ReportPeriod, Organization, WasteFlow

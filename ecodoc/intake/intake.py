@@ -21,6 +21,37 @@ from ecodoc.core import workspace
 # сервер GUI многопоточный (ThreadingHTTPServer): реестр attachments и чистка
 # исходников защищаются одним замком, чтобы параллельная партия не терялась
 _ATT_LOCK = threading.Lock()
+
+# защита от lost-update: пока идёт анализ площадки (минуты OCR/ИИ), сохранение
+# «Данных» по ней блокируется — иначе приём в конце перезаписал бы правки
+# пользователя контекстом, загруженным до начала анализа
+_BUSY: set = set()
+_BUSY_LOCK = threading.Lock()
+
+
+def is_busy(org: str, site: str) -> bool:
+    """Идёт ли сейчас приём/анализ по площадке."""
+    with _BUSY_LOCK:
+        return (org, site) in _BUSY
+
+
+class _busy_site:
+    """Контекст «площадка занята приёмом» (no-op вне рабочего пространства)."""
+
+    def __init__(self, org: str, site: str):
+        self.key = (org, site) if org and site else None
+
+    def __enter__(self):
+        if self.key:
+            with _BUSY_LOCK:
+                _BUSY.add(self.key)
+        return self
+
+    def __exit__(self, *exc):
+        if self.key:
+            with _BUSY_LOCK:
+                _BUSY.discard(self.key)
+        return False
 from ecodoc.core.models import ReportContext
 from ecodoc.intake import requirements
 from ecodoc.parsers import extractor
@@ -260,11 +291,12 @@ def analyze_stored(names: list[str], org: str, site: str,
                    ocr: bool = True) -> str:
     """Проанализировать уже сохранённые в attachments файлы (по именам)."""
     att = workspace.site_dir(org, site) / "attachments"
-    ctx = workspace.load_context(org, site)
-    paths = [att / n for n in names if (att / n).exists()]
-    return _analyze(paths, ctx, org=org, site=site, use_ai=use_ai,
-                    forms=forms, ocr=ocr,
-                    lines=[f"Файлов к анализу: {len(paths)}"])
+    with _busy_site(org, site):
+        ctx = workspace.load_context(org, site)
+        paths = [att / n for n in names if (att / n).exists()]
+        return _analyze(paths, ctx, org=org, site=site, use_ai=use_ai,
+                        forms=forms, ocr=ocr,
+                        lines=[f"Файлов к анализу: {len(paths)}"])
 
 
 def run(files: list[str], org: str = "", site: str = "",
@@ -273,23 +305,24 @@ def run(files: list[str], org: str = "", site: str = "",
     """Принять файлы; вернуть текстовый отчёт. Контекст сохраняется сам."""
     lines: list[str] = []
     in_workspace = bool(org and site)
-    if ctx is None:
-        ctx = workspace.load_context(org, site) if in_workspace else ReportContext()
+    with _busy_site(org if in_workspace else "", site if in_workspace else ""):
+        if ctx is None:
+            ctx = workspace.load_context(org, site) if in_workspace else ReportContext()
 
-    # 1. регистрация файлов
-    stored: list[Path] = []
-    if in_workspace:
-        names, log = store(files, org, site)
-        lines += log
-        att = workspace.site_dir(org, site) / "attachments"
-        stored = [att / n for n in names]
-        ctx = workspace.load_context(org, site)
-    else:
-        stored = [Path(f) for f in files if Path(f).exists()]
-        lines += [f"✖ нет файла: {f}" for f in files if not Path(f).exists()]
-    return _analyze(stored, ctx, org=org if in_workspace else "",
-                    site=site if in_workspace else "", use_ai=use_ai,
-                    forms=forms, ocr=ocr, lines=lines)
+        # 1. регистрация файлов
+        stored: list[Path] = []
+        if in_workspace:
+            names, log = store(files, org, site)
+            lines += log
+            att = workspace.site_dir(org, site) / "attachments"
+            stored = [att / n for n in names]
+            ctx = workspace.load_context(org, site)
+        else:
+            stored = [Path(f) for f in files if Path(f).exists()]
+            lines += [f"✖ нет файла: {f}" for f in files if not Path(f).exists()]
+        return _analyze(stored, ctx, org=org if in_workspace else "",
+                        site=site if in_workspace else "", use_ai=use_ai,
+                        forms=forms, ocr=ocr, lines=lines)
 
 
 def _err_reason(msg: str, p: Path) -> str:

@@ -728,7 +728,11 @@ function renderDataForm(){
   h += tableSection("Отходы (движение — из актов или вручную)", "wastes", CTX.wastes||[],
     [["fkko_code","ФККО"],["name","Наименование"],["hazard_class","Класс",,"num"],
      ["generated","Образовано, т",,"num"],["transferred","Передано, т",,"num"],
-     ["placed_norm","Размещено (лимит), т",,"num"],["placed_over","Размещено (сверх), т",,"num"]]);
+     ["placed_norm","Размещено (лимит), т",,"num"],["placed_over","Размещено (сверх), т",,"num"],
+     ["k_st","Кст",,"num"]]);
+  h += '<div class="hint" style="margin:-4px 0 8px">Кст — стимулирующий коэффициент '+
+    'к плате за размещение (пусто = 1; 0,3 — отходы IV–V кл. от утилизации/обезвреживания '+
+    'в пределах лимита; 0 — утилизация в собственном производстве).</div>';
   // водопользование (для 2-ТП водхоз) — в сворачиваемом блоке
   const wm = CTX._wmeta || {};
   h += '<details class="dsec"><summary style="cursor:pointer;font-weight:600;color:var(--acc)">Водопользование (для 2-ТП водхоз)</summary>';

@@ -153,13 +153,19 @@ def calculate(ctx: ReportContext) -> PaymentResult:
     for w in ctx.wastes:
         rate = _waste_rate(w, wclass)
         sect = _waste_section(w)
+        # стимулирующий коэффициент Кст (ст. 16.3 ФЗ-7): 0.3 / 0 / 1 (по умолч.)
+        k_st = D(w.k_st) if getattr(w, "k_st", None) is not None else Decimal("1")
+        if k_st < 0 or k_st > 1:
+            res.warnings.append(
+                f"{w.name or w.fkko_code}: Кст={k_st} вне диапазона 0..1 — "
+                f"проверьте (типовые значения 0; 0,3; 0,5; 0,67; 0,7)")
         for band, mass in (("norm", D(w.placed_norm)), ("over", D(w.placed_over))):
             if mass <= 0:
                 continue
             k_band = D(wband[band])
-            amount = money(mass * rate * k_ind * k_band)
+            amount = money(mass * rate * k_ind * k_band * k_st)
             line = PayLine("waste", w.fkko_code, w.name or w.fkko_code, band,
-                           mass, rate, k_ind, k_band, Decimal("1"), amount, sect)
+                           mass, rate, k_ind, k_band, k_st, amount, sect)
             res.lines.append(line)
             by_section[sect] += amount
             res.total_waste += amount

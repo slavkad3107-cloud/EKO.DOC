@@ -100,6 +100,8 @@ def from_json(path: str | Path) -> ReportContext:
         w = _build(WasteFlow, wd)
         for a in dec_fields:
             setattr(w, a, _dec(wd.get(a)))
+        # Кст: пусто = не применяется (None => 1 в расчёте)
+        w.k_st = _dec(wd["k_st"]) if wd.get("k_st") not in (None, "") else None
         w.hazard_class = _to_int(w.hazard_class) or 5   # из формы приходит строкой
         ctx.wastes.append(w)
 

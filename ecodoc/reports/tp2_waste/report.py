@@ -128,7 +128,7 @@ class TP2Waste(Report):
         okato = (ob.oktmo if ob else "") or o.oktmo
         rpt = el(org, "RPT_2TP_WASTE")
         el(rpt, "DOC_YEAR", self.ctx.period.year)
-        el(rpt, "RPN_CODE", "1")
+        el(rpt, "RPN_CODE", str(e.get("rpn_to", "") or "1"))
         el(rpt, "ROSPRIR", e.get("rospr", ""))
         el(rpt, "FNAME", o.name)
         el(rpt, "SNAME", o.short_name or o.name)

@@ -125,6 +125,11 @@ def api_context_get(params, body):
 
 
 def api_context_save(params, body):
+    from ecodoc.intake import intake
+    if intake.is_busy(body["org"], body["site"]):
+        return {"error": "Идёт приём документов по этой площадке — дождитесь "
+                         "окончания анализа и повторите сохранение (иначе "
+                         "правки перезапишут друг друга)."}
     p = _ctx_path(body["org"], body["site"])
     # прогон через модель: битый JSON/типы отловятся до записи
     tmp = p.with_suffix(".tmp")
@@ -195,6 +200,8 @@ def api_intake_upload(params, body):
 def api_intake_run(params, body):
     """Анализ ранее сохранённых файлов (после всех партий)."""
     from ecodoc.intake import intake
+    if intake.is_busy(body["org"], body["site"]):
+        return {"error": "Приём по этой площадке уже идёт — дождитесь окончания."}
     report = intake.analyze_stored(body.get("names", []),
                                    body["org"], body["site"],
                                    use_ai=bool(body.get("ai")))
