@@ -675,6 +675,18 @@ function seedWater(){
   CTX._wdischarge = w.discharge || [];
   CTX._wmeta = {recycled: w.recycled||"", used_own: w.used_own||""};
 }
+function seedPollutants(){
+  // разнести вещества по средам для раздельных таблиц «Воздух»/«Вода»
+  const p = CTX.pollutants || [];
+  CTX._pair = p.filter(x => (x.medium||"air") !== "water");
+  CTX._pwater = p.filter(x => x.medium === "water");
+}
+function foldPollutants(){
+  // собрать вещества обратно из раздельных таблиц (среда — по таблице)
+  const air = (CTX._pair||[]).map(x => ({...x, medium: "air"}));
+  const water = (CTX._pwater||[]).map(x => ({...x, medium: "water"}));
+  CTX.pollutants = [...air, ...water];
+}
 async function loadCtx(){
   needSite();
   const j = await get("context", {org:ORG, site:SITE});
@@ -683,6 +695,7 @@ async function loadCtx(){
   SITE_ADDR = (CTX.extra || {}).site_address || "";
   $("ctx").value = JSON.stringify(CTX, null, 2);   // чистый JSON без служебных ключей
   seedWater();
+  seedPollutants();
   renderDataForm();
 }
 function tinput(val, path, ph, num){
@@ -708,15 +721,14 @@ function renderDataForm(){
   // объекты НВОС
   h += tableSection("Объекты НВОС", "objects", CTX.objects||[],
     [["code","Код НВОС"],["name","Наименование"],["category","Категория"],["address","Адрес"]]);
-  // выбросы/сбросы (по воздуху данные — из проекта НДВ или раздела ООС)
-  h += tableSection("Выбросы и сбросы", "pollutants", CTX.pollutants||[],
-    [["name","Вещество"],["code","Код"],["medium","Среда","sel"],
-     ["mass_norm","В пределах норм., т",,"num"],["mass_limit","В пределах лимита, т",,"num"],
-     ["mass_over","Сверх лимита, т",,"num"]]);
-  h += '<div class="hint" style="margin:-4px 0 8px">По воздуху массы берутся из '+
-    'проекта НДВ или раздела ООС (перечень веществ и нормативы ПДВ/ВСВ).</div>';
-  // справки-акты на отходы — первичный ввод (движение считается из них)
-  h += tableSection("Справки-акты на отходы (первичный ввод)", "waste_acts", CTX.waste_acts||[],
+
+  const DET = (title, open) =>
+    `<details class="dsec"${open?' open':''}><summary style="cursor:pointer;`+
+    `font-weight:700;font-size:15px;color:var(--acc)">${title}</summary>`;
+
+  // ── 1. ОТХОДЫ ──────────────────────────────────────────────
+  h += DET("1. Отходы", true);
+  h += tableSection("Справки-акты (первичный ввод)", "waste_acts", CTX.waste_acts||[],
     [["name","Наименование отхода"],["fkko_code","ФККО"],["hazard_class","Класс",,"num"],
      ["mass","Масса, т",,"num"],["date","Дата (ДД.ММ.ГГГГ)"],["operation","Вид обращения"],
      ["carrier","Перевозчик"],["receiver","Приёмщик/полигон"]]);
@@ -724,18 +736,50 @@ function renderDataForm(){
     'утилизация / обезвреживание / размещение / хранение. Из актов '+
     'рассчитываются журнал 1028, 2-ТП (отходы), кадастр, раздел отходов декларации '+
     '(движение ниже заполнится автоматически).</div>';
-  // отходы — движение (рассчитано из актов или вручную, если актов нет)
-  h += tableSection("Отходы (движение — из актов или вручную)", "wastes", CTX.wastes||[],
-    [["fkko_code","ФККО"],["name","Наименование"],["hazard_class","Класс",,"num"],
+  h += qbreakHtml();                       // разбивка по кварталам/годам
+  // движение: нулевые строки — в свёрнутый блок (не мозолят глаза)
+  const wcols = [["fkko_code","ФККО"],["name","Наименование"],["hazard_class","Класс",,"num"],
      ["generated","Образовано, т",,"num"],["transferred","Передано, т",,"num"],
      ["placed_norm","Размещено (лимит), т",,"num"],["placed_over","Размещено (сверх), т",,"num"],
-     ["k_st","Кст",,"num"]]);
-  h += '<div class="hint" style="margin:-4px 0 8px">Кст — стимулирующий коэффициент '+
+     ["k_st","Кст",,"num"]];
+  // «нулевая» = есть код/имя, но нет ни одной массы (мусор авто-добавления);
+  // свежая пустая строка (ещё без кода) остаётся на виду для ввода
+  const isZero = w => !hasMassJS(w) &&
+    (String(w.fkko_code||"").trim() || String(w.name||"").trim());
+  const wpairs = (CTX.wastes||[]).map((w,i)=>({r:w, ri:i}));
+  const filled = wpairs.filter(p=>!isZero(p.r));
+  const zeros  = wpairs.filter(p=>isZero(p.r));
+  h += tablePairs("Движение (из актов или вручную)", "wastes", filled, wcols);
+  if (zeros.length){
+    h += `<details class="dsec"><summary style="cursor:pointer;color:var(--mut)">`+
+      `Позиции без масс — ${zeros.length} шт. (скрыты) — показать</summary>`;
+    h += tablePairs("", "wastes", zeros, wcols);
+    h += `<button class="b sec" onclick="deleteZeroWastes()">Удалить все позиции без масс</button>`;
+    h += '</details>';
+  }
+  h += '<div class="hint" style="margin:2px 0 8px">Кст — стимулирующий коэффициент '+
     'к плате за размещение (пусто = 1; 0,3 — отходы IV–V кл. от утилизации/обезвреживания '+
     'в пределах лимита; 0 — утилизация в собственном производстве).</div>';
-  // водопользование (для 2-ТП водхоз) — в сворачиваемом блоке
+  h += '</details>';
+
+  // ── 2. ВОЗДУХ ──────────────────────────────────────────────
+  h += DET("2. Воздух (выбросы)", (CTX._pair||[]).length > 0);
+  h += tableSection("Вещества (выбросы в атмосферу)", "_pair", CTX._pair||[],
+    [["name","Вещество"],["code","Код"],
+     ["mass_norm","В пределах норм., т",,"num"],["mass_limit","В пределах лимита, т",,"num"],
+     ["mass_over","Сверх лимита, т",,"num"]]);
+  h += '<div class="hint" style="margin:-4px 0 8px">Массы берутся из проекта НДВ '+
+    'или раздела ООС (перечень веществ и нормативы ПДВ/ВСВ).</div>';
+  h += '</details>';
+
+  // ── 3. ВОДА ────────────────────────────────────────────────
   const wm = CTX._wmeta || {};
-  h += '<details class="dsec"><summary style="cursor:pointer;font-weight:600;color:var(--acc)">Водопользование (для 2-ТП водхоз)</summary>';
+  const hasW = (CTX._pwater||[]).length || (CTX._wintake||[]).length || (CTX._wdischarge||[]).length;
+  h += DET("3. Вода (сбросы и водопользование)", !!hasW);
+  h += tableSection("Вещества (сбросы в водные объекты)", "_pwater", CTX._pwater||[],
+    [["name","Вещество"],["code","Код"],
+     ["mass_norm","В пределах норм., т",,"num"],["mass_limit","В пределах лимита, т",,"num"],
+     ["mass_over","Сверх лимита, т",,"num"]]);
   h += tableSection("Забор воды, тыс. м³/год", "_wintake", CTX._wintake||[],
     [["name","Источник"],["type","Тип"],["volume","Объём, тыс. м³",,"num"]]);
   h += tableSection("Водоотведение, тыс. м³/год", "_wdischarge", CTX._wdischarge||[],
@@ -745,6 +789,70 @@ function renderDataForm(){
     `<div class="fld"><label>Использовано на собств. нужды, тыс. м³</label>${tinput(wm.used_own,'_wmeta.used_own','',true)}</div>`+
     '</div></details>';
   $("dataform").innerHTML = h;
+}
+
+// есть ли у позиции движения хоть одна ненулевая масса
+const _WMASS = ["accumulated_start","accumulated_start_nakopl","generated","received",
+  "processed","used","neutralized","transferred","transferred_processing",
+  "transferred_util","transferred_neutral","transferred_storage","transferred_burial",
+  "placed_norm","placed_over","accumulated_end"];
+function hasMassJS(w){
+  return _WMASS.some(f => parseFloat(String(w[f]??"0").replace(",","."))||0);
+}
+function deleteZeroWastes(){
+  collectDataForm();
+  const isZero = w => !hasMassJS(w) &&
+    (String(w.fkko_code||"").trim() || String(w.name||"").trim());
+  const before = (CTX.wastes||[]).length;
+  CTX.wastes = (CTX.wastes||[]).filter(w=>!isZero(w));
+  renderDataForm();
+  $("data-msg").textContent =
+    `Удалено ${before-CTX.wastes.length} позиций без масс — нажмите «Сохранить».`;
+}
+// разбивка масс актов по годам и кварталам (раскрывающийся блок)
+function qbreakHtml(){
+  const acts = CTX.waste_acts||[];
+  if (!acts.length) return "";
+  const by = {}; let noDate = 0;
+  for (const a of acts){
+    const s = String(a.date||"");
+    let y=0, m=0, mm;
+    if ((mm = s.match(/\b(\d{4})-(\d{1,2})-\d{1,2}\b/)))      { y=+mm[1]; m=+mm[2]; }
+    else if ((mm = s.match(/\b\d{1,2}[.\/-](\d{1,2})[.\/-](\d{2,4})\b/)))
+      { m=+mm[1]; y=+mm[2]; if(y<100) y+=2000; }
+    const mass = parseFloat(String(a.mass??"0").replace(",","."))||0;
+    if (!y){ noDate += mass; continue; }
+    const q = Math.floor((m-1)/3)+1;
+    (by[y] = by[y]||{1:0,2:0,3:0,4:0,t:0});
+    if (q>=1 && q<=4) by[y][q] += mass;
+    by[y].t += mass;
+  }
+  const years = Object.keys(by).sort();
+  if (!years.length && !noDate) return "";
+  let t = '<details class="dsec"><summary style="cursor:pointer;color:var(--acc)">'+
+    'Разбивка по кварталам и годам (из дат актов) — показать</summary>'+
+    '<div style="overflow-x:auto"><table class="dtbl"><thead><tr>'+
+    '<th>Год</th><th>1 кв., т</th><th>2 кв., т</th><th>3 кв., т</th><th>4 кв., т</th><th>Всего, т</th></tr></thead><tbody>';
+  for (const y of years){
+    const b = by[y];
+    t += `<tr><td>${y}</td><td>${b[1].toFixed(3)}</td><td>${b[2].toFixed(3)}</td>`+
+         `<td>${b[3].toFixed(3)}</td><td>${b[4].toFixed(3)}</td><td><b>${b.t.toFixed(3)}</b></td></tr>`;
+  }
+  if (noDate) t += `<tr><td>без даты</td><td colspan="4"></td><td>${noDate.toFixed(3)}</td></tr>`;
+  t += '</tbody></table></div><div class="hint">В отчётный период попадают акты '+
+    'выбранного года (без даты — всегда); проставьте даты для точной разбивки.</div></details>';
+  return t;
+}
+// таблица по парам {r,ri} — сохраняет исходные индексы data-path
+function tablePairs(title, key, pairs, cols){
+  let h = `<div class="dsec">${title?`<h4>${title}</h4>`:""}<div style="overflow-x:auto">`+
+    `<table class="dtbl" data-key="${key}"><thead><tr>`+
+    cols.map(c=>`<th>${c[1]}</th>`).join('')+'<th></th></tr></thead><tbody>';
+  for (const p of pairs) h += rowHtml(key, p.r, cols, p.ri);
+  h += `</tbody></table></div>`+
+    (title?`<button class="b sec" style="margin-top:6px" onclick="addRow('${key}')">+ строка</button>`:"")+
+    `</div>`;
+  return h;
 }
 function tableSection(title, key, rows, cols){
   let h = `<div class="dsec"><h4>${title}</h4><div style="overflow-x:auto">`+
@@ -764,7 +872,7 @@ function rowHtml(key, r, cols, ri){
         [["air","воздух"],["water","вода"]].map(([v,t])=>
           `<option value="${v}"${r[f]===v?' selected':''}>${t}</option>`).join('')+
         `</select></td>`;
-    } else if (key==="pollutants" && f==="name"){
+    } else if ((key==="pollutants" || key==="_pair" || key==="_pwater") && f==="name"){
       h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" `+
         `list="subst-list" onchange="fillSubstance(this)"></td>`;
     } else if ((key==="wastes" || key==="waste_acts") && f==="name"){
@@ -778,7 +886,7 @@ function rowHtml(key, r, cols, ri){
   return h;
 }
 const DEFROW = {objects:{}, pollutants:{medium:"air"}, wastes:{hazard_class:5},
-  waste_acts:{hazard_class:5, operation:"размещение"}};
+  waste_acts:{hazard_class:5, operation:"размещение"}, _pair:{}, _pwater:{}};
 function addRow(key){
   collectDataForm();
   (CTX[key] = CTX[key]||[]).push({...(DEFROW[key]||{})});
@@ -786,8 +894,12 @@ function addRow(key){
 }
 function delRow(btn){
   collectDataForm();
-  const tr = btn.closest("tr"), tbody = tr.parentNode, key = tr.closest("table").dataset.key;
-  const idx = [...tbody.children].indexOf(tr);
+  const tr = btn.closest("tr"), key = tr.closest("table").dataset.key;
+  // индекс — из data-path строки (в разделённых таблицах позиция в DOM
+  // не совпадает с индексом в данных)
+  const inp = tr.querySelector("[data-path]");
+  const m = inp && inp.dataset.path.match(/\[(\d+)\]/);
+  const idx = m ? +m[1] : [...tr.parentNode.children].indexOf(tr);
   CTX[key].splice(idx,1); renderDataForm();
 }
 function collectDataForm(){
@@ -823,6 +935,7 @@ async function saveCtx(){
   try{
     collectDataForm();
     foldWater();
+    foldPollutants();
     await post("context_save", {org:ORG, site:SITE, context:CTX});
     // перечитать: сервер пересчитал движение из справок-актов
     await loadCtx();
@@ -831,7 +944,7 @@ async function saveCtx(){
   spin("sp-data",0);
 }
 function applyRawJson(){
-  try{ CTX = JSON.parse($("ctx").value); seedWater(); renderDataForm();
+  try{ CTX = JSON.parse($("ctx").value); seedWater(); seedPollutants(); renderDataForm();
     $("data-msg").textContent = "JSON применён — не забудьте «Сохранить»"; }
   catch(e){ alert("Ошибка в JSON: " + e.message); }
 }

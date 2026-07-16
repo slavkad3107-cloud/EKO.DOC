@@ -86,25 +86,27 @@ def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc) -> None:
             ctx.provenance.setdefault("objects", []).append(
                 {"code": code, "src": doc.path.name})
 
-    # коды ФККО -> черновые позиции отходов (массы заполнит человек).
-    # Строгая проверка структуры + контекста отсекает шум (ОКТМО, телефоны,
-    # ИНН/ОГРН/БИК/счета, номера строк).
+    # коды ФККО -> ПОДСКАЗКИ (extra.fkko_seen), а НЕ позиции движения.
+    # Раньше каждый встреченный код превращался в пустую строку движения —
+    # у пользователя копились десятки нулевых позиций-мусора. Движение
+    # наполняется только справками-актами (или вручную); найденные коды
+    # сохраняем как справочную информацию для подстановки.
     names = _fkko_names()
+    if not isinstance(ctx.extra, dict):
+        ctx.extra = {}
+    seen = ctx.extra.setdefault("fkko_seen", [])
+    seen_codes = {s.get("fkko") for s in seen if isinstance(s, dict)}
     for m in RE_FKKO.finditer(t):
         digits = re.sub(r"\s", "", m.group(1))
-        if not _fkko_valid(digits):
+        if not _fkko_valid(digits) or digits in seen_codes:
             continue
         # контекст перед числом — если это телефон/реквизит счёта, пропускаем
         before = t[max(0, m.start() - 40):m.start()].lower()
         if _NONFKKO_CTX.search(before):
             continue
-        if any(w.fkko_code == digits for w in ctx.wastes):
-            continue
-        w = WasteFlow(fkko_code=digits, hazard_class=int(digits[-1]))
-        w.name = names.get(digits, "")          # имя из справочника, если есть
-        ctx.wastes.append(w)
-        ctx.provenance.setdefault("wastes", []).append(
-            {"fkko": digits, "src": doc.path.name})
+        seen_codes.add(digits)
+        seen.append({"fkko": digits, "name": names.get(digits, ""),
+                     "src": doc.path.name})
 
 
 def _fkko_valid(digits: str) -> bool:
@@ -150,7 +152,9 @@ def summary(ctx: ReportContext) -> str:
         f"ИНН: {o.inn or '—'}   КПП: {o.kpp or '—'}   ОГРН: {o.ogrn or '—'}",
         f"ОКТМО: {o.oktmo or '—'}   ОКПО: {o.okpo or '—'}   ОКВЭД: {o.okved or '—'}",
         f"Объекты НВОС: {', '.join(x.code for x in ctx.objects) or '—'}",
-        f"Позиций отходов (ФККО): {len(ctx.wastes)}",
+        f"Движение отходов: {len(ctx.wastes)} позиций (из справок-актов); "
+        f"встречено кодов ФККО в документах: "
+        f"{len((ctx.extra or {}).get('fkko_seen', []))} (как подсказки)",
     ]
     errs = ctx.provenance.get("_errors")
     if errs:

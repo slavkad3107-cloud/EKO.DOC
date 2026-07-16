@@ -190,9 +190,24 @@ def _merge_flows(existing: list[WasteFlow], computed: list[WasteFlow]) -> list[W
         else:
             out.append(c)
         seen.add(k)
-    # ручные позиции, по которым актов нет (напр. только остатки)
-    out.extend(w for w in existing if _flow_key(w) not in seen)
+    # ручные позиции, по которым актов нет, оставляем ТОЛЬКО если в них есть
+    # данные (остатки/размещение/массы). Полностью нулевые строки — мусор
+    # старого авто-добавления ФККО, вычищаются.
+    out.extend(w for w in existing
+               if _flow_key(w) not in seen and _has_data(w))
     return out
+
+
+_DATA_FIELDS = ("accumulated_start", "accumulated_start_nakopl", "generated",
+                "received", "processed", "used", "neutralized", "transferred",
+                "transferred_processing", "transferred_util", "transferred_neutral",
+                "transferred_storage", "transferred_burial", "placed_norm",
+                "placed_over", "accumulated_end")
+
+
+def _has_data(w: WasteFlow) -> bool:
+    """Есть ли в позиции хоть одна ненулевая масса."""
+    return any(D(getattr(w, f, 0)) != 0 for f in _DATA_FIELDS)
 
 
 def _merge_receivers(existing: list, computed: list) -> list:

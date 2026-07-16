@@ -83,8 +83,23 @@ class ExtractionReport:
         for c in self.conflicts:
             lines.append(f"  ⚠ КОНФЛИКТ {c.field}: в контексте «{c.current}», "
                          f"в документе {c.src} — «{c.proposed}» (не применено)")
+        # одинаковые ошибки (напр. «все провайдеры недоступны» на каждый файл)
+        # сворачиваем в одну строку со счётчиком — не спамим отчёт
+        groups: dict[str, list[str]] = {}
         for e in self.errors:
-            lines.append(f"  ✖ {e}")
+            src, _, msg = e.partition(": ")
+            key = msg or e
+            groups.setdefault(key, []).append(src if msg else "")
+        for msg, srcs in groups.items():
+            srcs = [s for s in srcs if s]
+            if len(srcs) > 2:
+                lines.append(f"  ✖ {msg} — {len(srcs)} файлов "
+                             f"({srcs[0]}, {srcs[1]}, …)")
+            elif srcs:
+                for s in srcs:
+                    lines.append(f"  ✖ {s}: {msg}")
+            else:
+                lines.append(f"  ✖ {msg}")
         return "\n".join(lines)
 
 
@@ -135,6 +150,10 @@ def _merge_org(ctx: ReportContext, data: dict, quotes: dict, src: str,
         val = str(org.get(attr) or "").strip()
         if not val:
             continue
+        # у ИП (12-значный ИНН) КПП не бывает — не тащить его из счетов
+        # контрагентов (реквизиты чужих ЮЛ в документах)
+        if attr == "kpp" and ctx.organization.is_individual:
+            continue
         cur = getattr(ctx.organization, attr, "")
         if cur and cur != val:
             rep.conflicts.append(Conflict(f"organization.{attr}", cur, val, src))
@@ -146,9 +165,14 @@ def _merge_org(ctx: ReportContext, data: dict, quotes: dict, src: str,
 
 
 def _merge_objects(ctx: ReportContext, data: dict, src: str, rep: ExtractionReport):
+    from ecodoc.render.xmlutil import _is_nvos_code
     for o in data.get("objects") or []:
         code = str(o.get("code") or "").strip()
-        if not code:
+        # принимаем только реальные коды объектов НВОС (NN-NNNN-NNNNNN-Б/П/Т/Л)
+        # ИЛИ кадастровые номера участков (NN:NN:NNNNNNN:NN); шаблонные
+        # «XX-XXXX-…», «--», номера проектов и прочий мусор — мимо
+        is_cadastral = bool(re.fullmatch(r"\d{2}:\d{2}:\d{6,7}:\d+", code))
+        if not code or not (_is_nvos_code(code) or is_cadastral):
             continue
         existing = next((x for x in ctx.objects if x.code == code), None)
         if existing is None:

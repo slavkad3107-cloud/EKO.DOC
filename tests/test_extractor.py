@@ -41,12 +41,16 @@ def test_fkko_filter_rejects_noise():
     assert not _fkko_valid("11111111111")  # одна цифра
 
 
-def test_fkko_name_autofilled():
+def test_fkko_goes_to_hints_not_movement():
+    """Найденные в документах коды ФККО — ПОДСКАЗКИ (extra.fkko_seen), а не
+    пустые позиции движения (раньше копились десятки нулевых строк-мусора)."""
     from types import SimpleNamespace
     doc = SimpleNamespace(path=Path("перечень.txt"),
                           text="Отход ФККО 4 71 101 01 52 1 лампы")
     ctx = ReportContext()
     extractor._fill_from_doc(ctx, doc)
-    lamp = next((w for w in ctx.wastes if w.fkko_code == "47110101521"), None)
+    assert not ctx.wastes                                # движение не засоряется
+    seen = ctx.extra.get("fkko_seen", [])
+    lamp = next((s for s in seen if s["fkko"] == "47110101521"), None)
     assert lamp is not None
-    assert "ламп" in lamp.name.lower()      # имя подтянулось из справочника
+    assert "ламп" in lamp["name"].lower()   # имя подтянулось из справочника
