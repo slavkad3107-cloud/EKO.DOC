@@ -92,7 +92,7 @@ def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
                 ctx.provenance.setdefault("objects", []).append(
                     {"code": code, "src": doc.path.name})
 
-    if scope not in ("all", "acts"):
+    if scope not in ("all", "acts", "passports"):
         return
 
     # коды ФККО -> ПОДСКАЗКИ (extra.fkko_seen), а НЕ позиции движения.

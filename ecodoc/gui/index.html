@@ -60,6 +60,8 @@ main{flex:1;padding:14px 18px;max-width:1100px}
   cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--mut)}
 .tabs button.on{color:var(--acc);border-color:var(--acc);font-weight:600}
 .tab{display:none}.tab.on{display:block}
+.mod{display:block}.mod.off{display:none}
+.mtab{opacity:.55}.mtab.on{opacity:1;outline:2px solid var(--acc)}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
   padding:14px 16px;margin-bottom:12px}
 .card h2{font-size:15px;margin:0 0 10px}
@@ -141,8 +143,10 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
             <option value="all">авто (все данные)</option>
             <option value="org">реквизиты (ЕГРЮЛ/карточка/объекты НВОС)</option>
             <option value="acts">справки-акты на отходы</option>
-            <option value="air">воздух: ООС/НДВ (вещества)</option>
+            <option value="passports">паспорта отходов (ФККО/класс/состав)</option>
+            <option value="air">воздух: ООС/НДВ (вещества, источники)</option>
             <option value="water">вода: НДС/водхоз (вещества)</option>
+            <option value="other">прочее (акты/протоколы в базу целиком)</option>
           </select></label>
         <label><input type="checkbox" id="useai" checked> ИИ-анализ (значения с цитатами)</label>
         <button class="b" id="btn-intake" onclick="doIntake()">Принять</button>
@@ -177,21 +181,46 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 
   <div class="tab" id="tab-report">
     <div class="card">
-      <h2>Отчётность — формы для сдачи (XML для ЛКПП + печать)</h2>
+      <h2>Отчётность — модули (XML для ЛКПП + печать)</h2>
+      <div class="row" style="gap:4px">
+        <button class="b mtab on" id="mt-rc" onclick="showMod('rep','rc')">Общая</button>
+        <button class="b mtab" id="mt-rw" onclick="showMod('rep','rw')">Отходы</button>
+        <button class="b mtab" id="mt-ra" onclick="showMod('rep','ra')">Воздух</button>
+        <button class="b mtab" id="mt-rv" onclick="showMod('rep','rv')">Вода</button>
+      </div>
       <div class="row">
         <button class="b sec" onclick="validateAll()">Проверить всё</button>
         <label><input type="checkbox" id="genpdf" checked> также PDF</label>
         <label><input type="checkbox" id="genforce"> принудительно (при ошибках)</label>
         <span class="spin" id="sp-gen">генерация…</span>
       </div>
-      <h3 style="margin:8px 0 6px;color:var(--acc)">Отходы</h3>
-      <div class="grid" id="forms-waste"></div>
-      <h3 style="margin:14px 0 6px;color:var(--acc)">Воздух</h3>
-      <div class="grid" id="forms-air"></div>
-      <h3 style="margin:14px 0 6px;color:var(--acc)">Вода</h3>
-      <div class="grid" id="forms-water"></div>
-      <h3 style="margin:14px 0 6px;color:var(--acc)">Плата и ПЭК (все среды)</h3>
-      <div class="grid" id="forms-common"></div>
+      <div class="mod" id="mod-rc">
+        <div id="up-rc"></div>
+        <h3 style="margin:8px 0 6px;color:var(--acc)">Плата и ПЭК (все среды)</h3>
+        <div class="grid" id="forms-common"></div>
+        <div id="miss-rc"></div>
+      </div>
+      <div class="mod off" id="mod-rw">
+        <div id="up-rw"></div>
+        <div class="row" style="margin:8px 0 2px">
+          <button class="b sec" onclick="doWasteSummary()">📊 Сводная по отходам из справок-актов (мес/кв/год, .xlsx)</button>
+        </div>
+        <h3 style="margin:8px 0 6px;color:var(--acc)">Формы по отходам</h3>
+        <div class="grid" id="forms-waste"></div>
+        <div id="miss-rw"></div>
+      </div>
+      <div class="mod off" id="mod-ra">
+        <div id="up-ra"></div>
+        <h3 style="margin:8px 0 6px;color:var(--acc)">Формы по воздуху</h3>
+        <div class="grid" id="forms-air"></div>
+        <div id="miss-ra"></div>
+      </div>
+      <div class="mod off" id="mod-rv">
+        <div id="up-rv"></div>
+        <h3 style="margin:8px 0 6px;color:var(--acc)">Формы по воде</h3>
+        <div class="grid" id="forms-water"></div>
+        <div id="miss-rv"></div>
+      </div>
       <pre class="out" id="out-gen" style="display:none"></pre>
     </div>
   </div>
@@ -199,9 +228,22 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
   <div class="tab" id="tab-dev">
     <div class="card">
       <h2>Разработка — проекты и документы</h2>
-      <div class="hint">Паспорта отходов, тома НДВ/НДС/СЗЗ, программы, планы. Рассеивание — во вкладке «УПРЗА».
+      <div class="row" style="gap:4px">
+        <button class="b mtab on" id="mt-dw" onclick="showMod('dev','dw')">Отходы</button>
+        <button class="b mtab" id="mt-da" onclick="showMod('dev','da')">Воздух</button>
+        <button class="b mtab" id="mt-dv" onclick="showMod('dev','dv')">Вода</button>
+        <button class="b mtab" id="mt-dc" onclick="showMod('dev','dc')">Общее</button>
+      </div>
+      <div class="hint">Рассеивание — во вкладке «УПРЗА».
         <span class="spin" id="sp-dev">генерация…</span></div>
-      <div class="grid" id="forms-dev" style="margin-top:8px"></div>
+      <div class="mod" id="mod-dw"><div id="up-dw"></div>
+        <div class="grid" id="forms-dev-waste" style="margin-top:8px"></div></div>
+      <div class="mod off" id="mod-da"><div id="up-da"></div>
+        <div class="grid" id="forms-dev-air" style="margin-top:8px"></div></div>
+      <div class="mod off" id="mod-dv"><div id="up-dv"></div>
+        <div class="grid" id="forms-dev-water" style="margin-top:8px"></div></div>
+      <div class="mod off" id="mod-dc">
+        <div class="grid" id="forms-dev-common" style="margin-top:8px"></div></div>
       <pre class="out" id="out-dev" style="display:none"></pre>
     </div>
   </div>
@@ -362,6 +404,10 @@ $("tabs").addEventListener("click", e => {
   e.target.classList.add("on");
   $("tab-" + e.target.dataset.t).classList.add("on");
   if (e.target.dataset.t === "svc" && !AICONF) loadAiPanel();
+  if (e.target.dataset.t === "report" && ORG){
+    const act = MODS.rep.find(m => $("mt-"+m) && $("mt-"+m).classList.contains("on")) || "rc";
+    loadMissing(act).catch(()=>{});
+  }
 });
 
 // ── дерево организаций ──
@@ -506,8 +552,7 @@ const EXT_ARCHIVE = ["zip","rar","7z"];   // распакуются на сер�
 const MAX_MB = 50;         // документ; крупнее — пропускаем
 const MAX_ARC_MB = 300;    // архив (внутри 512 МБ лимита запроса с base64)
 let SKIPPED = [];
-function pickedFiles(){
-  const all = [...$("files").files, ...$("folder").files];
+function filterFiles(all){
   SKIPPED = [];
   const ok = [];
   for (const f of all){
@@ -519,6 +564,9 @@ function pickedFiles(){
     else ok.push(f);
   }
   return ok;
+}
+function pickedFiles(){
+  return filterFiles([...$("files").files, ...$("folder").files]);
 }
 function showPicked(){
   const ok = pickedFiles();
@@ -554,9 +602,9 @@ function errText(e){
   const s = String(e);
   return (s && s !== "[object Object]") ? s : "неизвестная ошибка сети";
 }
-function renderReport(text){
+function renderReport(text, boxId){
   // отчёт → раскрывающиеся секции по заголовкам «── … ──»
-  const box = $("out-intake"); box.style.display = "block"; box.innerHTML = "";
+  const box = $(boxId || "out-intake"); box.style.display = "block"; box.innerHTML = "";
   const parts = text.split(/\n(?=── )/);
   const openByDefault = ["Полнота данных", "Распознано", "ИИ-анализ",
                          "Какие документы"];
@@ -590,25 +638,20 @@ async function uploadBatch(batch){
   const j = await post("intake_upload", {org:ORG, site:SITE, files}, 120000);
   return j.stored || [];
 }
-async function doIntake(){
-  needSite();
-  const fs = pickedFiles();
-  if(!fs.length){ alert("Выберите файлы или папку"); return; }
-  let useAi = $("useai").checked;
-  if (useAi && fs.length > 25 &&
-      !confirm(`ИИ-анализ ${fs.length} файлов может занять очень долго ` +
-               `(минуты на файл). Продолжить С ИИ?\nОтмена = принять без ИИ ` +
-               `(быстрое распознавание всё равно выполняется).`)) useAi = false;
+async function runIntake(cfg){
+  // общий конвейер приёма: cfg = {files, scope, useAi, list, out, btn, spin}
+  // (элементы — главной вкладки Приём или блока загрузки модуля)
   INTAKE_STOP = false;
-  $("btn-intake").disabled = true;
-  $("btn-stop").style.display = "inline-block";
-  spin("sp-intake", 1);
+  const fs = cfg.files;
+  $(cfg.btn).disabled = true;
+  if ($("btn-stop")) $("btn-stop").style.display = "inline-block";
+  spin(cfg.spin, 1);
   const stored = [];
   let failedBatches = 0, failedFiles = 0;
   try{
     const batches = makeBatches(fs);
     for (let i = 0; i < batches.length && !INTAKE_STOP; i++){
-      $("filelist").textContent =
+      $(cfg.list).textContent =
         `Загрузка: партия ${i+1}/${batches.length} · принято ${stored.length}/${fs.length}` +
         (failedFiles ? ` · сбоев: ${failedFiles}` : "");
       // до 3 попыток на партию; при устойчивом сбое — пропускаем, не прерываем всё
@@ -626,46 +669,73 @@ async function doIntake(){
         }
       }
     }
-    if (INTAKE_STOP){ $("filelist").textContent =
+    if (INTAKE_STOP){ $(cfg.list).textContent =
       `Остановлено. Загружено ${stored.length}/${fs.length}.`; return; }
 
     // Анализ — чанками с прогрессом. Контекст накапливается на сервере,
     // поэтому последний отчёт содержит итоговую полноту по всем файлам.
-    // OCR сканов медленный, поэтому большие наборы идут долго — но виден прогресс
-    // и один сбойный чанк не рушит остальное.
     const CH = 40;   // извлечение и ИИ идут параллельно на сервере
     let rep = "", analyzed = 0, analyzeFail = 0;
     for (let k = 0; k < stored.length && !INTAKE_STOP; k += CH){
       const chunk = stored.slice(k, k + CH);
-      $("filelist").textContent =
+      $(cfg.list).textContent =
         `Анализ ${Math.min(k+CH, stored.length)}/${stored.length}` +
-        (useAi ? " (с ИИ — медленно)" : " (распознавание сканов)") + "…";
+        (cfg.useAi ? " (с ИИ — медленно)" : " (распознавание сканов)") + "…";
       try{
-        const j = await post("intake_run", {org:ORG, site:SITE, names:chunk, ai:useAi,
-          scope: $("intake-scope").value}, 0);
+        const j = await post("intake_run", {org:ORG, site:SITE, names:chunk,
+          ai:cfg.useAi, scope: cfg.scope}, 0);
         rep = j.report; analyzed += chunk.length;
       }catch(e){ analyzeFail += chunk.length; }
     }
-    if (INTAKE_STOP){ $("filelist").textContent =
+    if (INTAKE_STOP){ $(cfg.list).textContent =
       `Остановлено. Загружено ${stored.length}, проанализировано ${analyzed}.`; return; }
     if (failedFiles) rep = `⚠ Не загрузилось ${failedFiles} файл(ов) из ` +
       `${failedBatches} партий (сетевые сбои) — повторите приём этих файлов.\n\n` + rep;
     if (analyzeFail) rep = `⚠ Анализ не завершён для ${analyzeFail} файл(ов).\n` + rep;
     if (SKIPPED.length) rep += "\n── Пропущено при загрузке ──\n  " + SKIPPED.join("\n  ");
-    renderReport(rep);
-    $("filelist").innerHTML = `✓ Принято ${stored.length} файл(ов). ` +
+    renderReport(rep, cfg.out);
+    $(cfg.list).textContent = `✓ Принято ${stored.length} файл(ов).`;
+    loadCtx().catch(()=>{});
+    return stored.length;
+  }catch(e){
+    show(cfg.out, "Ошибка: " + errText(e) +
+      (stored.length ? `\n(успело загрузиться ${stored.length} файл(ов) — они сохранены)` : ""));
+  }finally{
+    $(cfg.btn).disabled = false;
+    if ($("btn-stop")) $("btn-stop").style.display = "none";
+    spin(cfg.spin, 0);
+  }
+}
+async function doIntake(){
+  needSite();
+  const fs = pickedFiles();
+  if(!fs.length){ alert("Выберите файлы или папку"); return; }
+  let useAi = $("useai").checked;
+  if (useAi && fs.length > 25 &&
+      !confirm(`ИИ-анализ ${fs.length} файлов может занять очень долго ` +
+               `(минуты на файл). Продолжить С ИИ?\nОтмена = принять без ИИ ` +
+               `(быстрое распознавание всё равно выполняется).`)) useAi = false;
+  const n = await runIntake({files:fs, scope:$("intake-scope").value, useAi,
+    list:"filelist", out:"out-intake", btn:"btn-intake", spin:"sp-intake"});
+  if (n){
+    $("filelist").innerHTML = `✓ Принято ${n} файл(ов). ` +
       `Дальше: <a class="link" onclick="document.querySelector('button[data-t=&quot;data&quot;]').click()">` +
       `проверьте «Данные»</a>, затем <a class="link" ` +
       `onclick="document.querySelector('button[data-t=&quot;report&quot;]').click()">«Отчётность»</a>.`;
     $("files").value = ""; $("folder").value = "";
-    loadCtx().catch(()=>{});
-  }catch(e){
-    show("out-intake", "Ошибка: " + errText(e) +
-      (stored.length ? `\n(успело загрузиться ${stored.length} файл(ов) — они сохранены)` : ""));
-  }finally{
-    $("btn-intake").disabled = false; $("btn-stop").style.display = "none";
-    spin("sp-intake", 0);
   }
+}
+async function doModIntake(mod){
+  // загрузка из блока модуля: свои файлы, своя категория, свой отчёт
+  needSite();
+  const inp = $("mf-"+mod);
+  const fs = filterFiles([...(inp.files||[])]);
+  if(!fs.length){ alert("Выберите файлы"); return; }
+  const n = await runIntake({files:fs, scope:$("ms-"+mod).value,
+    useAi:$("ma-"+mod).checked, list:"ml-"+mod, out:"mo-"+mod,
+    btn:"mb-"+mod, spin:"msp-"+mod});
+  if (n) inp.value = "";
+  loadMissing(mod).catch(()=>{});
 }
 function stopIntake(){ INTAKE_STOP = true; }
 
@@ -744,12 +814,28 @@ function renderDataForm(){
   h += DET("1. Отходы", true);
   h += tableSection("Справки-акты (первичный ввод)", "waste_acts", CTX.waste_acts||[],
     [["name","Наименование отхода"],["fkko_code","ФККО"],["hazard_class","Класс",,"num"],
-     ["mass","Масса, т",,"num"],["date","Дата (ДД.ММ.ГГГГ)"],["operation","Вид обращения"],
-     ["carrier","Перевозчик"],["receiver","Приёмщик/полигон"]]);
+     ["mass","Масса, т",,"num"],["volume_m3","Объём, м³",,"num"],
+     ["density","Плотн., т/м³",,"num"],["date","Дата (ДД.ММ.ГГГГ)"],
+     ["operation","Вид обращения"],["carrier","Перевозчик"],
+     ["carrier_license","Лиц. перевозчика"],["receiver","Приёмщик/полигон"],
+     ["license","Лиц. полигона"]]);
   h += '<div class="hint" style="margin:-4px 0 8px">Вид обращения: '+
     'утилизация / обезвреживание / размещение / хранение. Из актов '+
     'рассчитываются журнал 1028, 2-ТП (отходы), кадастр, раздел отходов декларации '+
     '(движение ниже заполнится автоматически).</div>';
+  // паспорта отходов (из загрузки «паспорта») — справочник по ФККО
+  const wpass = (CTX.extra||{}).waste_passports||[];
+  if (wpass.length){
+    h += `<details class="dsec"><summary style="cursor:pointer;color:var(--acc)">`+
+      `Паспорта отходов (${wpass.length})</summary>`+
+      '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>ФККО</th>'+
+      '<th>Наименование</th><th>Класс</th><th>Состав</th><th>Из файла</th></tr></thead><tbody>'+
+      wpass.map(p=>`<tr><td>${esc(p.fkko)}</td><td>${esc(p.name)}</td>`+
+        `<td>${esc(p.hazard_class)}</td>`+
+        `<td>${esc((p.components||[]).map(c=>c.name+(c.percent?` ${c.percent}%`:"")).join("; "))}</td>`+
+        `<td class="hint">${esc(p._src||"")}</td></tr>`).join("")+
+      '</tbody></table></div></details>';
+  }
   h += qbreakHtml();                       // разбивка по кварталам/годам
   // движение: нулевые строки — в свёрнутый блок (не мозолят глаза)
   const wcols = [["fkko_code","ФККО"],["name","Наименование"],["hazard_class","Класс",,"num"],
@@ -1060,8 +1146,14 @@ const FORM_MEDIUM = {
   "waste-movement":"waste", "cadastre-spb":"waste", "2tp-waste":"waste",
   "waste-report-iii":"waste", "2tp-air":"air", "2tp-water":"water",
   "declaration-nvos":"common", "pek":"common"};
+// формы разработки — по средам (модули вкладки «Разработка»)
+const DEV_MEDIUM = {
+  "pnoolr":"waste", "hazard-class":"waste", "tu-waste":"waste",
+  "air-inventory":"air", "nmu":"air",
+  "dvos":"common", "plarn":"common", "pek-program":"common"};
 function renderForms(){
-  for (const id of ["forms-waste","forms-air","forms-water","forms-common","forms-dev"])
+  for (const id of ["forms-waste","forms-air","forms-water","forms-common",
+                    "forms-dev-waste","forms-dev-air","forms-dev-water","forms-dev-common"])
     if ($(id)) $(id).innerHTML = "";
   for (const f of META.forms){
     const dev = f.domain === "development";
@@ -1076,9 +1168,87 @@ function renderForms(){
     card.innerHTML = `<div class="t">${f.title}</div>
       <div class="c">${f.code}</div><div class="row">${btns}</div>
       <div id="iss-${f.code}"></div>`;
-    const target = dev ? "forms-dev" : ("forms-" + (FORM_MEDIUM[f.code] || "common"));
+    const target = dev ? ("forms-dev-" + (DEV_MEDIUM[f.code] || "common"))
+                       : ("forms-" + (FORM_MEDIUM[f.code] || "common"));
     ($(target) || $("forms-common")).appendChild(card);
   }
+  seedModUploads();
+}
+
+// ── модули Отчётности/Разработки: загрузка своих документов + «чего не хватает» ──
+const MODS = {rep:["rc","rw","ra","rv"], dev:["dw","da","dv","dc"]};
+const MOD_SCOPES = {   // категории загрузки в каждом модуле
+  rc:[["org","реквизиты: ЕГРЮЛ / карточка / объекты НВОС"],
+      ["other","прочее (акты/протоколы в базу целиком)"], ["all","авто (все данные)"]],
+  rw:[["acts","справки-акты на отходы (движение по датам)"],
+      ["passports","паспорта отходов (ФККО/класс/состав)"], ["all","авто (все данные)"]],
+  ra:[["air","воздух: ООС / НДВ / инвентаризация (вещества, источники)"],
+      ["all","авто (все данные)"]],
+  rv:[["water","вода: НДС / водхоз (вещества)"], ["all","авто (все данные)"]],
+  dw:[["passports","паспорта отходов (ФККО/класс/состав)"],
+      ["acts","справки-акты на отходы"]],
+  da:[["air","воздух: ООС / НДВ / инвентаризация (вещества, источники)"]],
+  dv:[["water","вода: НДС / водхоз (вещества)"]]};
+// какие ФОРМЫ относятся к модулю — для чек-листа «чего не хватает»
+const MOD_FORMS = {
+  rc:["declaration-nvos","pek"],
+  rw:["waste-movement","2tp-waste","cadastre-spb","waste-report-iii"],
+  ra:["2tp-air"], rv:["2tp-water"]};
+function modUploadHtml(mod){
+  const scopes = MOD_SCOPES[mod];
+  if (!scopes) return "";
+  const opts = scopes.map(s=>`<option value="${s[0]}">${s[1]}</option>`).join("");
+  return `<details class="dsec"><summary style="cursor:pointer;color:var(--acc)">📥 Загрузить документы модуля</summary>
+    <div class="row" style="margin-top:6px">
+      <label class="b sec" style="display:inline-block">Файлы…
+        <input type="file" id="mf-${mod}" multiple style="display:none"
+          onchange="$('mn-${mod}').textContent=this.files.length+' файл(ов)'"></label>
+      <span class="hint" id="mn-${mod}"></span>
+      <label>Что это: <select id="ms-${mod}">${opts}</select></label>
+      <label><input type="checkbox" id="ma-${mod}" checked> ИИ-анализ</label>
+      <button class="b" id="mb-${mod}" onclick="doModIntake('${mod}')">Принять</button>
+      <span class="spin" id="msp-${mod}">обработка…</span>
+    </div>
+    <div class="filelist" id="ml-${mod}"></div>
+    <div class="out" id="mo-${mod}" style="display:none;white-space:pre-wrap"></div></details>`;
+}
+function seedModUploads(){
+  for (const mods of Object.values(MODS))
+    for (const m of mods)
+      if ($("up-"+m)) $("up-"+m).innerHTML = modUploadHtml(m);
+}
+function showMod(group, key){
+  for (const m of MODS[group]){
+    if ($("mod-"+m)) $("mod-"+m).classList.toggle("off", m !== key);
+    if ($("mt-"+m)) $("mt-"+m).classList.toggle("on", m === key);
+  }
+  if (group === "rep") loadMissing(key).catch(()=>{});
+}
+async function loadMissing(mod){
+  const box = $("miss-"+mod), forms = MOD_FORMS[mod];
+  if (!box || !forms || !ORG) return;
+  const j = await post("missing", {org:ORG, site:SITE});
+  let h = "";
+  for (const f of forms){
+    const info = (j.forms||{})[f];
+    if (!info) continue;
+    h += info.missing && info.missing.length
+      ? `<div class="issue warn">○ ${f}: не хватает — ${info.missing.join(", ")}</div>`
+      : `<div class="issue" style="color:var(--acc)">✓ ${f}: данных достаточно</div>`;
+  }
+  box.innerHTML = h ? `<h3 style="margin:12px 0 6px;color:var(--acc)">Чего не хватает</h3>${h}` : "";
+}
+async function doWasteSummary(){
+  needSite(); spin("sp-gen",1);
+  try{
+    const j = await post("waste_summary", {org:ORG, site:SITE}, 0);
+    if (j.error){ show("out-gen", "Сводная: " + j.error); }
+    else {
+      show("out-gen", `Сводная по отходам (${j.acts} актов, листы: месяцы/кварталы/год):\n` + j.path);
+      post("open", {path:j.path}).catch(()=>{});
+    }
+  }catch(e){ show("out-gen", "Ошибка: " + errText(e)); }
+  spin("sp-gen",0);
 }
 function renderIssues(code, issues){
   $("iss-"+code).innerHTML = (issues||[]).map(i =>

@@ -298,6 +298,31 @@ def api_submit(params, body):
     }
 
 
+def api_waste_summary(params, body):
+    """Сводная таблица по отходам из справок-актов (форма «Справки-2025»)."""
+    from ecodoc.core.waste_summary import build_xlsx
+    ctx = workspace.load_context(body["org"], body["site"])
+    if not ctx.waste_acts:
+        return {"error": "Справок-актов нет — заполните таблицу «Справки-акты» "
+                         "в Данных или загрузите справки в Приёме."}
+    out_dir = workspace.site_dir(body["org"], body["site"]) / "out"
+    year = ctx.period.year or ""
+    path = build_xlsx(ctx, out_dir / f"сводная_отходы_{year or 'все_годы'}.xlsx")
+    return {"path": str(path), "acts": len(ctx.waste_acts)}
+
+
+def api_missing(params, body):
+    """Чего не хватает по формам — для чек-листов модулей."""
+    from ecodoc.intake import requirements
+    src = body if (body or {}).get("org") else params
+    ctx = workspace.load_context(src["org"], src["site"])
+    out = {}
+    for form in requirements.REQUIREMENTS:
+        missing, docs_hint = requirements.check(ctx, form)
+        out[form] = {"missing": missing, "docs": docs_hint}
+    return {"forms": out}
+
+
 def api_calendar(params, body):
     from datetime import date
 
@@ -511,7 +536,8 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "upraza_export": api_upraza_export,
                "counterparty": api_counterparty, "oktmo": api_oktmo,
                "hazard_class": api_hazard_class,
-               "devdoc": api_devdoc, "submit": api_submit, "open": api_open}
+               "devdoc": api_devdoc, "submit": api_submit, "open": api_open,
+               "waste_summary": api_waste_summary, "missing": api_missing}
 
 
 class Handler(BaseHTTPRequestHandler):

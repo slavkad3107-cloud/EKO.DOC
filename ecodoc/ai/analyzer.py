@@ -38,9 +38,14 @@ SYSTEM = """Ты — ассистент инженера-эколога РФ. И
  "pollutants_water": [{"code":"", "name":"", "mass_norm":"т/год (НДС)",
                        "mass_limit":"т/год (ВСС)"}],
  "disposal_acts": [{"date":"ДД.ММ.ГГГГ", "counterparty":"", "inn":"",
-                    "license":"", "carrier":"перевозчик", "fkko":"", "waste_name":"",
-                    "mass_t":"", "volume_m3":"", "hazard_class":1-5,
+                    "license":"лицензия получателя", "carrier":"перевозчик",
+                    "carrier_license":"лицензия перевозчика", "fkko":"", "waste_name":"",
+                    "mass_t":"", "volume_m3":"", "density":"т/м3", "hazard_class":1-5,
                     "operation":"утилизация|обезвреживание|размещение|хранение|обработка"}],
+ "waste_passports": [{"fkko":"11 цифр", "name":"", "hazard_class":1-5,
+                      "components":[{"name":"компонент состава", "percent":""}]}],
+ "emission_sources": [{"number":"№ источника", "name":"", "kind":"организованный|неорганизованный",
+                       "pollutants":[{"code":"", "name":"", "g_s":"г/с", "t_year":"т/год"}]}],
  "lab_results": [{"kind":"КХА|биотест|хим", "protocol_no":"", "date":"",
                   "lab":"", "object":"", "substances":[{"name":"", "value":"", "unit":""}]}],
  "quotes": {"<путь.к.полю>": "дословная короткая цитата из текста"}
@@ -242,8 +247,11 @@ def _merge_acts(ctx: ReportContext, data: dict, src: str, rep: ExtractionReport)
             name=str(act.get("waste_name") or "").strip(), fkko_code=fkko,
             hazard_class=hazard, mass=mass,
             volume_m3=_dec(act.get("volume_m3")) or 0,
+            density=_dec(act.get("density")) or 0,
             operation=str(act.get("operation") or "").strip(),
-            carrier=str(act.get("carrier") or "").strip(), receiver=receiver,
+            carrier=str(act.get("carrier") or "").strip(),
+            carrier_license=str(act.get("carrier_license") or "").strip(),
+            receiver=receiver,
             receiver_inn=str(act.get("inn") or "").strip(),
             license=str(act.get("license") or "").strip(),
             date=str(act.get("date") or "").strip()))
@@ -343,17 +351,80 @@ def _store_extras(ctx: ReportContext, data: dict, src: str,
             rep.accepted.append(Accepted(f"{label} → extra.{key}", brief, src))
 
 
+def _merge_passports(ctx: ReportContext, data: dict, src: str,
+                     rep: ExtractionReport):
+    """Паспорта отходов → extra.waste_passports (справочник по ФККО).
+
+    Дедуп по коду ФККО; состав дополняется, если в базе его ещё нет.
+    Паспорта — справочные данные (наименование/класс/состав), движение
+    отходов они НЕ создают (движение — только из справок-актов)."""
+    from ecodoc.core.waste_agg import norm_fkko
+    store = ctx.extra.setdefault("waste_passports", [])
+    for p in data.get("waste_passports") or []:
+        fkko = norm_fkko(str(p.get("fkko") or ""))
+        name = str(p.get("name") or "").strip()
+        if not fkko and not name:
+            continue
+        existing = next((x for x in store
+                         if norm_fkko(str(x.get("fkko") or "")) == fkko and fkko),
+                        None)
+        comps = [c for c in (p.get("components") or [])
+                 if isinstance(c, dict) and c.get("name")]
+        if existing is None:
+            item = {"fkko": fkko, "name": name,
+                    "hazard_class": p.get("hazard_class") or "",
+                    "components": comps, "_src": src}
+            store.append(item)
+            rep.accepted.append(Accepted(
+                "паспорт отхода → extra.waste_passports",
+                f"{fkko or '—'} {name}" + (f", состав: {len(comps)} комп."
+                                           if comps else ""), src))
+        else:
+            # дозаполняем только пустое — паспорт в базе главнее
+            if not existing.get("name") and name:
+                existing["name"] = name
+            if not existing.get("components") and comps:
+                existing["components"] = comps
+                rep.accepted.append(Accepted(
+                    f"состав отхода {fkko} → extra.waste_passports",
+                    f"{len(comps)} комп.", src))
+
+
+def _merge_sources(ctx: ReportContext, data: dict, src: str,
+                   rep: ExtractionReport):
+    """Источники выбросов (инвентаризация/ООС/НДВ) → extra.emission_sources."""
+    store = ctx.extra.setdefault("emission_sources", [])
+    for s in data.get("emission_sources") or []:
+        num = str(s.get("number") or "").strip()
+        name = str(s.get("name") or "").strip()
+        if not num and not name:
+            continue
+        if any((str(x.get("number") or "").strip() == num and num) or
+               (not num and str(x.get("name") or "").strip() == name)
+               for x in store):
+            continue
+        item = {"number": num, "name": name, "kind": s.get("kind") or "",
+                "pollutants": [p for p in (s.get("pollutants") or [])
+                               if isinstance(p, dict)], "_src": src}
+        store.append(item)
+        rep.accepted.append(Accepted(
+            "источник выбросов → extra.emission_sources",
+            f"№{num or '—'} {name} ({len(item['pollutants'])} ЗВ)", src))
+
+
 def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
                  cfg: AIConfig | None = None, scope: str = "all") -> ExtractionReport:
     """Прогнать документы через LLM и слить результат в контекст.
 
     scope — какую категорию данных принимать из этих документов (раздельная
     загрузка: счета-фактуры не загрязняют реквизиты и т.п.):
-      "all"   — всё (авто);
-      "org"   — только реквизиты организации и объекты НВОС (ЕГРЮЛ/карточка);
-      "acts"  — только справки-акты на отходы;
-      "air"   — только вещества-выбросы (ООС/НДВ);
-      "water" — только вещества-сбросы (НДС/водхоз).
+      "all"       — всё (авто);
+      "org"       — только реквизиты организации и объекты НВОС (ЕГРЮЛ/карточка);
+      "acts"      — только справки-акты на отходы;
+      "passports" — только паспорта отходов (ФККО/наименование/класс/состав);
+      "air"       — вещества-выбросы (ООС/НДВ) и источники выбросов;
+      "water"     — только вещества-сбросы (НДС/водхоз);
+      "other"     — прочие документы: только extras (акты/протоколы целиком).
 
     Запросы к модели идут ПАРАЛЛЕЛЬНО (сетевые вызовы — потоки дают большой
     выигрыш, особенно на облачном провайдере). Слияние результатов в общий
@@ -412,11 +483,14 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
         if scope in ("all", "acts"):
             _merge_acts(ctx, data, label, rep)
             _merge_wastes(ctx, data, quotes, label, rep)
+        if scope in ("all", "acts", "passports"):
+            _merge_passports(ctx, data, label, rep)
         if scope in ("all", "air"):
             _merge_pollutants(ctx, data, Medium.AIR, label, rep)
+            _merge_sources(ctx, data, label, rep)
         if scope in ("all", "water"):
             _merge_pollutants(ctx, data, Medium.WATER, label, rep)
-        if scope in ("all", "acts"):
+        if scope in ("all", "acts", "other"):
             _store_extras(ctx, data, label, rep)
     # свернуть собранные акты в движение (акты первичны)
     if scope in ("all", "acts") and ctx.waste_acts:

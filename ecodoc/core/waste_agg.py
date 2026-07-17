@@ -38,8 +38,8 @@ _RE_DATE = re.compile(r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})\b")
 _RE_DATE_ISO = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
 
 
-def act_year_quarter(act: WasteAct):
-    """(год, квартал) из даты акта: ДД.ММ.ГГГГ или ISO ГГГГ-ММ-ДД.
+def act_year_month(act: WasteAct):
+    """(год, месяц) из даты акта: ДД.ММ.ГГГГ или ISO ГГГГ-ММ-ДД.
     (None, None) — если даты нет/не распознана."""
     s = str(act.date or "")
     m = _RE_DATE_ISO.search(s)          # сначала ISO — иначе «2025-02-01»
@@ -53,8 +53,15 @@ def act_year_quarter(act: WasteAct):
         yr = int(m.group(3))
         if yr < 100:
             yr += 2000
-    q = (mon - 1) // 3 + 1 if 1 <= mon <= 12 else None
-    return yr, q
+    return yr, (mon if 1 <= mon <= 12 else None)
+
+
+def act_year_quarter(act: WasteAct):
+    """(год, квартал) из даты акта; (None, None) — если даты нет."""
+    yr, mon = act_year_month(act)
+    if yr is None:
+        return None, None
+    return yr, ((mon - 1) // 3 + 1 if mon else None)
 
 
 def _in_period(act: WasteAct, year, quarter) -> bool:

@@ -108,6 +108,18 @@ def _cmd_generate(args):
         print("Печать: (для этой формы не реализована)")
 
 
+def _cmd_waste_summary(args):
+    """Сводная таблица по отходам из справок-актов («Справки-2025»)."""
+    from ecodoc.core.waste_summary import build_xlsx
+    ctx = workspace.resolve(args)
+    if not ctx.waste_acts:
+        sys.exit("Справок-актов нет — заполните waste_acts (Данные → Справки-акты).")
+    out_dir = workspace.out_dir(args)
+    year = ctx.period.year or ""
+    path = build_xlsx(ctx, Path(out_dir) / f"сводная_отходы_{year or 'все_годы'}.xlsx")
+    print(f"Сводная по отходам ({len(ctx.waste_acts)} актов): {path}")
+
+
 def _cmd_submit(args):
     """Собрать пакет к подаче в ЛКПП: XML + печать + МЧД + чек-лист."""
     from ecodoc.submit import build_package
@@ -407,6 +419,12 @@ def build_parser() -> argparse.ArgumentParser:
     _target_args(sm)
     sm.add_argument("-o", "--outdir", default="out")
     sm.set_defaults(func=_cmd_submit)
+
+    wsm = sub.add_parser("waste-summary",
+                         help="сводная по отходам из справок-актов (мес/кв/год, .xlsx)")
+    _target_args(wsm)
+    wsm.add_argument("-o", "--outdir", default="out")
+    wsm.set_defaults(func=_cmd_waste_summary)
 
     c = sub.add_parser("calendar", help="календарь подачи + чек-лист документов по категории")
     _target_args(c)
