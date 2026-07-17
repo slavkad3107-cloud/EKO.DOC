@@ -176,7 +176,8 @@ def api_intake(params, body):
     try:
         paths = _decode_to_tmp(body.get("files", []), tmpdir)
         report = intake.run(paths, org=body["org"], site=body["site"],
-                            use_ai=bool(body.get("ai")))
+                            use_ai=bool(body.get("ai")),
+                            scope=body.get("scope", "all"))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     _save_report(body["org"], body["site"], report)
@@ -204,7 +205,8 @@ def api_intake_run(params, body):
         return {"error": "Приём по этой площадке уже идёт — дождитесь окончания."}
     report = intake.analyze_stored(body.get("names", []),
                                    body["org"], body["site"],
-                                   use_ai=bool(body.get("ai")))
+                                   use_ai=bool(body.get("ai")),
+                                   scope=body.get("scope", "all"))
     _save_report(body["org"], body["site"], report)
     return {"report": report}
 

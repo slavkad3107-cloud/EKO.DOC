@@ -136,6 +136,14 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
           <input type="file" id="files" multiple style="display:none"></label>
         <label class="b sec" style="display:inline-block">Папку целиком…
           <input type="file" id="folder" webkitdirectory multiple style="display:none"></label>
+        <label>Что загружаем:
+          <select id="intake-scope">
+            <option value="all">авто (все данные)</option>
+            <option value="org">реквизиты (ЕГРЮЛ/карточка/объекты НВОС)</option>
+            <option value="acts">справки-акты на отходы</option>
+            <option value="air">воздух: ООС/НДВ (вещества)</option>
+            <option value="water">вода: НДС/водхоз (вещества)</option>
+          </select></label>
         <label><input type="checkbox" id="useai" checked> ИИ-анализ (значения с цитатами)</label>
         <button class="b" id="btn-intake" onclick="doIntake()">Принять</button>
         <button class="b sec" id="btn-stop" onclick="stopIntake()" style="display:none">Стоп</button>
@@ -633,7 +641,8 @@ async function doIntake(){
         `Анализ ${Math.min(k+CH, stored.length)}/${stored.length}` +
         (useAi ? " (с ИИ — медленно)" : " (распознавание сканов)") + "…";
       try{
-        const j = await post("intake_run", {org:ORG, site:SITE, names:chunk, ai:useAi}, 0);
+        const j = await post("intake_run", {org:ORG, site:SITE, names:chunk, ai:useAi,
+          scope: $("intake-scope").value}, 0);
         rep = j.report; analyzed += chunk.length;
       }catch(e){ analyzeFail += chunk.length; }
     }
@@ -719,6 +728,13 @@ function renderDataForm(){
   // объекты НВОС
   h += tableSection("Объекты НВОС", "objects", CTX.objects||[],
     [["code","Код НВОС"],["name","Наименование"],["category","Категория"],["address","Адрес"]]);
+  const badObjs = (CTX.objects||[]).filter(o=>!isGoodObjCode(o.code)).length;
+  if (badObjs){
+    h += `<div class="row" style="margin:-4px 0 8px"><span class="hint">⚠ Объектов с `+
+      `некорректным кодом (не НВОС и не кадастровый): ${badObjs} — из документов-`+
+      `шаблонов/проектов.</span> <button class="b sec" onclick="deleteBadObjects()">`+
+      `Удалить некорректные</button></div>`;
+  }
 
   const DET = (title, open) =>
     `<details class="dsec"${open?' open':''}><summary style="cursor:pointer;`+
@@ -798,6 +814,19 @@ const _WMASS = ["accumulated_start","accumulated_start_nakopl","generated","rece
   "placed_norm","placed_over","accumulated_end"];
 function hasMassJS(w){
   return _WMASS.some(f => parseFloat(String(w[f]??"0").replace(",","."))||0);
+}
+function isGoodObjCode(code){
+  const c = String(code||"").trim();
+  return /^\d{2}-\d{4}-\d{5,7}-[А-ЯA-ZЁ]$/u.test(c) ||   // код объекта НВОС
+         /^\d{2}:\d{2}:\d{6,7}:\d+$/.test(c);            // кадастровый номер
+}
+function deleteBadObjects(){
+  collectDataForm();
+  const before = (CTX.objects||[]).length;
+  CTX.objects = (CTX.objects||[]).filter(o=>isGoodObjCode(o.code));
+  renderDataForm();
+  $("data-msg").textContent =
+    `Удалено ${before-CTX.objects.length} объектов с некорректным кодом — нажмите «Сохранить».`;
 }
 function deleteZeroWastes(){
   collectDataForm();

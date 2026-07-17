@@ -288,20 +288,21 @@ def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
 
 def analyze_stored(names: list[str], org: str, site: str,
                    use_ai: bool = False, forms: list[str] | None = None,
-                   ocr: bool = True) -> str:
+                   ocr: bool = True, scope: str = "all") -> str:
     """Проанализировать уже сохранённые в attachments файлы (по именам)."""
     att = workspace.site_dir(org, site) / "attachments"
     with _busy_site(org, site):
         ctx = workspace.load_context(org, site)
         paths = [att / n for n in names if (att / n).exists()]
         return _analyze(paths, ctx, org=org, site=site, use_ai=use_ai,
-                        forms=forms, ocr=ocr,
+                        forms=forms, ocr=ocr, scope=scope,
                         lines=[f"Файлов к анализу: {len(paths)}"])
 
 
 def run(files: list[str], org: str = "", site: str = "",
         ctx: ReportContext | None = None, use_ai: bool = False,
-        forms: list[str] | None = None, ocr: bool = True) -> str:
+        forms: list[str] | None = None, ocr: bool = True,
+        scope: str = "all") -> str:
     """Принять файлы; вернуть текстовый отчёт. Контекст сохраняется сам."""
     lines: list[str] = []
     in_workspace = bool(org and site)
@@ -322,7 +323,7 @@ def run(files: list[str], org: str = "", site: str = "",
             lines += [f"✖ нет файла: {f}" for f in files if not Path(f).exists()]
         return _analyze(stored, ctx, org=org if in_workspace else "",
                         site=site if in_workspace else "", use_ai=use_ai,
-                        forms=forms, ocr=ocr, lines=lines)
+                        forms=forms, ocr=ocr, scope=scope, lines=lines)
 
 
 def _err_reason(msg: str, p: Path) -> str:
@@ -339,7 +340,8 @@ def _err_reason(msg: str, p: Path) -> str:
 
 def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
              use_ai: bool, forms: list[str] | None, ocr: bool,
-             lines: list[str], keep_sources: bool = False) -> str:
+             lines: list[str], keep_sources: bool = False,
+             scope: str = "all") -> str:
     in_workspace = bool(org and site)
     # 2. извлечение текста ПАРАЛЛЕЛЬНО (OCR сканов — узкое место; Tesseract
     #    работает как подпроцесс и отпускает GIL, поэтому потоки реально
@@ -374,7 +376,7 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     parse_errors = 0
     for doc in docs:
         try:
-            extractor._fill_from_doc(ctx, doc)   # сбой на одном файле
+            extractor._fill_from_doc(ctx, doc, scope=scope)   # сбой на одном файле
         except Exception as e:                   # не должен рушить весь пакет
             parse_errors += 1
             lines.append(f"✖ ошибка разбора {doc.path.name}: {e}")
@@ -393,7 +395,7 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     # 3. ИИ-анализ (семантика: акты, массы, протоколы) — по флагу
     if use_ai and docs:
         from ecodoc.ai.analyzer import analyze_docs
-        rep = analyze_docs(docs, ctx)
+        rep = analyze_docs(docs, ctx, scope=scope)
         lines.append("")
         lines.append(rep.render())
 

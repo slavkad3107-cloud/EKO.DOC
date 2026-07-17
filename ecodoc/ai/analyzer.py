@@ -33,6 +33,10 @@ SYSTEM = """Ты — ассистент инженера-эколога РФ. И
  "objects": [{"code":"XX-XXXX-XXXXXX-Б", "name":"", "address":"", "category":""}],
  "wastes": [{"fkko":"11 цифр", "name":"", "hazard_class":1-5,
              "generated":"т", "transferred":"т", "used":"т", "neutralized":"т"}],
+ "pollutants_air": [{"code":"0301", "name":"", "mass_norm":"т/год (ПДВ)",
+                     "mass_limit":"т/год (ВСВ)"}],
+ "pollutants_water": [{"code":"", "name":"", "mass_norm":"т/год (НДС)",
+                       "mass_limit":"т/год (ВСС)"}],
  "disposal_acts": [{"date":"ДД.ММ.ГГГГ", "counterparty":"", "inn":"",
                     "license":"", "carrier":"перевозчик", "fkko":"", "waste_name":"",
                     "mass_t":"", "volume_m3":"", "hazard_class":1-5,
@@ -273,6 +277,41 @@ def _merge_wastes(ctx: ReportContext, data: dict, quotes: dict, src: str,
                                              str(val), src, quote))
 
 
+def _merge_pollutants(ctx: ReportContext, data: dict, medium, src: str,
+                      rep: ExtractionReport):
+    """Вещества (выбросы/сбросы) из ООС/НДВ/НДС — только для своей среды.
+    Существующие непустые массы не перезаписываются (конфликт — на решение)."""
+    from ecodoc.core.models import Medium, Pollutant
+    key = "pollutants_air" if medium == Medium.AIR else "pollutants_water"
+    for it in data.get(key) or []:
+        code = str(it.get("code") or "").strip()
+        name = str(it.get("name") or "").strip()
+        if not code and not name:
+            continue
+        p = next((x for x in ctx.pollutants if x.medium == medium and
+                  ((code and x.code == code) or (not code and x.name == name))), None)
+        if p is None:
+            p = Pollutant(name=name, code=code, medium=medium)
+            ctx.pollutants.append(p)
+            rep.accepted.append(Accepted(
+                f"вещество ({'воздух' if medium == Medium.AIR else 'вода'})",
+                f"{code} {name}".strip(), src))
+        if name and not p.name:
+            p.name = name
+        for attr in ("mass_norm", "mass_limit"):
+            val = _dec(it.get(attr))
+            if val is None or val == 0:
+                continue
+            cur = getattr(p, attr)
+            if cur and cur != val:
+                rep.conflicts.append(Conflict(
+                    f"вещество {code or name}.{attr}", str(cur), str(val), src))
+            elif not cur:
+                setattr(p, attr, val)
+                rep.accepted.append(Accepted(
+                    f"вещество {code or name}.{attr} (т)", str(val), src))
+
+
 def _store_extras(ctx: ReportContext, data: dict, src: str,
                   rep: ExtractionReport):
     """Акты и протоколы целиком складываем в extra — пригодятся формам."""
@@ -291,8 +330,16 @@ def _store_extras(ctx: ReportContext, data: dict, src: str,
 
 
 def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
-                 cfg: AIConfig | None = None) -> ExtractionReport:
+                 cfg: AIConfig | None = None, scope: str = "all") -> ExtractionReport:
     """Прогнать документы через LLM и слить результат в контекст.
+
+    scope — какую категорию данных принимать из этих документов (раздельная
+    загрузка: счета-фактуры не загрязняют реквизиты и т.п.):
+      "all"   — всё (авто);
+      "org"   — только реквизиты организации и объекты НВОС (ЕГРЮЛ/карточка);
+      "acts"  — только справки-акты на отходы;
+      "air"   — только вещества-выбросы (ООС/НДВ);
+      "water" — только вещества-сбросы (НДС/водхоз).
 
     Запросы к модели идут ПАРАЛЛЕЛЬНО (сетевые вызовы — потоки дают большой
     выигрыш, особенно на облачном провайдере). Слияние результатов в общий
@@ -334,20 +381,29 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
     with ThreadPoolExecutor(max_workers=workers) as ex:
         results = list(ex.map(_ask, tasks))
 
-    # слияние — последовательно, в порядке документов
+    # слияние — последовательно, в порядке документов; scope определяет,
+    # какие категории данных принимаются из этой партии
+    from ecodoc.core.models import Medium
     for label, chunk, data, model, err in results:
         if err:
             rep.errors.append(f"{label}: {err}")
             continue
         rep.used_model = model
         quotes = _verify_quotes(data.get("quotes") or {}, chunk)
-        _merge_org(ctx, data, quotes, label, rep)
-        _merge_objects(ctx, data, label, rep)
-        _merge_acts(ctx, data, label, rep)
-        _merge_wastes(ctx, data, quotes, label, rep)
-        _store_extras(ctx, data, label, rep)
+        if scope in ("all", "org"):
+            _merge_org(ctx, data, quotes, label, rep)
+            _merge_objects(ctx, data, label, rep)
+        if scope in ("all", "acts"):
+            _merge_acts(ctx, data, label, rep)
+            _merge_wastes(ctx, data, quotes, label, rep)
+        if scope in ("all", "air"):
+            _merge_pollutants(ctx, data, Medium.AIR, label, rep)
+        if scope in ("all", "water"):
+            _merge_pollutants(ctx, data, Medium.WATER, label, rep)
+        if scope in ("all", "acts"):
+            _store_extras(ctx, data, label, rep)
     # свернуть собранные акты в движение (акты первичны)
-    if ctx.waste_acts:
+    if scope in ("all", "acts") and ctx.waste_acts:
         from ecodoc.core.waste_agg import (_merge_flows, _merge_receivers,
                                            aggregate_acts, period_breakdown)
         year = getattr(ctx.period, "year", None) or None

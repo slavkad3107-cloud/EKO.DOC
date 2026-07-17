@@ -65,26 +65,35 @@ def _set(ctx: ReportContext, obj, attr: str, value: str, doc: ExtractedDoc):
         ctx.provenance[attr] = doc.path.name
 
 
-def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc) -> None:
+def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
+                   scope: str = "all") -> None:
+    """scope — категория раздельной загрузки (см. analyzer.analyze_docs):
+    реквизиты/объекты берём только при 'all'/'org' — счета-фактуры из партии
+    «справки» не загрязняют карточку организации."""
     t = doc.text
     org: Organization = ctx.organization
 
-    inn = _first(RE_INN_UL, t) or _first(RE_INN_FL, t)
-    _set(ctx, org, "inn", inn, doc)
-    _set(ctx, org, "kpp", _first(RE_KPP, t), doc)
-    _set(ctx, org, "ogrn", _first(RE_OGRN, t), doc)
-    _set(ctx, org, "okpo", _first(RE_OKPO, t), doc)
-    _set(ctx, org, "oktmo", _first(RE_OKTMO, t), doc)
-    _set(ctx, org, "okved", _first(RE_OKVED, t), doc)
-    _set(ctx, org, "email", _first(RE_EMAIL, t), doc)
+    if scope in ("all", "org"):
+        inn = _first(RE_INN_UL, t) or _first(RE_INN_FL, t)
+        _set(ctx, org, "inn", inn, doc)
+        if not org.is_individual:              # у ИП КПП не бывает
+            _set(ctx, org, "kpp", _first(RE_KPP, t), doc)
+        _set(ctx, org, "ogrn", _first(RE_OGRN, t), doc)
+        _set(ctx, org, "okpo", _first(RE_OKPO, t), doc)
+        _set(ctx, org, "oktmo", _first(RE_OKTMO, t), doc)
+        _set(ctx, org, "okved", _first(RE_OKVED, t), doc)
+        _set(ctx, org, "email", _first(RE_EMAIL, t), doc)
 
-    # объект(ы) НВОС
-    for code in dict.fromkeys(RE_NVOS.findall(t)):
-        if not any(o.code == code for o in ctx.objects):
-            obj = NVOSObject(code=code, region_code=code.split("-")[0])
-            ctx.objects.append(obj)
-            ctx.provenance.setdefault("objects", []).append(
-                {"code": code, "src": doc.path.name})
+        # объект(ы) НВОС
+        for code in dict.fromkeys(RE_NVOS.findall(t)):
+            if not any(o.code == code for o in ctx.objects):
+                obj = NVOSObject(code=code, region_code=code.split("-")[0])
+                ctx.objects.append(obj)
+                ctx.provenance.setdefault("objects", []).append(
+                    {"code": code, "src": doc.path.name})
+
+    if scope not in ("all", "acts"):
+        return
 
     # коды ФККО -> ПОДСКАЗКИ (extra.fkko_seen), а НЕ позиции движения.
     # Раньше каждый встреченный код превращался в пустую строку движения —
