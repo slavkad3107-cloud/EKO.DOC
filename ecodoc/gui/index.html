@@ -568,6 +568,24 @@ function filterFiles(all){
 function pickedFiles(){
   return filterFiles([...$("files").files, ...$("folder").files]);
 }
+function skippedSummary(){
+  // дедуп + группировка по причине; .sig — отдельной строкой с пояснением
+  const uniq = [...new Set(SKIPPED)];
+  const sig = uniq.filter(s => /\.sig \(/i.test(s));
+  const rest = uniq.filter(s => !sig.includes(s));
+  const groups = {};
+  for (const s of rest){
+    const m = s.match(/^(.*) \(([^)]+)\)$/);
+    (groups[m ? m[2] : "прочее"] = groups[m ? m[2] : "прочее"] || []).push(m ? m[1] : s);
+  }
+  let out = "";
+  if (sig.length) out += `  • электронные подписи .sig: ${sig.length} шт. — ` +
+    "пропущены (это подписи, данных в них нет; сами документы приняты отдельно)\n";
+  for (const [reason, names] of Object.entries(groups))
+    out += `  • ${reason}: ${names.length} — ` + names.slice(0,5).join(" · ") +
+      (names.length > 5 ? " …" : "") + "\n";
+  return out;
+}
 function showPicked(){
   const ok = pickedFiles();
   let t = ok.length ? `К приёму: ${ok.length} файл(ов) — ` +
@@ -632,10 +650,13 @@ async function uploadBatch(batch){
   const files = [];
   for (const f of batch){
     try{ files.push({name:f.name, b64: await b64(f)}); }
-    catch(_){ /* файл не прочитался в браузере — пропускаем */ }
+    catch(_){ SKIPPED.push(f.name + " (не прочитался в браузере)"); }
   }
   if(!files.length) return [];
-  const j = await post("intake_upload", {org:ORG, site:SITE, files}, 120000);
+  // 10 минут: в партии могут быть архивы — сервер их распаковывает прямо
+  // при загрузке (7-Zip, до 300 МБ), 120 с не хватало → партия целиком
+  // помечалась «сетевым сбоем», хотя сервер продолжал работать
+  const j = await post("intake_upload", {org:ORG, site:SITE, files}, 600000);
   return j.stored || [];
 }
 async function runIntake(cfg){
@@ -647,7 +668,7 @@ async function runIntake(cfg){
   if ($("btn-stop")) $("btn-stop").style.display = "inline-block";
   spin(cfg.spin, 1);
   const stored = [];
-  let failedBatches = 0, failedFiles = 0;
+  let failedBatches = 0, failedFiles = 0, lastUpErr = "";
   try{
     const batches = makeBatches(fs);
     for (let i = 0; i < batches.length && !INTAKE_STOP; i++){
@@ -663,6 +684,7 @@ async function runIntake(cfg){
         }catch(e){
           if (attempt === 3){
             failedBatches++; failedFiles += batches[i].length;
+            lastUpErr = errText(e);        // показать НАСТОЯЩУЮ причину, не «сбой»
           } else {
             await new Promise(r=>setTimeout(r, 800*attempt));  // пауза перед повтором
           }
@@ -690,9 +712,10 @@ async function runIntake(cfg){
     if (INTAKE_STOP){ $(cfg.list).textContent =
       `Остановлено. Загружено ${stored.length}, проанализировано ${analyzed}.`; return; }
     if (failedFiles) rep = `⚠ Не загрузилось ${failedFiles} файл(ов) из ` +
-      `${failedBatches} партий (сетевые сбои) — повторите приём этих файлов.\n\n` + rep;
+      `${failedBatches} партий — повторите приём этих файлов (уже принятые ` +
+      `повторно не задвоятся).\n  Причина: ${lastUpErr || "неизвестна"}\n\n` + rep;
     if (analyzeFail) rep = `⚠ Анализ не завершён для ${analyzeFail} файл(ов).\n` + rep;
-    if (SKIPPED.length) rep += "\n── Пропущено при загрузке ──\n  " + SKIPPED.join("\n  ");
+    if (SKIPPED.length) rep += "\n── Пропущено при загрузке ──\n" + skippedSummary();
     renderReport(rep, cfg.out);
     $(cfg.list).textContent = `✓ Принято ${stored.length} файл(ов).`;
     loadCtx().catch(()=>{});
