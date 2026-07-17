@@ -1581,7 +1581,10 @@ async function refreshMeta(){
   $("ver").textContent = "v" + META.version;
   $("aibox").textContent = META.ai.provider
     ? `ИИ: ${META.ai.provider}/${META.ai.model}` : "ИИ: не настроен (Сервис → Найти ИИ)";
-  $("wsroot").textContent = "Рабочее пространство: " + META.workspace;
+  const shared = /onedrive/i.test(META.workspace);
+  $("wsroot").textContent = "База данных: " + META.workspace +
+    (shared ? "  ☁ общая (OneDrive) — доступна со всех ваших компьютеров; "+
+              "не работайте с одной площадкой на двух компах одновременно" : "");
   renderForms();
 }
 $("calyear").value = new Date().getFullYear();

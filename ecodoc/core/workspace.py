@@ -25,20 +25,132 @@ from ecodoc.core import serialize
 from ecodoc.core.models import Organization, ReportContext
 
 
+def _onedrive() -> Path | None:
+    """Папка OneDrive этой машины (env OneDrive → ~/OneDrive), если есть."""
+    for var in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        p = os.environ.get(var)
+        if p and Path(p).is_dir():
+            return Path(p)
+    p = Path.home() / "OneDrive"
+    return p if p.is_dir() else None
+
+
+_MERGE_LOCK = __import__("threading").Lock()
+_MOVED_MARKER = "ПЕРЕНЕСЕНО-в-OneDrive.txt"
+_ROOT_CACHE: Path | None = None    # решение принимается ОДИН раз на процесс
+
+
 def root() -> Path:
     """Корень рабочего пространства.
 
     Приоритет: $ECODOC_WORKSPACE → ./ecodoc_workspace (если уже создан,
-    обратная совместимость) → ~/ЭКО.DOC (стабильный путь: GUI и команда
-    ecodoc запускаются из любой папки, данные — всегда в одном месте).
+    обратная совместимость) → **OneDrive/ЭКО.DOC** (общая база для всех
+    компьютеров пользователя; локальная ~/ЭКО.DOC при первом запуске
+    вливается в неё) → ~/ЭКО.DOC (без OneDrive).
     """
+    global _ROOT_CACHE
     env = os.environ.get("ECODOC_WORKSPACE")
     if env:
         return Path(env)
-    local = Path("ecodoc_workspace")
-    if local.is_dir():
-        return local
-    return Path.home() / "ЭКО.DOC"
+    local_ws = Path("ecodoc_workspace")
+    if local_ws.is_dir():
+        return local_ws
+    if _ROOT_CACHE is not None:
+        return _ROOT_CACHE
+    with _MERGE_LOCK:
+        if _ROOT_CACHE is not None:
+            return _ROOT_CACHE
+        od = _onedrive()
+        legacy = Path.home() / "ЭКО.DOC"
+        if od is None:
+            _ROOT_CACHE = legacy
+            return _ROOT_CACHE
+        shared = od / "ЭКО.DOC"
+        # одноразовый перенос локальной базы этого компьютера в общую
+        if (legacy.is_dir() and legacy.resolve() != shared.resolve()
+                and not (legacy / _MOVED_MARKER).exists()):
+            try:
+                _merge_local_into_shared(legacy, shared)
+            except Exception as e:              # перенос не должен ронять запуск
+                print(f"⚠ Перенос базы в OneDrive не удался: {e} — "
+                      f"работаем с локальной {legacy}")
+                _ROOT_CACHE = legacy
+                return _ROOT_CACHE
+        _ROOT_CACHE = shared
+        return _ROOT_CACHE
+
+
+def _merge_local_into_shared(local: Path, shared: Path) -> list[str]:
+    """Влить локальную базу в общую (OneDrive) и переименовать локальную.
+
+    Правила: организации/площадки, которых нет в общей, — копируются целиком;
+    при конфликте площадки побеждает более свежий context.json (последняя
+    работа), проигравшая версия сохраняется рядом в папке-бэкапе.
+    После переноса локальная папка переименовывается в
+    «ЭКО.DOC.перенесено-в-OneDrive» (данные не удаляются)."""
+    import shutil
+    import socket
+    from datetime import datetime
+
+    log: list[str] = []
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+    shared.mkdir(parents=True, exist_ok=True)
+    for org_d in sorted(local.iterdir()):
+        if not org_d.is_dir() or not (org_d / "org.json").exists():
+            continue
+        dst_org = shared / org_d.name
+        dst_org.mkdir(exist_ok=True)
+        if not (dst_org / "org.json").exists():
+            shutil.copy2(org_d / "org.json", dst_org / "org.json")
+            log.append(f"организация {org_d.name}: перенесена")
+        for site_d in sorted(org_d.iterdir()):
+            if not site_d.is_dir() or not (site_d / "context.json").exists():
+                continue
+            dst_site = dst_org / site_d.name
+            if not dst_site.exists():
+                shutil.copytree(site_d, dst_site)
+                log.append(f"площадка {org_d.name}/{site_d.name}: перенесена")
+                continue
+            # конфликт: та же площадка есть в общей базе — свежая побеждает
+            lm = (site_d / "context.json").stat().st_mtime
+            try:
+                sm = (dst_site / "context.json").stat().st_mtime
+            except OSError:
+                sm = 0.0
+            if lm > sm + 1:                      # локальная свежее (запас 1 с)
+                backup = dst_org / f"{site_d.name}.бэкап-{stamp}"
+                shutil.move(str(dst_site), str(backup))
+                shutil.copytree(site_d, dst_site)
+                log.append(f"площадка {org_d.name}/{site_d.name}: локальная свежее — "
+                           f"перенесена, прежняя в {backup.name}")
+            else:
+                log.append(f"площадка {org_d.name}/{site_d.name}: в общей базе "
+                           f"свежее — оставлена общая")
+    # локальную папку переименовываем (не удаляем) — повторный перенос не нужен.
+    # Если папка занята другим процессом (старый сервер, OneDrive-синк) —
+    # оставляем её с файлом-маркером: данные уже в общей базе, работа
+    # продолжается с ней, а перенос при следующих запусках не повторяется.
+    moved = local.with_name("ЭКО.DOC.перенесено-в-OneDrive")
+    if moved.exists():
+        moved = local.with_name(f"ЭКО.DOC.перенесено-в-OneDrive-{stamp}")
+    try:
+        shutil.move(str(local), str(moved))
+        log.append(f"локальная база переименована: {moved}")
+    except OSError as e:
+        (local / _MOVED_MARKER).write_text(
+            f"База перенесена в {shared} ({stamp}).\n"
+            f"Эта папка больше НЕ используется программой — её можно удалить.\n"
+            f"(переименовать не удалось: {e})", encoding="utf-8")
+        log.append(f"локальная папка занята — оставлена с маркером {_MOVED_MARKER}")
+    try:
+        host = socket.gethostname()
+        (shared / f"перенос-{host}-{stamp}.txt").write_text(
+            "\n".join(log), encoding="utf-8")
+    except OSError:
+        pass
+    print("База ЭКО.DOC теперь в OneDrive (" + str(shared) + "):\n  " +
+          "\n  ".join(log))
+    return log
 
 
 def slug(name: str) -> str:
