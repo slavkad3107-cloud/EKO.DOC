@@ -262,6 +262,7 @@ _OLLAMA_MODEL_CACHE: dict = {}
 # специфичны для одного запроса).
 _COOLDOWN: dict = {}
 _COOLDOWN_SEC = 300
+_LOCAL_PROVIDERS = {"ollama", "lmstudio"}
 
 
 def _cooling(provider: str) -> bool:
@@ -270,8 +271,16 @@ def _cooling(provider: str) -> bool:
 
 def _mark_dead(provider: str, err: Exception) -> None:
     text = str(err).lower()
-    if any(w in text for w in ("timeout", "timed out", "недоступ", "connection",
-                               "unreachable", "refused", "getaddrinfo")):
+    conn = any(w in text for w in ("недоступ", "connection", "unreachable",
+                                   "refused", "getaddrinfo"))
+    slow = "timeout" in text or "timed out" in text
+    if provider in _LOCAL_PROVIDERS:
+        # локальный сервер: таймаут = модель долго жуёт большой документ,
+        # а не «сервер умер» — не пропускаем из-за этого остальные файлы;
+        # остывание (короткое) только при явном отказе соединения
+        if conn and not slow:
+            _COOLDOWN[provider] = time.time() + 60
+    elif conn or slow:
         _COOLDOWN[provider] = time.time() + _COOLDOWN_SEC
 
 
@@ -300,7 +309,8 @@ def chat_with_fallback(cfg: AIConfig, system: str, user: str) -> tuple[str, str]
         prov = att["provider"]
         model = att.get("model", "")
         if _cooling(prov):
-            last_err = AIError(f"{prov}: недоступен (повтор через ~5 мин)")
+            last_err = AIError(f"{prov}: пропущен после недавнего сбоя "
+                               "(файл остаётся в приёме — повторите анализ позже)")
             continue
         if not model and prov in _need_model:
             # у ollama автоматически берём первую установленную модель

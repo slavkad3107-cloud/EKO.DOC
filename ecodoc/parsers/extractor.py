@@ -155,12 +155,21 @@ def _fkko_names() -> dict:
 
 def summary(ctx: ReportContext) -> str:
     """Краткий отчёт о том, что распозналось, — для проверки человеком."""
+    from ecodoc.render.xmlutil import _is_nvos_code
     o = ctx.organization
+    objs, bad = [], 0
+    for x in ctx.objects:
+        code = x.code or ""
+        ok = _is_nvos_code(code) or re.fullmatch(r"\d{2}:\d{2}:\d{6,7}:\d+", code)
+        objs.append(code if ok else f"{code} ⚠")
+        bad += 0 if ok else 1
     lines = [
         "── Распознано из приложенных документов ──",
         f"ИНН: {o.inn or '—'}   КПП: {o.kpp or '—'}   ОГРН: {o.ogrn or '—'}",
         f"ОКТМО: {o.oktmo or '—'}   ОКПО: {o.okpo or '—'}   ОКВЭД: {o.okved or '—'}",
-        f"Объекты НВОС: {', '.join(x.code for x in ctx.objects) or '—'}",
+        f"Объекты НВОС: {', '.join(objs) or '—'}"
+        + (" — ⚠ некорректный код, удалите кнопкой в «Данные → Объекты НВОС»"
+           if bad else ""),
         f"Движение отходов: {len(ctx.wastes)} позиций (из справок-актов); "
         f"встречено кодов ФККО в документах: "
         f"{len((ctx.extra or {}).get('fkko_seen', []))} (как подсказки)",

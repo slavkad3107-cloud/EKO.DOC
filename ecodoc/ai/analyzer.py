@@ -74,6 +74,9 @@ class ExtractionReport:
     conflicts: list[Conflict] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     used_model: str = ""
+    # файлы, которые ИИ НЕ проанализировал (провайдер упал/не настроен) —
+    # intake не удаляет их исходники, чтобы анализ можно было повторить
+    failed_files: set = field(default_factory=set)
 
     def render(self) -> str:
         lines = ["── ИИ-анализ: что принято и откуда взято ──"]
@@ -84,9 +87,20 @@ class ExtractionReport:
             lines.append(f"  ✓ {a.field} = {a.value}   [{a.src}]{q}")
         if not self.accepted:
             lines.append("  (новых значений не принято)")
+        # одинаковый конфликт из многих файлов (реквизиты контрагента в каждом
+        # договоре/ДС) сворачиваем в одну строку — не спамим отчёт
+        cgroups: dict[tuple, list[str]] = {}
         for c in self.conflicts:
-            lines.append(f"  ⚠ КОНФЛИКТ {c.field}: в контексте «{c.current}», "
-                         f"в документе {c.src} — «{c.proposed}» (не применено)")
+            cgroups.setdefault((c.field, c.current, c.proposed), []).append(c.src)
+        for (fld, cur, prop), srcs in cgroups.items():
+            srcs = list(dict.fromkeys(srcs))
+            if len(srcs) == 1:
+                where = f"в документе {srcs[0]}"
+            else:
+                sample = ", ".join(srcs[:2]) + (", …" if len(srcs) > 2 else "")
+                where = f"в {len(srcs)} документах ({sample})"
+            lines.append(f"  ⚠ КОНФЛИКТ {fld}: в контексте «{cur}», "
+                         f"{where} — «{prop}» (не применено)")
         # одинаковые ошибки (напр. «все провайдеры недоступны» на каждый файл)
         # сворачиваем в одну строку со счётчиком — не спамим отчёт
         groups: dict[str, list[str]] = {}
@@ -352,6 +366,7 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
     rep = ExtractionReport()
     if not cfg.provider:
         rep.errors.append("ИИ не настроен: запустите `python -m ecodoc ai setup`")
+        rep.failed_files.update(d.path.name for d in docs)
         return rep
 
     # список задач (документ, кусок текста, метка)
@@ -370,9 +385,9 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
         try:
             answer, model = chat_with_fallback(
                 cfg, SYSTEM, f"Документ «{docname}»:\n\n{chunk}")
-            return (label, chunk, _parse_json(answer), model, None)
+            return (label, docname, chunk, _parse_json(answer), model, None)
         except (AIError, ValueError, json.JSONDecodeError) as e:
-            return (label, chunk, None, "", str(e))
+            return (label, docname, chunk, None, "", str(e))
 
     # локальный провайдер (ollama) — без параллелизма (перегрузит одну модель);
     # облачный — до 6 одновременных запросов
@@ -384,9 +399,10 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
     # слияние — последовательно, в порядке документов; scope определяет,
     # какие категории данных принимаются из этой партии
     from ecodoc.core.models import Medium
-    for label, chunk, data, model, err in results:
+    for label, docname, chunk, data, model, err in results:
         if err:
             rep.errors.append(f"{label}: {err}")
+            rep.failed_files.add(docname)
             continue
         rep.used_model = model
         quotes = _verify_quotes(data.get("quotes") or {}, chunk)

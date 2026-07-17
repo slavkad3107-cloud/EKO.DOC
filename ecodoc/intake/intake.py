@@ -393,9 +393,11 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     lines.append(extractor.summary(ctx))
 
     # 3. ИИ-анализ (семантика: акты, массы, протоколы) — по флагу
+    ai_failed: set = set()
     if use_ai and docs:
         from ecodoc.ai.analyzer import analyze_docs
         rep = analyze_docs(docs, ctx, scope=scope)
+        ai_failed = rep.failed_files
         lines.append("")
         lines.append(rep.render())
 
@@ -429,12 +431,20 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
         # чанками по 40, и чистка всего каталога стёрла бы ещё не
         # проанализированные файлы следующих чанков.
         if not keep_sources:
-            analyzed = [p.name for p in stored]
+            # файлы, которые ИИ не проанализировал (провайдер упал), НЕ удаляем —
+            # они остаются в приёме, анализ можно повторить когда ИИ поднимется
+            analyzed = [p.name for p in stored if p.name not in ai_failed]
             n = _purge_sources(workspace.site_dir(org, site) / "attachments",
                                analyzed)
             if n:
                 lines.append(f"Исходные файлы не сохранены (обработано и удалено: {n}) — "
                              "данные извлечены в базу context.json.")
+            if ai_failed:
+                kept = sorted(ai_failed)
+                sample = ", ".join(kept[:3]) + (" …" if len(kept) > 3 else "")
+                lines.append(f"⚠ Оставлены в приёме {len(kept)} файл(ов), которые ИИ "
+                             f"не проанализировал ({sample}) — когда ИИ станет доступен, "
+                             "нажмите «Анализ» ещё раз.")
     return "\n".join(lines)
 
 

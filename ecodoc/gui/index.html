@@ -723,7 +723,7 @@ function renderDataForm(){
   // период: только отчётный год (формы годовые); разбивка мес/квартал/год —
   // внутри разделов Отходы/Воздух/Вода
   h += '<div class="dsec"><h4>Отчётный год</h4><div class="fgrid">'+
-    `<div class="fld"><label>Год (обязателен для всех форм)</label>${tinput(per.year,'period.year','напр. 2025',true)}</div>`+
+    `<div class="fld"><label>Год (обязателен для всех форм)</label>${tinput(per.year||'','period.year','напр. 2025',true)}</div>`+
     `</div></div>`;
   // объекты НВОС
   h += tableSection("Объекты НВОС", "objects", CTX.objects||[],
@@ -869,10 +869,17 @@ function _breakTable(rows, unit){
     rows.map(r=>`<tr><td>${r.label}</td>${cells(r)}</tr>`).join("")+
     '</tbody></table></div>';
 }
+// пустая разбивка: блок всё равно показываем с подсказкой, откуда возьмутся данные
+function _breakStub(kind, hint){
+  return `<details class="dsec"><summary style="cursor:pointer;color:var(--acc)">`+
+    `Разбивка по периодам (${kind})</summary><div class="hint">${hint}</div></details>`;
+}
+const _QHINT = 'Разбивка появится, когда в таблице «Справки-акты» будут строки '+
+  'с датой и массой — по датам актов массы разложатся по месяцам/кварталам/годам.';
 // отходы: фактическая разбивка из ДАТ актов
 function qbreakHtml(){
   const acts = CTX.waste_acts||[];
-  if (!acts.length) return "";
+  if (!acts.length) return _breakStub("из дат актов", _QHINT);
   const by = {}; let noDate = 0;
   for (const a of acts){
     const s = String(a.date||"");
@@ -890,7 +897,7 @@ function qbreakHtml(){
   }
   const rows = Object.keys(by).sort().map(y=>by[y]);
   if (noDate) rows.push({label:"без даты", months:{}, quarters:{}, total:noDate});
-  if (!rows.length) return "";
+  if (!rows.length) return _breakStub("из дат актов", _QHINT);
   return `<details class="dsec"${QOPEN.w?" open":""} ontoggle="QOPEN.w=this.open">`+
     `<summary style="cursor:pointer;color:var(--acc)">Разбивка по периодам `+
     `(из дат актов)</summary><div class="row">Вид: ${_qselect()}</div>`+
@@ -908,7 +915,9 @@ function pbreakHtml(list, unit, openKey){
     for (let q=1;q<=4;q++) quarters[q]=tot/4;
     return {label: p.name||p.code, months, quarters, total: tot};
   }).filter(r=>r.total>0);
-  if (!rows.length) return "";
+  if (!rows.length) return _breakStub("равными долями",
+    "Разбивка появится, когда в таблице веществ будут годовые массы (т/год) — "+
+    "они разложатся равными долями по месяцам/кварталам.");
   return `<details class="dsec"${QOPEN[openKey]?" open":""} ontoggle="QOPEN.${openKey}=this.open">`+
     `<summary style="cursor:pointer;color:var(--acc)">Разбивка по периодам `+
     `(равными долями)</summary><div class="row">Вид: ${_qselect()}</div>`+

@@ -75,6 +75,10 @@ def from_json(path: str | Path) -> ReportContext:
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     ctx = ReportContext()
     ctx.organization = _build(Organization, data.get("organization", {}))
+    # у ИП КПП не бывает — вычищаем мусор, попавший из счетов контрагентов
+    # в старых версиях (иначе он навсегда остаётся в сохранённой базе)
+    if ctx.organization.is_individual and ctx.organization.kpp:
+        ctx.organization.kpp = ""
     ctx.period = _build(ReportPeriod, data.get("period", {}))
     # год/квартал из формы приходят строками — приводим к int
     ctx.period.year = _to_int(ctx.period.year)
