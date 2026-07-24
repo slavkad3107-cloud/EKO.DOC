@@ -303,6 +303,25 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 
   <div class="tab" id="tab-svc">
     <div class="card">
+      <h2>Хранение</h2>
+      <div class="hint" id="storage-info"></div>
+      <div class="row" style="margin-top:6px">
+        <label>Папка готовых документов:
+          <input type="text" id="results-dir" style="width:340px"></label>
+        <button class="b sec" onclick="saveResultsDir()">Сохранить</button>
+        <button class="b sec" onclick="post('open',{path:META.results}).catch(()=>{})">Открыть</button>
+        <span class="hint" id="storage-msg"></span>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <button class="b sec" onclick="doCleanup()">🧹 Освободить место в базе
+          (удалить готовые документы и старые исходники)</button>
+        <span class="spin" id="sp-clean">чистка…</span>
+      </div>
+      <div class="hint">База хранит только данные (context.json, отчёты приёма).
+        Исходники удаляются после анализа; готовые формы сохраняются в папку
+        результатов на этом компьютере и в базу не попадают.</div>
+    </div>
+    <div class="card">
       <h2>Калькулятор класса опасности отхода (Приказ МПР № 536)</h2>
       <div class="hint">Компонентный метод: K = Σ(Ci/Wi). Ci — концентрация компонента (мг/кг,
         сумма ≈ 1 000 000 = 100%), Wi — коэффициент степени опасности из аттестованного источника.</div>
@@ -1575,6 +1594,29 @@ function fillWaste(nameInp){
   set('[data-path$=".fkko_code"]', w.fkko); set('[data-path$=".hazard_class"]', w.class);
 }
 
+// ── хранение (Сервис) ──
+async function saveResultsDir(){
+  const p = $("results-dir").value.trim();
+  if (!p){ $("storage-msg").textContent = "укажите путь"; return; }
+  try{
+    const j = await post("settings", {results_dir: p});
+    if (j.error){ $("storage-msg").textContent = j.error; return; }
+    META.results = j.results;
+    $("storage-msg").textContent = "✓ сохранено: " + j.results;
+  }catch(e){ $("storage-msg").textContent = "Ошибка: " + errText(e); }
+}
+async function doCleanup(){
+  if (!confirm("Удалить из базы сгенерированные документы и исходники старше "+
+               "7 дней? Данные (context.json) не трогаются; формы можно "+
+               "пересоздать в любой момент.")) return;
+  spin("sp-clean",1);
+  try{
+    const j = await post("cleanup", {days: 7}, 0);
+    $("storage-msg").textContent = `✓ освобождено ${j.freed_mb} МБ (файлов: ${j.files})`;
+  }catch(e){ $("storage-msg").textContent = "Ошибка: " + errText(e); }
+  spin("sp-clean",0);
+}
+
 // ── старт ──
 async function refreshMeta(){
   META = await get("meta", {});
@@ -1585,6 +1627,12 @@ async function refreshMeta(){
   $("wsroot").textContent = "База данных: " + META.workspace +
     (shared ? "  ☁ общая (OneDrive) — доступна со всех ваших компьютеров; "+
               "не работайте с одной площадкой на двух компах одновременно" : "");
+  if ($("storage-info")){
+    $("storage-info").textContent = "База данных: " + META.workspace +
+      (shared ? " (общая, OneDrive)" : "") +
+      " · Готовые документы: " + META.results + " (локально)";
+    $("results-dir").value = META.results;
+  }
   renderForms();
 }
 $("calyear").value = new Date().getFullYear();

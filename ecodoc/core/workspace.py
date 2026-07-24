@@ -107,8 +107,9 @@ def _merge_local_into_shared(local: Path, shared: Path) -> list[str]:
             if not site_d.is_dir() or not (site_d / "context.json").exists():
                 continue
             dst_site = dst_org / site_d.name
+            _no_out = shutil.ignore_patterns("out")   # готовые документы — не данные
             if not dst_site.exists():
-                shutil.copytree(site_d, dst_site)
+                shutil.copytree(site_d, dst_site, ignore=_no_out)
                 log.append(f"площадка {org_d.name}/{site_d.name}: перенесена")
                 continue
             # конфликт: та же площадка есть в общей базе — свежая побеждает
@@ -120,7 +121,7 @@ def _merge_local_into_shared(local: Path, shared: Path) -> list[str]:
             if lm > sm + 1:                      # локальная свежее (запас 1 с)
                 backup = dst_org / f"{site_d.name}.бэкап-{stamp}"
                 shutil.move(str(dst_site), str(backup))
-                shutil.copytree(site_d, dst_site)
+                shutil.copytree(site_d, dst_site, ignore=_no_out)
                 log.append(f"площадка {org_d.name}/{site_d.name}: локальная свежее — "
                            f"перенесена, прежняя в {backup.name}")
             else:
@@ -151,6 +152,111 @@ def _merge_local_into_shared(local: Path, shared: Path) -> list[str]:
     print("База ЭКО.DOC теперь в OneDrive (" + str(shared) + "):\n  " +
           "\n  ".join(log))
     return log
+
+
+_UI_PATH = Path.home() / ".ecodoc" / "ui.json"   # локальные настройки машины
+
+
+def _ui_config() -> dict:
+    try:
+        return json.loads(_UI_PATH.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def set_results_root(path: str) -> Path:
+    _UI_PATH.parent.mkdir(parents=True, exist_ok=True)
+    cfg = _ui_config()
+    cfg["results_dir"] = str(path)
+    _UI_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+    return Path(path)
+
+
+def results_root() -> Path:
+    """Куда сохранять ГОТОВЫЕ документы (не в базу!).
+
+    База (OneDrive) хранит только данные: context.json, org.json, отчёты
+    приёма. Сгенерированные формы — расходный материал, их всегда можно
+    пересоздать; кладём в локальную папку результатов (по умолчанию
+    Загрузки/ЭКО.DOC, меняется в Сервисе или env ECODOC_RESULTS)."""
+    env = os.environ.get("ECODOC_RESULTS")
+    if env:
+        return Path(env)
+    cfg = _ui_config().get("results_dir")
+    if cfg:
+        return Path(cfg)
+    return Path.home() / "Downloads" / "ЭКО.DOC"
+
+
+def results_dir(org: str, site: str) -> Path:
+    d = results_root() / slug(org) / slug(site)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def cleanup_base(days: int = 7) -> dict:
+    """Освободить место в базе: удалить готовые документы (out) и исходники
+    в attachments старше `days` дней (свежие могут ждать анализа).
+    Отчёты приёма (приём_*) и context/org.json не трогаются; записи реестра
+    удалённых файлов чистятся, чтобы повторная загрузка работала."""
+    import shutil
+    import time as _t
+
+    freed = files = 0
+    cutoff = _t.time() - days * 86400
+    rt = root()
+    if not rt.exists():
+        return {"freed": 0, "files": 0}
+
+    def _size(p: Path) -> int:
+        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+
+    for org_d in rt.iterdir():
+        if not org_d.is_dir() or not (org_d / "org.json").exists():
+            continue
+        for site_d in org_d.iterdir():
+            if not site_d.is_dir():
+                continue
+            out = site_d / "out"
+            if out.is_dir():
+                freed += _size(out)
+                files += sum(1 for f in out.rglob("*") if f.is_file())
+                shutil.rmtree(out, ignore_errors=True)
+            att = site_d / "attachments"
+            if not att.is_dir():
+                continue
+            removed = set()
+            for f in att.rglob("*"):
+                if (not f.is_file() or f.name.startswith("приём_")
+                        or f.name == "intake.json"):
+                    continue
+                try:
+                    if f.stat().st_mtime < cutoff:
+                        freed += f.stat().st_size
+                        rel = str(f.relative_to(att))
+                        f.unlink()
+                        files += 1
+                        removed.add(rel)
+                        removed.add(f.name)
+                except OSError:
+                    pass
+            # реестр: убрать записи удалённых файлов (иначе sha1-дедуп
+            # молча пропустит повторную загрузку того же документа)
+            reg_p = att / "intake.json"
+            if removed and reg_p.exists():
+                try:
+                    reg = json.loads(reg_p.read_text(encoding="utf-8-sig"))
+                    keep = [r for r in reg if r.get("file") not in removed]
+                    reg_p.write_text(json.dumps(keep, ensure_ascii=False,
+                                                indent=1), encoding="utf-8")
+                except (OSError, json.JSONDecodeError):
+                    pass
+    trash = rt / ".корзина"
+    if trash.is_dir():
+        freed += _size(trash)
+        shutil.rmtree(trash, ignore_errors=True)
+    return {"freed": freed, "files": files}
 
 
 def slug(name: str) -> str:
@@ -307,5 +413,6 @@ def out_dir(args, default: str = "out") -> Path:
     if getattr(args, "outdir", None) and args.outdir != default:
         return Path(args.outdir)
     if getattr(args, "org", None) and getattr(args, "site", None):
-        return site_dir(args.org, args.site) / "out"
+        # готовые документы — в папку результатов, НЕ в базу (OneDrive)
+        return results_dir(args.org, args.site)
     return Path(getattr(args, "outdir", default) or default)

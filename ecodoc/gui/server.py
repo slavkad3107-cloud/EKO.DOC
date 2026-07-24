@@ -47,6 +47,7 @@ def api_meta(params, body):
     return {"version": __version__,
             "forms": _forms(),
             "workspace": str(workspace.root().resolve()),
+            "results": str(workspace.results_root()),
             "ai": {"provider": cfg.provider, "model": cfg.model,
                    "fallbacks": cfg.fallbacks}}
 
@@ -258,7 +259,7 @@ def api_generate(params, body):
     if errors and not body.get("force"):
         out["error"] = "Есть ошибки — исправьте данные или включите «принудительно»."
         return out
-    out_dir = workspace.site_dir(body["org"], body["site"]) / "out"
+    out_dir = workspace.results_dir(body["org"], body["site"])
     stem = f"{body['form']}_{ctx.period.year or 'XXXX'}"
     if getattr(report, "has_xml", True):
         out["xml"] = str(report.render_xml(out_dir / f"{stem}.xml"))
@@ -286,7 +287,7 @@ def api_submit(params, body):
     report = cls(ctx)
     if not getattr(report, "implemented", True):
         return {"error": f"Форма «{report.title}» — каркас, подача недоступна."}
-    out_dir = workspace.site_dir(body["org"], body["site"]) / "out"
+    out_dir = workspace.results_dir(body["org"], body["site"])
     res = build_package(report, out_dir)
     return {
         "dir": str(res["dir"]),
@@ -298,6 +299,26 @@ def api_submit(params, body):
     }
 
 
+def api_settings(params, body):
+    """Настройки хранения: папка результатов (локальная для этой машины)."""
+    if body.get("results_dir"):
+        p = Path(body["results_dir"]).expanduser()
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            return {"error": f"Не удалось создать папку: {e}"}
+        workspace.set_results_root(str(p))
+    return {"results": str(workspace.results_root()),
+            "workspace": str(workspace.root().resolve())}
+
+
+def api_cleanup(params, body):
+    """Освободить место в базе: удалить out и старые исходники attachments."""
+    res = workspace.cleanup_base(days=int(body.get("days", 7)))
+    mb = res["freed"] / (1024 * 1024)
+    return {"freed_mb": round(mb, 1), "files": res["files"]}
+
+
 def api_waste_summary(params, body):
     """Сводная таблица по отходам из справок-актов (форма «Справки-2025»)."""
     from ecodoc.core.waste_summary import build_xlsx
@@ -305,7 +326,7 @@ def api_waste_summary(params, body):
     if not ctx.waste_acts:
         return {"error": "Справок-актов нет — заполните таблицу «Справки-акты» "
                          "в Данных или загрузите справки в Приёме."}
-    out_dir = workspace.site_dir(body["org"], body["site"]) / "out"
+    out_dir = workspace.results_dir(body["org"], body["site"])
     year = ctx.period.year or ""
     path = build_xlsx(ctx, out_dir / f"сводная_отходы_{year or 'все_годы'}.xlsx")
     return {"path": str(path), "acts": len(ctx.waste_acts)}
@@ -359,7 +380,7 @@ def api_reference(params, body):
 def api_devdoc(params, body):
     """Сгенерировать документ разработки (.docx): НМУ или программа ПЭК."""
     ctx = workspace.load_context(body["org"], body["site"])
-    out_dir = workspace.site_dir(body["org"], body["site"]) / "out"
+    out_dir = workspace.results_dir(body["org"], body["site"])
     kind = body.get("kind")
     if kind == "nmu":
         from ecodoc.development import nmu
@@ -483,8 +504,7 @@ def api_upraza_export(params, body):
     if not sources:
         return {"error": "Нет источников."}
     org, site = body.get("org"), body.get("site")
-    out_dir = (workspace.site_dir(org, site) / "out") if org and site \
-        else Path("out")
+    out_dir = workspace.results_dir(org, site) if org and site else Path("out")
     xl = ex.to_excel(sources, out_dir / "upraza_sources.xlsx")
     js = ex.to_json(sources, out_dir / "upraza_sources.json")
     return {"excel": str(xl), "json": str(js)}
@@ -537,7 +557,8 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "counterparty": api_counterparty, "oktmo": api_oktmo,
                "hazard_class": api_hazard_class,
                "devdoc": api_devdoc, "submit": api_submit, "open": api_open,
-               "waste_summary": api_waste_summary, "missing": api_missing}
+               "waste_summary": api_waste_summary, "missing": api_missing,
+               "settings": api_settings, "cleanup": api_cleanup}
 
 
 class Handler(BaseHTTPRequestHandler):

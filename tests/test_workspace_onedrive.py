@@ -48,6 +48,51 @@ def test_merge_conflict_newer_local_wins_with_backup(tmp_path):
     assert backups                                   # прежняя не потеряна
 
 
+def test_results_root_env_and_default(monkeypatch, tmp_path):
+    monkeypatch.setenv("ECODOC_RESULTS", str(tmp_path / "res"))
+    assert workspace.results_root() == tmp_path / "res"
+    monkeypatch.delenv("ECODOC_RESULTS")
+    monkeypatch.setattr(workspace, "_UI_PATH", tmp_path / "ui.json")
+    assert workspace.results_root().name == "ЭКО.DOC"      # Downloads/ЭКО.DOC
+    (tmp_path / "ui.json").write_text(
+        json.dumps({"results_dir": str(tmp_path / "мои")}), encoding="utf-8")
+    assert workspace.results_root() == tmp_path / "мои"
+
+
+def test_merge_skips_out_dir(tmp_path):
+    local, shared = tmp_path / "ЭКО.DOC", tmp_path / "od" / "ЭКО.DOC"
+    d = _make_site(local, "ОРГ", "Площадка", 2025)
+    (d / "out").mkdir()
+    (d / "out" / "форма.xlsx").write_bytes(b"x" * 100)
+    workspace._merge_local_into_shared(local, shared)
+    assert (shared / "ОРГ" / "Площадка" / "context.json").exists()
+    assert not (shared / "ОРГ" / "Площадка" / "out").exists()
+
+
+def test_cleanup_base(monkeypatch, tmp_path):
+    root = tmp_path / "base"
+    monkeypatch.setenv("ECODOC_WORKSPACE", str(root))
+    d = _make_site(root, "ОРГ", "Площадка", 2025)
+    (d / "out").mkdir()
+    (d / "out" / "форма.xlsx").write_bytes(b"x" * 1000)
+    att = d / "attachments"
+    (att / "старый.pdf").write_bytes(b"y" * 500)
+    old = time.time() - 30 * 86400
+    os.utime(att / "старый.pdf", (old, old))
+    (att / "свежий.pdf").write_bytes(b"z" * 500)          # < 7 дней — остаётся
+    (att / "приём_2026.txt").write_text("отчёт", encoding="utf-8")
+    (att / "intake.json").write_text(json.dumps(
+        [{"file": "старый.pdf"}, {"file": "свежий.pdf"}]), encoding="utf-8")
+    res = workspace.cleanup_base(days=7)
+    assert res["files"] == 2                               # форма + старый.pdf
+    assert not (d / "out").exists()
+    assert not (att / "старый.pdf").exists()
+    assert (att / "свежий.pdf").exists()
+    assert (att / "приём_2026.txt").exists()
+    reg = json.loads((att / "intake.json").read_text(encoding="utf-8"))
+    assert reg == [{"file": "свежий.pdf"}]                 # реестр подчищен
+
+
 def test_merge_conflict_newer_shared_kept(tmp_path):
     local, shared = tmp_path / "ЭКО.DOC", tmp_path / "od" / "ЭКО.DOC"
     _make_site(local, "ОРГ", "Площадка", 2024)      # локальная — старее
