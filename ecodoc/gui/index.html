@@ -350,16 +350,24 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
     </div>
     <div class="card">
       <h2>Выбор ИИ (провайдер и модель)</h2>
-      <div class="hint">Локальный (Ollama) — приватно и бесплатно, но медленно.
-        Облачный (DeepSeek и др.) — быстро и умнее, но документы уходят провайдеру
-        и есть плата. Запасной провайдер подхватит, если основной недоступен.</div>
+      <div class="hint">По умолчанию — <b>Cohere</b>: ключ бесплатный, без карты
+        (получить: <a class="link" href="https://dashboard.cohere.com/api-keys"
+        target="_blank">dashboard.cohere.com/api-keys</a> → вставьте в поле
+        «API-ключ» ниже). Лимит бесплатного ключа — 20 запросов в минуту,
+        программа сама выдерживает паузу. Локальный (Ollama) — приватно и без
+        лимитов, но медленно; остаётся запасным. Запасной провайдер подхватит,
+        если основной недоступен.</div>
       <div class="fgrid" style="margin-top:8px">
         <div class="fld"><label>Провайдер</label>
           <select id="ai-prov" onchange="onProvChange()"></select></div>
         <div class="fld"><label>Модель</label>
           <select id="ai-model"></select></div>
-        <div class="fld" id="ai-key-box" style="display:none"><label>API-ключ (сохранится локально)</label>
-          <input type="password" id="ai-key" placeholder="ключ провайдера"></div>
+        <div class="fld" id="ai-key-box" style="display:none"><label>API-ключ</label>
+          <input type="password" id="ai-key" placeholder="ключ провайдера">
+          <label class="hint" style="display:block;margin-top:4px">
+            <input type="checkbox" id="ai-key-shared" checked>
+            сохранить в общую базу — ключ заработает на всех моих компьютерах
+            (снять галочку — только на этом)</label></div>
         <div class="fld"><label>Запасной провайдер</label>
           <select id="ai-fb"></select></div>
       </div>
@@ -1513,7 +1521,8 @@ async function aiSave(){
   try{
     let model = $("ai-model").value; if(model==="__manual__") model="";
     const body = {provider:$("ai-prov").value, model, fallback:$("ai-fb").value};
-    const key = $("ai-key").value.trim(); if(key) body.key = key;
+    const key = $("ai-key").value.trim();
+    if(key){ body.key = key; body.shared = $("ai-key-shared").checked; }
     const j = await post("ai_save", body, 0);
     show("out-ai", "Сохранено:\n" + j.text); $("ai-key").value="";
     refreshMeta(); loadAiPanel();

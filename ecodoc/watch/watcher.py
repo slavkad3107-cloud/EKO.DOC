@@ -19,10 +19,10 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
-from ecodoc.ai.config import CONFIG_DIR
+from ecodoc.ai.config import config_dir
 
 SOURCES_PATH = Path(__file__).parent / "sources.json"
-SNAP_DIR = CONFIG_DIR / "watch"
+SNAP_DIR = config_dir() / "watch"
 
 _UA = {"User-Agent": "Mozilla/5.0 (compatible; EcoDoc form-watcher)"}
 

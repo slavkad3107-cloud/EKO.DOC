@@ -118,6 +118,7 @@ XAIProvider = _compat("xai", "https://api.x.ai/v1")
 TogetherProvider = _compat("together", "https://api.together.xyz/v1")
 VseGPTProvider = _compat("vsegpt", "https://api.vsegpt.ru/v1")
 ProxyAPIProvider = _compat("proxyapi", "https://api.proxyapi.ru/openai/v1")
+CerebrasProvider = _compat("cerebras", "https://api.cerebras.ai/v1")
 LMStudioProvider = _compat("lmstudio", "http://localhost:1234/v1")
 
 
@@ -219,6 +220,29 @@ class GigaChatProvider(Provider):
         return out["choices"][0]["message"]["content"]
 
 
+class CohereProvider(Provider):
+    """Cohere Chat API v2 — бесплатный trial-ключ (20 запросов/мин).
+
+    Ключ: dashboard.cohere.com/api-keys → COHERE_API_KEY (или ввод в
+    «Сервис → Выбор ИИ», хранится локально в ~/.ecodoc/keys.json).
+    """
+    name = "cohere"
+
+    def chat(self, system: str, user: str) -> str:
+        key = api_key(self.cfg)
+        if not key:
+            raise AIError("cohere: не задан COHERE_API_KEY "
+                          "(бесплатный ключ: dashboard.cohere.com/api-keys)")
+        out = _post("https://api.cohere.com/v2/chat", {
+            "model": self.model or "command-a-03-2025",
+            "messages": [{"role": "system", "content": system},
+                         {"role": "user", "content": user}],
+            "temperature": 0,
+        }, {"Authorization": f"Bearer {key}"})
+        msg = out.get("message", {})
+        return "".join(c.get("text", "") for c in msg.get("content", []))
+
+
 class YandexGPTProvider(Provider):
     name = "yandexgpt"
 
@@ -243,7 +267,7 @@ PROVIDERS: dict[str, type] = {p.name: p for p in (
     AnthropicProvider, OpenAICompatProvider, OpenRouterProvider,
     DeepSeekProvider, GeminiProvider, GroqProvider, MistralProvider,
     XAIProvider, TogetherProvider, VseGPTProvider, ProxyAPIProvider,
-    GigaChatProvider, YandexGPTProvider,
+    GigaChatProvider, YandexGPTProvider, CohereProvider, CerebrasProvider,
 )}
 
 
@@ -263,6 +287,7 @@ _OLLAMA_MODEL_CACHE: dict = {}
 _COOLDOWN: dict = {}
 _COOLDOWN_SEC = 300
 _LOCAL_PROVIDERS = {"ollama", "lmstudio"}
+_RATE_WAIT = 6      # пауза при HTTP 429 (лимит запросов в минуту) перед повтором
 
 
 def _cooling(provider: str) -> bool:
@@ -274,6 +299,11 @@ def _mark_dead(provider: str, err: Exception) -> None:
     conn = any(w in text for w in ("недоступ", "connection", "unreachable",
                                    "refused", "getaddrinfo"))
     slow = "timeout" in text or "timed out" in text
+    # неверный/заблокированный ключ (401/403) — это не временный сбой:
+    # выключаем провайдера надолго, иначе он тормозит КАЖДЫЙ документ
+    if "http 401" in text or "http 403" in text:
+        _COOLDOWN[provider] = time.time() + 3600
+        return
     if provider in _LOCAL_PROVIDERS:
         # локальный сервер: таймаут = модель долго жуёт большой документ,
         # а не «сервер умер» — не пропускаем из-за этого остальные файлы;
@@ -322,7 +352,16 @@ def chat_with_fallback(cfg: AIConfig, system: str, user: str) -> tuple[str, str]
                 continue
         try:
             c = AIConfig(**{**cfg.__dict__, "provider": prov, "model": model})
-            text = get_provider(c).chat(system, user)
+            try:
+                text = get_provider(c).chat(system, user)
+            except AIError as e:
+                # 429 = упёрлись в лимит запросов в минуту (бесплатные ключи:
+                # у Cohere 20/мин). Ждём и пробуем ЭТОТ же провайдер ещё раз —
+                # уходить на запасной из-за секундной паузы незачем.
+                if "429" not in str(e) and "rate limit" not in str(e).lower():
+                    raise
+                time.sleep(_RATE_WAIT)
+                text = get_provider(c).chat(system, user)
             return text, f"{prov}/{model}"
         except AIError as e:
             last_err = e

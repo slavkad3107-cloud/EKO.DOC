@@ -433,10 +433,19 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
     import os
     from concurrent.futures import ThreadPoolExecutor
 
-    cfg = cfg or load_config()
+    if cfg is None:
+        # «из коробки»: если ИИ ещё не настроен — настроить автоматически
+        # (бесплатное облако по ключу, иначе локальная Ollama)
+        from ecodoc.ai.detect import ensure_configured
+        try:
+            cfg = ensure_configured()
+        except Exception:
+            cfg = load_config()
     rep = ExtractionReport()
     if not cfg.provider:
-        rep.errors.append("ИИ не настроен: запустите `python -m ecodoc ai setup`")
+        rep.errors.append("ИИ не настроен: задайте бесплатный ключ Cohere "
+                          "(Сервис → Выбор ИИ) или установите Ollama; "
+                          "в командной строке — `python -m ecodoc ai setup`")
         rep.failed_files.update(d.path.name for d in docs)
         return rep
 
@@ -463,7 +472,9 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
     # локальный провайдер (ollama) — без параллелизма (перегрузит одну модель);
     # облачный — до 6 одновременных запросов
     local = cfg.provider in ("ollama", "lmstudio")
-    workers = 1 if local else 6
+    # у бесплатных ключей есть лимит запросов в минуту (Cohere — 20/мин):
+    # умеренный параллелизм + ретрай по 429 в chat_with_fallback
+    workers = 1 if local else (4 if cfg.provider == "cohere" else 6)
     with ThreadPoolExecutor(max_workers=workers) as ex:
         results = list(ex.map(_ask, tasks))
 

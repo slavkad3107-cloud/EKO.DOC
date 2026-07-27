@@ -9,11 +9,26 @@ import os
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-CONFIG_DIR = Path(os.environ.get("ECODOC_HOME", Path.home() / ".ecodoc"))
-CONFIG_PATH = CONFIG_DIR / "config.json"
+
+def config_dir() -> Path:
+    """Папка настроек этой машины (env ECODOC_HOME читается при каждом
+    обращении — иначе смена переменной после импорта не действует)."""
+    return Path(os.environ.get("ECODOC_HOME", "") or Path.home() / ".ecodoc")
+
+
+def config_path() -> Path:
+    return config_dir() / "config.json"
+
+
+def keys_path() -> Path:
+    return config_dir() / "keys.json"
+
+
 
 # переменные окружения с ключами по умолчанию для каждого провайдера
 DEFAULT_KEY_ENV = {
+    "cohere": "COHERE_API_KEY",       # бесплатный trial-ключ (20 запросов/мин)
+    "cerebras": "CEREBRAS_API_KEY",   # бесплатный тариф, очень быстрый
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
@@ -44,50 +59,71 @@ class AIConfig:
 
 
 def load_config() -> AIConfig:
-    if CONFIG_PATH.exists():
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig")).get("ai", {})
+    cp = config_path()
+    if cp.exists():
+        data = json.loads(cp.read_text(encoding="utf-8-sig")).get("ai", {})
         known = {f for f in AIConfig.__dataclass_fields__}
         return AIConfig(**{k: v for k, v in data.items() if k in known})
     return AIConfig()
 
 
 def save_config(cfg: AIConfig) -> Path:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    data = {}
-    if CONFIG_PATH.exists():
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config_dir().mkdir(parents=True, exist_ok=True)
+    cp, data = config_path(), {}
+    if cp.exists():
+        data = json.loads(cp.read_text(encoding="utf-8"))
     data["ai"] = asdict(cfg)
-    CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                           encoding="utf-8")
-    return CONFIG_PATH
+    cp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                  encoding="utf-8")
+    return cp
 
 
-KEYS_PATH = CONFIG_DIR / "keys.json"
-
-
-def _saved_keys() -> dict:
-    if KEYS_PATH.exists():
+def _read_keys(path: Path) -> dict:
+    if path.exists():
         try:
-            return json.loads(KEYS_PATH.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {}
     return {}
 
 
-def save_key(provider: str, key: str) -> None:
-    """Сохранить API-ключ провайдера локально (~/.ecodoc/keys.json).
+def shared_keys_path() -> Path | None:
+    """Файл ключей в ОБЩЕЙ базе (OneDrive) — ключ вводится один раз и
+    работает на всех компьютерах пользователя. None, если база недоступна."""
+    try:
+        from ecodoc.core import workspace
+        return workspace.root() / "ai_keys.json"
+    except Exception:
+        return None
 
-    Файл только на этой машине; храните его в безопасности. Пустой ключ —
-    удалить сохранённый.
+
+def _saved_keys() -> dict:
+    """Ключи: локальные (этой машины) поверх общих (из базы)."""
+    keys = {}
+    sp = shared_keys_path()
+    if sp is not None:
+        keys.update(_read_keys(sp))
+    keys.update(_read_keys(keys_path()))
+    return keys
+
+
+def save_key(provider: str, key: str, shared: bool = False) -> Path:
+    """Сохранить API-ключ провайдера. Пустой ключ — удалить сохранённый.
+
+    shared=False — только на этой машине (~/.ecodoc/keys.json);
+    shared=True  — в общую базу (OneDrive): ключ подхватится на всех
+    компьютерах пользователя. Ключи не попадают в git — база отдельно.
     """
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    keys = _saved_keys()
+    path = (shared_keys_path() if shared else None) or keys_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    keys = _read_keys(path)
     if key:
         keys[provider] = key
     else:
         keys.pop(provider, None)
-    KEYS_PATH.write_text(json.dumps(keys, ensure_ascii=False, indent=2),
-                         encoding="utf-8")
+    path.write_text(json.dumps(keys, ensure_ascii=False, indent=2),
+                    encoding="utf-8")
+    return path
 
 
 def has_key(provider: str) -> bool:

@@ -48,8 +48,8 @@ def _get_rows(token: str, timeout: int) -> list[dict]:
 
 
 def _cache_path():
-    from ecodoc.ai.config import CONFIG_DIR
-    return CONFIG_DIR / "egrul_cache.json"
+    from ecodoc.ai.config import config_dir
+    return config_dir() / "egrul_cache.json"
 
 
 def _cache_get(inn: str) -> dict | None:

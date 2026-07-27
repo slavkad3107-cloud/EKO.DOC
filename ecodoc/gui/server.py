@@ -419,8 +419,10 @@ def api_ai_setup(params, body):
 def api_ai_config(params, body):
     """Всё для панели выбора ИИ: провайдеры, модели, наличие ключей, текущий выбор."""
     from ecodoc.ai import detect
-    from ecodoc.ai.config import has_key, load_config
-    cfg = load_config()
+    from ecodoc.ai.config import has_key
+    # заодно приводим конфиг к рабочему виду: не настроен — настроить,
+    # локальный при наличии бесплатного ключа — перевести на облако (1 раз)
+    cfg = detect.ensure_configured()
     providers = []
     for pid in detect.PROVIDER_LABEL:
         local = pid in ("ollama", "lmstudio")
@@ -444,7 +446,8 @@ def api_ai_save(params, body):
     if provider not in detect.PROVIDER_LABEL:
         return {"error": f"Неизвестный провайдер: {provider}"}
     if body.get("key"):
-        save_key(provider, body["key"].strip())
+        # shared=True — ключ в общую базу (OneDrive): один раз на всех компах
+        save_key(provider, body["key"].strip(), shared=bool(body.get("shared")))
     cfg = load_config()
     cfg.provider = provider
     cfg.model = (body.get("model") or "").strip() or \
@@ -453,6 +456,10 @@ def api_ai_save(params, body):
     fb = (body.get("fallback") or "").strip()
     cfg.fallbacks = ([{"provider": fb, "model": detect.CLOUD_DEFAULT_MODEL.get(fb, "")}]
                      if fb and fb != provider else [])
+    # выбор сделан руками — авто-переход на бесплатное облако больше не нужен
+    det = cfg.detected if isinstance(cfg.detected, dict) else {}
+    det["free_migrated"] = True
+    cfg.detected = det
     save_config(cfg)
     return {"ok": True, "text": detect.describe(load_config())}
 
