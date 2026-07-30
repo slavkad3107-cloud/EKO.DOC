@@ -465,8 +465,71 @@ def _merge_sources(ctx: ReportContext, data: dict, src: str,
             f"№{num or '—'} {name} ({len(item['pollutants'])} ЗВ)", src))
 
 
+_ORG_LABEL = {"name": "наименование организации", "short_name": "краткое наименование",
+              "inn": "ИНН", "kpp": "КПП", "ogrn": "ОГРН", "okpo": "ОКПО",
+              "oktmo": "ОКТМО", "okved": "ОКВЭД", "address": "адрес",
+              "director_name": "руководитель", "phone": "телефон", "email": "e-mail"}
+
+
+def _collect(sink, data: dict, quotes: dict, pages: dict, docname: str,
+             model: str, span) -> None:
+    """Разложить ответ модели по кандидатам: значение + файл + лист + цитата."""
+    def page_of(qkey: str) -> tuple[int, bool]:
+        info = pages.get(qkey) or {}
+        return int(info.get("page") or span[0]), bool(info.get("exact"))
+
+    def put(key, value, label, qkey, unit=""):
+        if value in (None, "", []):
+            return
+        page, exact = page_of(qkey)
+        sink.add(key, value, label=label, doc="", file=docname, page=page,
+                 exact=exact, quote=str(quotes.get(qkey) or ""), method="ai",
+                 model=model, unit=unit)
+
+    org = data.get("organization") or {}
+    for attr, val in org.items():
+        if attr in _ORG_LABEL:
+            put(f"organization.{attr}", val, _ORG_LABEL[attr],
+                f"organization.{attr}")
+    for i, o in enumerate(data.get("objects") or []):
+        code = str(o.get("code") or "").strip()
+        if code:
+            put(f"objects[code={code}].code", code, f"объект НВОС {code}",
+                f"objects[{i}].code")
+            if o.get("name"):
+                put(f"objects[code={code}].name", o["name"],
+                    f"объект {code}: наименование", f"objects[{i}].name")
+    for i, w in enumerate(data.get("wastes") or []):
+        fkko = re.sub(r"\D", "", str(w.get("fkko") or ""))
+        if len(fkko) != 11:
+            continue
+        name = w.get("name") or fkko
+        for attr in ("generated", "transferred", "used", "neutralized"):
+            put(f"wastes[fkko={fkko}].{attr}", w.get(attr),
+                f"отход {name}: {attr}", f"wastes[{i}].{attr}", unit="т")
+    for medium, key in (("air", "pollutants_air"), ("water", "pollutants_water")):
+        for i, p in enumerate(data.get(key) or []):
+            code = str(p.get("code") or "").strip()
+            sel = f"code={code}" if code else f"name={p.get('name', '')}"
+            for attr in ("mass_norm", "mass_limit", "mass_over"):
+                put(f"pollutants[{medium};{sel}].{attr}", p.get(attr),
+                    f"{p.get('name') or code}: {attr}", f"{key}[{i}].{attr}",
+                    unit="т")
+    for i, a in enumerate(data.get("disposal_acts") or []):
+        fkko = re.sub(r"\D", "", str(a.get("fkko") or ""))
+        mass = a.get("mass_t")
+        if len(fkko) != 11 or mass in (None, ""):
+            continue
+        from ecodoc.intake.candidates import act_key
+        base = act_key(fkko, a.get("date"), a.get("counterparty"), mass)
+        put(f"{base}.mass", mass,
+            f"акт {a.get('date') or ''} {fkko}: масса", f"disposal_acts[{i}].mass_t",
+            unit="т")
+
+
 def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
-                 cfg: AIConfig | None = None, scope: str = "all") -> ExtractionReport:
+                 cfg: AIConfig | None = None, scope: str = "all",
+                 sink=None) -> ExtractionReport:
     """Прогнать документы через LLM и слить результат в контекст.
 
     scope — какую категорию данных принимать из этих документов (раздельная
@@ -557,6 +620,9 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
             page, exact = page_of_quote(doc_pages, q, span)
             pages_seen[key] = {"page": page, "exact": exact}
         rep.page_span[label] = span
+        # находки → кандидаты (пользователь потом выберет, что взять в базу)
+        if sink is not None:
+            _collect(sink, data, quotes, pages_seen, docname, model, span)
         if scope in ("all", "org"):
             _merge_org(ctx, data, quotes, label, rep)
             _merge_objects(ctx, data, label, rep)

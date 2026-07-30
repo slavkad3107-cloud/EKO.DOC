@@ -527,6 +527,74 @@ def api_source_meta(params, body):
             "next": min([n for n in nums if n > page], default=0)}
 
 
+def api_candidates(params, body):
+    """Найденные данные на выбор: значение, источник (файл + лист), статус."""
+    from ecodoc.intake import candidates, crosscheck
+    src = body if (body or {}).get("org") else params
+    org, site = src["org"], src["site"]
+    site_dir = workspace.site_dir(org, site)
+    ctx = workspace.load_context(org, site)
+    store = candidates.Store(site_dir)
+    groups = crosscheck.group(store.items, ctx)
+    pending = {g.key for g in groups}
+    out_groups = []
+    for g in groups:
+        out_groups.append({
+            "key": g.key, "label": g.label, "status": g.status, "hint": g.hint,
+            "current": g.current,
+            "values": [{"value": v["value"], "docs": v["docs"],
+                        "pages": v["pages"][:3]} for v in g.values],
+            "question": g.is_question})
+    asks = [{"path": a.path, "label": a.label, "question": a.question,
+             "forms": a.forms, "docs": a.docs}
+            for a in crosscheck.asks(ctx, None, pending)]
+    return {"groups": out_groups, "asks": asks,
+            "lab_gaps": crosscheck.lab_gaps(ctx),
+            "counts": {"total": len(store.items),
+                       "questions": sum(1 for g in groups if g.is_question),
+                       "asks": len(asks)}}
+
+
+def api_candidate_decide(params, body):
+    """Решение пользователя: взять это значение в базу или отклонить группу."""
+    from ecodoc.intake import candidates, crosscheck, intake
+    org, site = body["org"], body["site"]
+    if intake.is_busy(org, site):
+        return {"error": "Идёт загрузка документов по этой площадке — "
+                         "дождитесь окончания."}
+    site_dir = workspace.site_dir(org, site)
+    ctx = workspace.load_context(org, site)
+    store = candidates.Store(site_dir)
+    applied, failed = [], []
+    for d in body.get("decisions") or []:
+        key = d.get("key") or ""
+        if d.get("action") == "reject":
+            crosscheck.decide(ctx, store, key, "", accept=False)
+            continue
+        ok = crosscheck.decide(ctx, store, key, str(d.get("value", "")))
+        (applied if ok else failed).append(key)
+    if applied:
+        workspace.save_context(org, site, ctx)
+    return {"applied": applied, "failed": failed}
+
+
+def api_candidate_manual(params, body):
+    """Пользователь ввёл значение сам (в документах его не нашлось)."""
+    from ecodoc.intake import candidates, crosscheck, intake
+    org, site = body["org"], body["site"]
+    if intake.is_busy(org, site):
+        return {"error": "Идёт загрузка документов — дождитесь окончания."}
+    site_dir = workspace.site_dir(org, site)
+    ctx = workspace.load_context(org, site)
+    store = candidates.Store(site_dir)
+    key = body.get("key") or body.get("path") or ""
+    if not crosscheck.manual(ctx, store, key, str(body.get("value", "")),
+                             body.get("label", "")):
+        return {"error": f"Не удалось записать значение в поле {key}"}
+    workspace.save_context(org, site, ctx)
+    return {"ok": True, "key": key}
+
+
 def api_sources(params, body):
     """Разобранные документы площадки: что нашли и с каких листов (для ЗАГРУЗКИ)."""
     from ecodoc.intake import sources
@@ -725,7 +793,7 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "ai_health": api_ai_health,
               "source_page": api_source_page,
               "source_meta": api_source_meta,
-              "sources": api_sources}
+              "sources": api_sources, "candidates": api_candidates}
 POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add, "site_del": api_site_del,
                "org_del": api_org_del,
@@ -746,8 +814,10 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "ai_health": api_ai_health, "ai_task": api_ai_task,
                "intake_url": api_intake_url,
                "source_page": api_source_page,
-               "source_meta": api_source_meta,
-              "sources": api_sources}
+               "source_meta": api_source_meta, "sources": api_sources,
+               "candidates": api_candidates,
+               "candidate_decide": api_candidate_decide,
+               "candidate_manual": api_candidate_manual}
 
 
 class Raw:

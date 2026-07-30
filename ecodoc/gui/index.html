@@ -178,6 +178,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
         <button class="b sec" onclick="openWs()">Открыть папку площадки</button>
         <span class="spin" id="sp-data">…</span><span id="data-msg" class="hint"></span>
       </div>
+      <div id="candbox"></div>
       <div id="dataform"></div>
       <details style="margin-top:12px">
         <summary style="cursor:pointer;color:var(--mut)">Расширенно: все поля в формате JSON (для опытных)</summary>
@@ -454,6 +455,7 @@ $("tabs").addEventListener("click", e => {
   $("tab-" + e.target.dataset.t).classList.add("on");
   if (e.target.dataset.t === "svc" && !AICONF) loadAiPanel();
   if (e.target.dataset.t === "intake" && ORG) loadSources().catch(()=>{});
+  if (e.target.dataset.t === "data" && ORG) loadCandidates().catch(()=>{});
   if (e.target.dataset.t === "report" && ORG){
     const act = MODS.rep.find(m => $("mt-"+m) && $("mt-"+m).classList.contains("on")) || "rc";
     loadMissing(act).catch(()=>{});
@@ -776,6 +778,7 @@ async function runIntake(cfg){
     $(cfg.list).textContent = `✓ Принято ${stored.length} файл(ов).`;
     loadCtx().catch(()=>{});
     loadSources().catch(()=>{});          // таблица «что нашли и с какого листа»
+    loadCandidates().catch(()=>{});       // что взять в базу (кросс-сверка)
     return stored.length;
   }catch(e){
     show(cfg.out, "Ошибка: " + errText(e) +
@@ -876,6 +879,103 @@ async function loadSources(){
     rows + `</tbody></table></div>`+
     `<div class="hint">Исходные файлы не хранятся — сохранены только листы, `+
     `на которых нашлись данные. «📄 N» открывает скан листа в новой вкладке.</div></details>`;
+}
+
+// ── найденные данные: что взять в базу (кросс-сверка между документами) ──
+let CAND = null;
+function srcLink(p){
+  if (!p || !p.doc) return esc(p && p.file || "");
+  return `<a class="link" target="_blank" href="/source?org=${encodeURIComponent(ORG)}`+
+    `&site=${encodeURIComponent(SITE)}&doc=${p.doc}&page=${p.page}">`+
+    `📄 ${esc(p.file||"файл")}, л.${p.page}</a>`;
+}
+async function loadCandidates(){
+  const box = $("candbox");
+  if (!box || !ORG || !SITE) return;
+  try{ CAND = await get("candidates", {org:ORG, site:SITE}); }
+  catch(e){ box.innerHTML = ""; return; }
+  const c = CAND.counts || {};
+  const questions = (CAND.groups||[]).filter(g => g.question);
+  const settled = (CAND.groups||[]).filter(g => !g.question);
+  let h = `<details class="dsec"${(c.questions||c.asks) ? " open" : ""}>`+
+    `<summary style="cursor:pointer;color:var(--acc)">Найденные данные — `+
+    `${c.total||0} значений, требуют выбора ${c.questions||0}, вопросов ${c.asks||0}`+
+    `</summary>`;
+  if (questions.length){
+    h += `<h4>Расхождения — выберите, что взять в базу</h4>`+
+      '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>Поле</th>'+
+      '<th>Вариант</th><th>Откуда (файл, лист)</th><th></th></tr></thead><tbody>';
+    for (const g of questions){
+      g.values.forEach((v, i) => {
+        h += `<tr><td>${i ? "" : esc(g.label) +
+             (g.hint ? `<div class="hint">${esc(g.hint)}</div>` : "") +
+             (g.current ? `<div class="hint">в базе: ${esc(g.current)}</div>` : "")}</td>`+
+          `<td><b>${esc(v.value)}</b><div class="hint">${v.docs.length} док.</div></td>`+
+          `<td>${(v.pages||[]).map(srcLink).join("<br>") ||
+                '<span class="hint">' + esc(v.docs.join(", ")) + "</span>"}</td>`+
+          `<td><button class="b" onclick="decideCand('${esc(g.key)}', ${JSON.stringify(v.value).replace(/"/g,"&quot;")})">Взять</button></td></tr>`;
+      });
+      h += `<tr><td colspan="3" class="hint">ничего не подходит — введите своё значение</td>`+
+        `<td><button class="b sec" onclick="manualCand('${esc(g.key)}','${esc(g.label)}')">Ввести</button></td></tr>`;
+    }
+    h += "</tbody></table></div>";
+  }
+  if ((CAND.asks||[]).length){
+    h += `<h4>Не найдено в документах — введите</h4>`;
+    for (const a of CAND.asks){
+      h += `<div class="row" style="margin:4px 0"><span style="min-width:280px">`+
+        `${esc(a.question)}</span>`+
+        `<input type="text" id="ask-${esc(a.path)}" style="width:200px">`+
+        `<button class="b" onclick="answerAsk('${esc(a.path)}','${esc(a.label)}')">Сохранить</button>`+
+        `<span class="hint">для форм: ${esc((a.forms||[]).join(", "))}</span></div>`;
+    }
+  }
+  if ((CAND.lab_gaps||[]).length){
+    h += `<h4>Протоколы по классу опасности</h4>`;
+    h += CAND.lab_gaps.map(g => `<div class="issue warn">⚠ ${esc(g)}</div>`).join("");
+  }
+  if (settled.length){
+    h += `<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">`+
+      `Принято и бесспорно (${settled.length})</summary>`+
+      '<div style="overflow-x:auto"><table class="dtbl"><tbody>' +
+      settled.map(g => `<tr><td>${esc(g.label)}</td><td><b>${esc(g.values[0].value)}</b></td>`+
+        `<td>${(g.values[0].pages||[]).map(srcLink).join(" ") ||
+              '<span class="hint">' + esc(g.values[0].docs.join(", ")) + "</span>"}</td></tr>`).join("") +
+      "</tbody></table></div></details>";
+  }
+  if (!questions.length && !(CAND.asks||[]).length && !settled.length)
+    h += '<div class="hint">Пока ничего не найдено — загрузите документы во вкладке «ЗАГРУЗКА».</div>';
+  h += "</details>";
+  box.innerHTML = h;
+}
+async function decideCand(key, value){
+  try{
+    const j = await post("candidate_decide", {org:ORG, site:SITE,
+      decisions:[{key, value: String(value), action:"accept"}]}, 0);
+    if (j.error) alert(j.error);
+    else { await loadCtx(); await loadCandidates(); }
+  }catch(e){ alert(errText(e)); }
+}
+async function manualCand(key, label){
+  const v = prompt("Введите значение для «" + label + "»:");
+  if (v === null || !v.trim()) return;
+  try{
+    const j = await post("candidate_manual", {org:ORG, site:SITE, key,
+                                              value:v.trim(), label}, 0);
+    if (j.error) alert(j.error);
+    else { await loadCtx(); await loadCandidates(); }
+  }catch(e){ alert(errText(e)); }
+}
+async function answerAsk(path, label){
+  const el = $("ask-" + path);
+  const v = (el && el.value || "").trim();
+  if (!v){ alert("Введите значение"); return; }
+  try{
+    const j = await post("candidate_manual", {org:ORG, site:SITE, key:path,
+                                              value:v, label}, 0);
+    if (j.error) alert(j.error);
+    else { await loadCtx(); await loadCandidates(); }
+  }catch(e){ alert(errText(e)); }
 }
 
 // ── данные (форма вместо сырого JSON) ──

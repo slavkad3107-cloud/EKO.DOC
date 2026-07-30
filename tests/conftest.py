@@ -3,7 +3,30 @@
 Без этого workspace.root() на машине с OneDrive указал бы на реальную общую
 базу пользователя (и мог бы запустить одноразовый перенос ~/ЭКО.DOC).
 """
+from pathlib import Path
+
 import pytest
+
+
+@pytest.fixture()
+def make_pdf():
+    """Создать PDF с кириллицей: make_pdf(path, ["текст листа 1", ...]).
+
+    Через insert_htmlbox, а не insert_text: при вставке текста шрифтом из файла
+    PyMuPDF переиспользует набор глифов первой страницы, и буквы, которых там
+    не было, подменяются похожими латинскими — «ИНН» превращается в «UHH», и
+    тест начинает проверять не то, что задумано.
+    """
+    def _make(path, pages):
+        import fitz
+        doc = fitz.open()
+        for text in pages:
+            page = doc.new_page()
+            page.insert_htmlbox(fitz.Rect(40, 40, 560, 780), f"<p>{text}</p>")
+        doc.save(path)
+        doc.close()
+        return Path(path)
+    return _make
 
 
 @pytest.fixture(autouse=True)

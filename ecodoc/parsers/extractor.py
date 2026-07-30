@@ -82,16 +82,27 @@ def _note_page(ctx: ReportContext, doc: ExtractedDoc, field: str, value: str):
         "page": page_of_value(doc, value), "exact": True}
 
 
-def _set(ctx: ReportContext, obj, attr: str, value: str, doc: ExtractedDoc):
+_ORG_LABEL = {"inn": "ИНН", "kpp": "КПП", "ogrn": "ОГРН", "okpo": "ОКПО",
+              "oktmo": "ОКТМО", "okved": "ОКВЭД", "email": "e-mail"}
+
+
+def _set(ctx: ReportContext, obj, attr: str, value: str, doc: ExtractedDoc,
+         sink=None):
     """Заполнить поле, только если оно ещё пустое; записать провенанс."""
-    if value and not getattr(obj, attr, ""):
+    if not value:
+        return
+    if sink is not None:                 # находка — в кандидаты (на выбор)
+        sink.add(f"organization.{attr}", value,
+                 label=_ORG_LABEL.get(attr, attr), file=doc.path.name,
+                 page=page_of_value(doc, value), exact=True, method="regex")
+    if not getattr(obj, attr, ""):
         setattr(obj, attr, value)
         ctx.provenance[attr] = doc.path.name
         _note_page(ctx, doc, attr, value)
 
 
 def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
-                   scope: str = "all") -> None:
+                   scope: str = "all", sink=None) -> None:
     """scope — категория раздельной загрузки (см. analyzer.analyze_docs):
     реквизиты/объекты берём только при 'all'/'org' — счета-фактуры из партии
     «справки» не загрязняют карточку организации."""
@@ -100,14 +111,14 @@ def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
 
     if scope in ("all", "org"):
         inn = _first(RE_INN_UL, t) or _first(RE_INN_FL, t)
-        _set(ctx, org, "inn", inn, doc)
+        _set(ctx, org, "inn", inn, doc, sink=sink)
         if not org.is_individual:              # у ИП КПП не бывает
-            _set(ctx, org, "kpp", _first(RE_KPP, t), doc)
-        _set(ctx, org, "ogrn", _first(RE_OGRN, t), doc)
-        _set(ctx, org, "okpo", _first(RE_OKPO, t), doc)
-        _set(ctx, org, "oktmo", _first(RE_OKTMO, t), doc)
-        _set(ctx, org, "okved", _first(RE_OKVED, t), doc)
-        _set(ctx, org, "email", _first(RE_EMAIL, t), doc)
+            _set(ctx, org, "kpp", _first(RE_KPP, t), doc, sink=sink)
+        _set(ctx, org, "ogrn", _first(RE_OGRN, t), doc, sink=sink)
+        _set(ctx, org, "okpo", _first(RE_OKPO, t), doc, sink=sink)
+        _set(ctx, org, "oktmo", _first(RE_OKTMO, t), doc, sink=sink)
+        _set(ctx, org, "okved", _first(RE_OKVED, t), doc, sink=sink)
+        _set(ctx, org, "email", _first(RE_EMAIL, t), doc, sink=sink)
 
         # объект(ы) НВОС
         for code in dict.fromkeys(RE_NVOS.findall(t)):

@@ -373,10 +373,14 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
             sample = ", ".join(files_[:3]) + (" …" if len(files_) > 3 else "")
             lines.append(f"  • {reason}: {len(files_)} — {sample}")
         lines.append("")
+    # приёмник находок: что нашли, в каком файле и на каком листе
+    from ecodoc.intake.candidates import Sink
+    sink = Sink(workspace.site_dir(org, site) if in_workspace else None)
+
     parse_errors = 0
     for doc in docs:
         try:
-            extractor._fill_from_doc(ctx, doc, scope=scope)   # сбой на одном файле
+            extractor._fill_from_doc(ctx, doc, scope=scope, sink=sink)
         except Exception as e:                   # не должен рушить весь пакет
             parse_errors += 1
             lines.append(f"✖ ошибка разбора {doc.path.name}: {e}")
@@ -397,7 +401,7 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     rep = None
     if use_ai and docs:
         from ecodoc.ai.analyzer import analyze_docs
-        rep = analyze_docs(docs, ctx, scope=scope)
+        rep = analyze_docs(docs, ctx, scope=scope, sink=sink)
         ai_failed = rep.failed_files
         lines.append("")
         lines.append(rep.render())
@@ -406,6 +410,7 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     #     сохраняем картинку только тех листов, где что-то нашлось.
     if in_workspace and docs:
         lines += _snap_sources(docs, rep, ctx, org, site)
+        lines += _finish_candidates(sink, ctx, org, site)
 
     # 4. контроль полноты: чего не хватает и что донести
     target_forms = forms or list(requirements.REQUIREMENTS)
@@ -452,6 +457,40 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
                              f"не проанализировал ({sample}) — когда ИИ станет доступен, "
                              "нажмите «Анализ» ещё раз.")
     return "\n".join(lines)
+
+
+def _finish_candidates(sink, ctx: ReportContext, org: str, site: str) -> list[str]:
+    """Свести находки: бесспорное записать в базу, спорное вынести на выбор."""
+    from ecodoc.intake import crosscheck, sources
+    if sink is None or sink.store is None:
+        return []
+    site_dir = workspace.site_dir(org, site)
+    # проставить кандидатам sha1 документа — по нему открывается скан листа
+    sha_by_file = {rec.get("file"): sha
+                   for sha, rec in sources.load(site_dir)["docs"].items()}
+    for c in sink.store.items:
+        if not c.doc and c.file in sha_by_file:
+            c.doc = sha_by_file[c.file]
+    groups = crosscheck.group(sink.store.items, ctx)
+    applied = crosscheck.auto_apply(ctx, sink.store, groups)
+    sink.store.save()
+    questions = [g for g in groups if g.is_question]
+    out = ["", "── Найденные данные ──",
+           f"  всего значений: {len(sink.store.items)}; "
+           f"принято автоматически: {len(applied)}; "
+           f"требуют выбора: {len(questions)}"]
+    for g in questions[:5]:
+        variants = " / ".join(f"{v['value']} ({', '.join(v['docs'][:2]) or 'без файла'})"
+                              for v in g.values[:3])
+        out.append(f"  ⚖ {g.label}: {variants}"
+                   + (f" — {g.hint}" if g.hint else ""))
+    if len(questions) > 5:
+        out.append(f"  … ещё {len(questions) - 5} — вкладка «Данные»")
+    gaps = crosscheck.lab_gaps(ctx)
+    if gaps:
+        out.append("── Протоколы по классу опасности ──")
+        out += [f"  ⚠ {g}" for g in gaps[:5]]
+    return out
 
 
 def _snap_sources(docs, rep, ctx: ReportContext, org: str, site: str) -> list[str]:
