@@ -120,8 +120,9 @@ def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
         _set(ctx, org, "okved", _first(RE_OKVED, t), doc, sink=sink)
         _set(ctx, org, "email", _first(RE_EMAIL, t), doc, sink=sink)
 
-        # объект(ы) НВОС
-        for code in dict.fromkeys(RE_NVOS.findall(t)):
+        # объект(ы) НВОС — формат по core/nvos (единое правило для всей программы)
+        from ecodoc.core import nvos
+        for code in nvos.find_all(t):
             if not any(o.code == code for o in ctx.objects):
                 obj = NVOSObject(code=code, region_code=code.split("-")[0])
                 ctx.objects.append(obj)

@@ -24,12 +24,13 @@ def _guid(*parts: str) -> str:
     return hashlib.md5("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
 
 
-_NVOS_RE = re.compile(r"^\s*\d{2}-\d{4}-\d{5,7}-[ПТОЛ]\s*$")
-
-
 def _is_nvos_code(code: str) -> bool:
-    """Похоже ли на рег.код объекта НВОС (NN-NNNN-NNNNNN-П/Т/О/Л)."""
-    return bool(_NVOS_RE.match(str(code or "")))
+    """Похоже ли на рег.код объекта НВОС (40-0278-013459-П).
+
+    Единая проверка формата живёт в ecodoc/core/nvos.py — здесь только ссылка,
+    чтобы не разъезжались правила в разных местах программы."""
+    from ecodoc.core.nvos import is_valid
+    return is_valid(code)
 
 
 def data_packet_ni(ctx, doc_type: int, body_fn, *, exp_date: str,

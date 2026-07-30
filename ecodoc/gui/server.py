@@ -527,6 +527,65 @@ def api_source_meta(params, body):
             "next": min([n for n in nums if n > page], default=0)}
 
 
+def api_org_verify(params, body):
+    """Сверить реквизиты организации с ЕГРЮЛ: что совпало, что разошлось.
+
+    Требование ТЗ: «если есть из загрузки необходимые данные то сверь с базой
+    налоговой; если нет предложи ввести ИНН и загрузи»."""
+    from ecodoc.parsers.egrul import lookup
+    org_name, site = body.get("org", ""), body.get("site", "")
+    ctx = workspace.load_context(org_name, site) if org_name and site else None
+    org = ctx.organization if ctx else None
+    inn = (body.get("inn") or (org.inn if org else "")).strip()
+    if not inn:
+        return {"error": "Укажите ИНН — по нему подтянем реквизиты из ЕГРЮЛ.",
+                "need_inn": True}
+    try:
+        found = lookup(inn)
+    except Exception as e:
+        return {"error": f"ЕГРЮЛ недоступен: {str(e)[:160]}"}
+    if not found:
+        return {"error": f"В ЕГРЮЛ ничего не найдено по ИНН {inn}"}
+    fields = ("name", "short_name", "inn", "kpp", "ogrn", "address",
+              "director_name", "director_position")
+    rows = []
+    for f in fields:
+        ours = str(getattr(org, f, "") or "") if org else ""
+        theirs = str(found.get(f, "") or "")
+        if not theirs and not ours:
+            continue
+        same = _norm_req(ours) == _norm_req(theirs)
+        rows.append({"field": f, "ours": ours, "egrul": theirs,
+                     "same": same, "empty": not ours})
+    return {"inn": inn, "rows": rows, "egrul": found,
+            "diff": sum(1 for r in rows if not r["same"] and not r["empty"]),
+            "empty": sum(1 for r in rows if r["empty"] and r["egrul"])}
+
+
+def _norm_req(value: str) -> str:
+    return re.sub(r"[\s\"'«»,.]+", " ", str(value or "")).strip().lower()
+
+
+def api_object_check(params, body):
+    """Проверка объекта: формат кода НВОС + ОКТМО/ОКАТО по адресу."""
+    from ecodoc.core import nvos
+    code = (body.get("code") or "").strip()
+    address = (body.get("address") or "").strip()
+    out = {"code": nvos.normalize(code), "valid": nvos.is_valid(code),
+           "problem": nvos.problem(code), "region": nvos.region(code),
+           "category": nvos.category(code)}
+    if address:
+        try:
+            from ecodoc.parsers.oktmo import by_address
+            hit = by_address(address)
+            out["oktmo"] = hit.get("oktmo", "")
+            out["okato"] = hit.get("okato", "")
+            out["oktmo_source"] = hit.get("source", "")
+        except Exception as e:
+            out["oktmo_error"] = str(e)[:200]
+    return out
+
+
 def api_candidates(params, body):
     """Найденные данные на выбор: значение, источник (файл + лист), статус."""
     from ecodoc.intake import candidates, crosscheck
@@ -817,7 +876,9 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "source_meta": api_source_meta, "sources": api_sources,
                "candidates": api_candidates,
                "candidate_decide": api_candidate_decide,
-               "candidate_manual": api_candidate_manual}
+               "candidate_manual": api_candidate_manual,
+               "org_verify": api_org_verify,
+               "object_check": api_object_check}
 
 
 class Raw:

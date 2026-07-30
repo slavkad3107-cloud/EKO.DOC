@@ -119,10 +119,17 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
   <div class="hint" id="wsroot" style="margin-top:10px"></div>
 </aside>
 <main>
+  <div id="worknow" class="dsec" style="margin:0 0 10px;padding:8px 12px;
+       border-left:4px solid var(--acc);background:var(--panel)">
+    <b id="wn-org">— организация не выбрана —</b>
+    <span id="wn-obj" class="hint"></span>
+  </div>
   <div class="hint" id="selinfo">← выберите площадку слева (или создайте организацию и площадку)</div>
   <div class="tabs" id="tabs">
     <button data-t="intake" class="on">ЗАГРУЗКА</button>
-    <button data-t="data">Данные</button>
+    <button data-t="data">ДАННЫЕ</button>
+    <button data-t="org">ОРГАНИЗАЦИЯ</button>
+    <button data-t="obj">ОБЪЕКТ</button>
     <button data-t="report">Отчётность</button>
     <button data-t="dev">Разработка</button>
     <button data-t="cal">Календарь</button>
@@ -186,6 +193,35 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
         <textarea id="ctx" spellcheck="false" style="min-height:220px"></textarea>
         <button class="b sec" onclick="applyRawJson()">Применить JSON</button>
       </details>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-org">
+    <div class="card">
+      <h2>Организация — реквизиты и сверка с ЕГРЮЛ</h2>
+      <div class="row">
+        <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+        <button class="b sec" onclick="verifyOrg()">Сверить с ЕГРЮЛ по ИНН</button>
+        <span class="spin" id="sp-org">запрос в ЕГРЮЛ…</span>
+        <span class="hint" id="org-msg"></span>
+      </div>
+      <div id="orgverify"></div>
+      <div id="orgform"></div>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-obj">
+    <div class="card">
+      <h2>Объект — адрес, код НВОС, ОКТМО/ОКАТО</h2>
+      <div class="row">
+        <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+        <button class="b sec" onclick="checkObjects()">Проверить код и определить ОКТМО/ОКАТО</button>
+        <button class="b sec" onclick="deleteBadObjects()">Удалить некорректные</button>
+        <span class="spin" id="sp-obj">проверка…</span>
+        <span class="hint" id="obj-msg"></span>
+      </div>
+      <div id="objcheck"></div>
+      <div id="objform"></div>
     </div>
   </div>
 
@@ -456,10 +492,17 @@ $("tabs").addEventListener("click", e => {
   if (e.target.dataset.t === "svc" && !AICONF) loadAiPanel();
   if (e.target.dataset.t === "intake" && ORG) loadSources().catch(()=>{});
   if (e.target.dataset.t === "data" && ORG) loadCandidates().catch(()=>{});
+  if (e.target.dataset.t === "org" && CTX) renderOrgTab();
+  if (e.target.dataset.t === "obj" && CTX) renderObjTab();
   if (e.target.dataset.t === "report" && ORG){
     const act = MODS.rep.find(m => $("mt-"+m) && $("mt-"+m).classList.contains("on")) || "rc";
     loadMissing(act).catch(()=>{});
   }
+});
+
+// правка любого поля формы — помечаем данные как несохранённые
+document.addEventListener("input", e => {
+  if (e.target && e.target.dataset && e.target.dataset.path) markDirty();
 });
 
 // ── дерево организаций ──
@@ -475,8 +518,9 @@ async function loadTree(){
     const nlab = document.createElement("span");
     nlab.className = "lab"; nlab.textContent = "● " + org;  // textContent: не HTML
     nlab.onclick = () => {                      // клик по организации:
-      ORG = org;                                // выбрать её; если площадка
-      const sites = j.orgs[org];                // одна — сразу и её
+      const sites = j.orgs[org];                // одна площадка — сразу и её
+      if (!confirmSwitch(org, sites.length ? sites[0] : "")) return;
+      ORG = org;
       if (sites.length) { SITE = sites[0]; onSelect(); }
       else { SITE = ""; $("selinfo").textContent =
         `Организация: ${org} — добавьте площадку (поле слева внизу)`; }
@@ -498,7 +542,10 @@ async function loadTree(){
       s.className = "site" + (org===ORG && site===SITE ? " sel":"");
       const slab = document.createElement("span");
       slab.className = "lab"; slab.textContent = site;
-      slab.onclick = () => { ORG=org; SITE=site; onSelect(); loadTree(); };
+      slab.onclick = () => {
+        if (!confirmSwitch(org, site)) return;
+        ORG = org; SITE = site; onSelect(); loadTree();
+      };
       const sdel = document.createElement("span");
       sdel.className = "trash"; sdel.textContent = "✕";
       sdel.title = "Удалить площадку";
@@ -881,6 +928,140 @@ async function loadSources(){
     `на которых нашлись данные. «📄 N» открывает скан листа в новой вкладке.</div></details>`;
 }
 
+// ── с кем работаем сейчас: видно всегда, смена — только с подтверждением ──
+let DIRTY = false;                       // есть несохранённые правки
+function markDirty(){ DIRTY = true; updateWorkNow(); }
+function updateWorkNow(){
+  const org = $("wn-org"), obj = $("wn-obj");
+  if (!org) return;
+  if (!ORG){ org.textContent = "— организация не выбрана —"; obj.textContent = ""; return; }
+  const o = (CTX && CTX.organization) || {};
+  const codes = ((CTX && CTX.objects) || []).map(x=>x.code).filter(Boolean);
+  org.textContent = "Организация: " + (o.short_name || o.name || ORG) +
+    (o.inn ? " (ИНН " + o.inn + ")" : "");
+  obj.textContent = " · Объект: " + (SITE_ADDR || SITE || "—") +
+    (codes.length ? " · код НВОС: " + codes.join(", ") : " · код НВОС не задан") +
+    (DIRTY ? "  ✎ есть несохранённые правки" : "");
+}
+// подтверждение смены объекта: данные всех вкладок относятся к одному объекту,
+// поэтому переключение — осознанное действие, а правки не должны теряться молча
+function confirmSwitch(nextOrg, nextSite){
+  if (!ORG || (ORG === nextOrg && SITE === nextSite)) return true;
+  const where = (CTX && CTX.organization && (CTX.organization.short_name ||
+                 CTX.organization.name)) || ORG;
+  let msg = `Сменить объект?\n\nСейчас: ${where} / ${SITE_ADDR || SITE || "—"}\n` +
+            `Перейти к: ${nextOrg} / ${nextSite || "(выбор площадки)"}\n\n` +
+            `Данные во всех вкладках будут заменены на данные нового объекта.`;
+  if (DIRTY) msg += `\n\n⚠ Есть НЕСОХРАНЁННЫЕ правки — они будут потеряны.`;
+  return confirm(msg);
+}
+
+// ── вкладка ОРГАНИЗАЦИЯ ──────────────────────────────────────────────
+function renderOrgTab(){
+  const box = $("orgform");
+  if (!box) return;
+  if (!CTX){ box.innerHTML = '<div class="hint">Выберите площадку слева.</div>'; return; }
+  const o = CTX.organization || {};
+  let h = '<div class="dsec"><h4>Реквизиты организации</h4><div class="fgrid">';
+  for (const [k, label] of ORG_FLD)
+    h += `<div class="fld"><label>${label}</label>${tinput(o[k],'organization.'+k)}</div>`;
+  h += '</div><div class="row" style="margin-top:6px">'+
+    '<button class="b sec" onclick="detectOktmo()">Определить ОКТМО по адресу</button>'+
+    '<span class="hint" id="oktmo-msg"></span></div></div>';
+  h += aiTaskHtml("org", "Организация");
+  box.innerHTML = h;
+}
+async function verifyOrg(){
+  needSite(); spin("sp-org", 1); $("org-msg").textContent = "";
+  try{
+    collectDataForm();
+    let inn = ((CTX.organization||{}).inn || "").trim();
+    if (!inn){
+      inn = (prompt("ИНН организации (10 цифр у юрлица, 12 у ИП):")||"").trim();
+      if (!inn){ spin("sp-org",0); return; }
+    }
+    const j = await post("org_verify", {org:ORG, site:SITE, inn}, 0);
+    if (j.error){ $("orgverify").innerHTML = `<div class="issue error">${esc(j.error)}</div>`; }
+    else renderOrgVerify(j);
+  }catch(e){ $("orgverify").innerHTML = `<div class="issue error">${esc(errText(e))}</div>`; }
+  spin("sp-org", 0);
+}
+function renderOrgVerify(j){
+  const rows = (j.rows||[]).map(r => {
+    const mark = r.same ? "✓" : (r.empty ? "＋" : "≠");
+    const act = (!r.same && r.egrul)
+      ? `<button class="b sec" onclick="takeEgrul('${esc(r.field)}')">Взять из ЕГРЮЛ</button>` : "";
+    return `<tr><td>${mark}</td><td>${esc(r.field)}</td>`+
+      `<td>${esc(r.ours) || '<span class="hint">пусто</span>'}</td>`+
+      `<td>${esc(r.egrul)}</td><td>${act}</td></tr>`;
+  }).join("");
+  EGRUL = j.egrul || {};
+  $("orgverify").innerHTML =
+    `<div class="dsec"><h4>Сверка с ЕГРЮЛ по ИНН ${esc(j.inn)}</h4>`+
+    `<div class="hint">расхождений: ${j.diff}, пустых у нас: ${j.empty}</div>`+
+    '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th></th><th>Поле</th>'+
+    '<th>У нас</th><th>ЕГРЮЛ</th><th></th></tr></thead><tbody>'+rows+
+    '</tbody></table></div>'+
+    `<button class="b" style="margin-top:6px" onclick="takeEgrulAll()">Взять все из ЕГРЮЛ</button>`+
+    `</div>`;
+}
+let EGRUL = {};
+function takeEgrul(field){
+  if (!CTX || !(field in EGRUL)) return;
+  CTX.organization[field] = EGRUL[field];
+  renderOrgTab(); $("org-msg").textContent = "взято из ЕГРЮЛ — не забудьте «Сохранить»";
+}
+function takeEgrulAll(){
+  if (!CTX) return;
+  for (const [k, v] of Object.entries(EGRUL)) if (v) CTX.organization[k] = v;
+  renderOrgTab(); $("org-msg").textContent = "реквизиты заменены на ЕГРЮЛ — нажмите «Сохранить»";
+}
+
+// ── вкладка ОБЪЕКТ ───────────────────────────────────────────────────
+function renderObjTab(){
+  const box = $("objform");
+  if (!box) return;
+  if (!CTX){ box.innerHTML = '<div class="hint">Выберите площадку слева.</div>'; return; }
+  let h = tableSection("Объекты НВОС", "objects", CTX.objects||[],
+    [["code","Код НВОС"],["name","Наименование"],["category","Категория"],
+     ["address","Адрес объекта"]]);
+  h += '<div class="hint" style="margin:-4px 0 8px">Формат кода: '+
+    '<b>40-0278-013459-П</b> (2 цифры − 4 цифры − 6 цифр − буква категории). '+
+    'ОКТМО/ОКАТО определяются по адресу объекта.</div>';
+  h += aiTaskHtml("object", "Объект");
+  box.innerHTML = h;
+}
+async function checkObjects(){
+  needSite(); spin("sp-obj", 1);
+  try{
+    collectDataForm();
+    const rows = [];
+    for (const o of (CTX.objects||[])){
+      const j = await post("object_check", {code:o.code||"", address:o.address||""}, 0);
+      rows.push({o, j});
+    }
+    $("objcheck").innerHTML = rows.length ? '<div class="dsec"><h4>Проверка объектов</h4>'+
+      rows.map(({o, j}) => {
+        const ok = j.valid ? `<span style="color:var(--acc)">✓ код верен</span>`
+                           : `<span class="issue error">✖ ${esc(j.problem)}</span>`;
+        const okt = j.oktmo ? `ОКТМО ${esc(j.oktmo)}${j.okato ? ", ОКАТО "+esc(j.okato) : ""}`
+                            : (j.oktmo_error ? `<span class="hint">ОКТМО по адресу не определён</span>` : "");
+        const btn = j.oktmo ? `<button class="b sec" onclick="applyOktmo('${esc(j.oktmo)}')">Взять ОКТМО в реквизиты</button>` : "";
+        return `<div class="issue">${esc(o.code||"(без кода)")} — ${ok}`+
+          (j.category ? ` · ${esc(j.category)}` : "") +
+          (okt ? ` · ${okt} ${btn}` : "") + `</div>`;
+      }).join("") + '</div>'
+      : '<div class="hint">Объекты НВОС не заданы — добавьте строку ниже.</div>';
+  }catch(e){ $("objcheck").innerHTML = `<div class="issue error">${esc(errText(e))}</div>`; }
+  spin("sp-obj", 0);
+}
+function applyOktmo(oktmo){
+  if (!CTX) return;
+  CTX.organization = CTX.organization || {};
+  CTX.organization.oktmo = oktmo;
+  $("obj-msg").textContent = "ОКТМО " + oktmo + " записан в реквизиты — нажмите «Сохранить»";
+}
+
 // ── найденные данные: что взять в базу (кросс-сверка между документами) ──
 let CAND = null;
 function srcLink(p){
@@ -1015,35 +1196,27 @@ async function loadCtx(){
   seedWater();
   seedPollutants();
   renderDataForm();
+  DIRTY = false;              // только что прочитали с диска — правок нет
+  updateWorkNow();
 }
 function tinput(val, path, ph, num){
   return `<input value="${esc(val)}" data-path="${path}" `+
     `${num?'inputmode="decimal" ':''}placeholder="${ph||''}">`;
 }
 function renderDataForm(){
-  const o = CTX.organization || {};
   const per = CTX.period || {};
-  let h = '<div class="dsec"><h4>Реквизиты организации</h4><div class="fgrid">';
-  for (const [k,label] of ORG_FLD)
-    h += `<div class="fld"><label>${label}</label>${tinput(o[k],'organization.'+k)}</div>`;
-  h += '</div><div class="row" style="margin-top:6px">'+
-    '<button class="b sec" onclick="detectOktmo()">Определить ОКТМО по адресу</button>'+
-    '<span class="hint" id="oktmo-msg"></span></div></div>';
-  // период: только отчётный год (формы годовые); разбивка мес/квартал/год —
-  // внутри разделов Отходы/Воздух/Вода
-  h += '<div class="dsec"><h4>Отчётный год</h4><div class="fgrid">'+
+  // реквизиты организации — вкладка ОРГАНИЗАЦИЯ, объекты — вкладка ОБЪЕКТ;
+  // здесь остаются периоды и данные по средам
+  renderOrgTab(); renderObjTab();
+  let h = '<div class="dsec"><h4>Отчётный год</h4><div class="fgrid">'+
     `<div class="fld"><label>Год (обязателен для всех форм)</label>${tinput(per.year||'','period.year','напр. 2025',true)}</div>`+
     `</div></div>`;
-  // объекты НВОС
-  h += aiTaskHtml("org", "Организация");
-  h += tableSection("Объекты НВОС", "objects", CTX.objects||[],
-    [["code","Код НВОС"],["name","Наименование"],["category","Категория"],["address","Адрес"]]);
+  h += '<div class="hint" style="margin:-4px 0 10px">Реквизиты организации — '+
+    'во вкладке «ОРГАНИЗАЦИЯ», объекты НВОС — во вкладке «ОБЪЕКТ».</div>';
   const badObjs = (CTX.objects||[]).filter(o=>!isGoodObjCode(o.code)).length;
   if (badObjs){
-    h += `<div class="row" style="margin:-4px 0 8px"><span class="hint">⚠ Объектов с `+
-      `некорректным кодом (не НВОС и не кадастровый): ${badObjs} — из документов-`+
-      `шаблонов/проектов.</span> <button class="b sec" onclick="deleteBadObjects()">`+
-      `Удалить некорректные</button></div>`;
+    h += `<div class="issue warn">⚠ Объектов с некорректным кодом: ${badObjs} — `+
+      `откройте вкладку «ОБЪЕКТ», там проверка и удаление.</div>`;
   }
 
   const DET = (title, open) =>
@@ -1314,8 +1487,10 @@ function delRow(btn){
   CTX[key].splice(idx,1); renderDataForm();
 }
 function collectDataForm(){
-  // организация и период
-  $("dataform").querySelectorAll("[data-path]").forEach(el=>{
+  // поля разнесены по вкладкам: ДАННЫЕ (периоды, среды), ОРГАНИЗАЦИЯ, ОБЪЕКТ —
+  // собираем из всех трёх, иначе «Сохранить» потеряет часть правок
+  const boxes = ["dataform", "orgform", "objform"].map($).filter(Boolean);
+  boxes.forEach(box => box.querySelectorAll("[data-path]").forEach(el=>{
     const p = el.dataset.path;
     const m = p.match(/^(\w+)\[(\d+)\]\.(\w+)$/);
     if (m){
@@ -1327,7 +1502,7 @@ function collectDataForm(){
       CTX[sec] = CTX[sec]||{};
       CTX[sec][f] = el.value;
     }
-  });
+  }));
 }
 function foldWater(){
   // перенести временные ключи водоучёта в extra.water и убрать их
