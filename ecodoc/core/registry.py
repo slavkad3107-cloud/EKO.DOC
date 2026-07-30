@@ -44,6 +44,7 @@ def load_all() -> None:
         "ecodoc.reports.tp2_air.report",
         "ecodoc.reports.tp2_water.report",
         "ecodoc.reports.waste_report_iii.report",
+        "ecodoc.reports.oos4.report",
         "ecodoc.reports.scaffolds",
     ):
         importlib.import_module(mod)

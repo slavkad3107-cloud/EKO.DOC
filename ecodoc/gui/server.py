@@ -390,6 +390,29 @@ def api_devdoc(params, body):
     elif kind == "pek-program":
         from ecodoc.development import pek_program
         path = pek_program.generate(ctx, out_dir / "программа_ПЭК.docx")
+    elif kind == "waste-inventory":
+        from ecodoc.development import waste_inventory
+        path = waste_inventory.generate(
+            ctx, out_dir / f"инвентаризация_отходов_{ctx.period.year or ''}.xlsx")
+    elif kind == "air-inventory":
+        from ecodoc.development import air_inventory
+        path = air_inventory.generate(
+            ctx, out_dir / f"инвентаризация_выбросов_{ctx.period.year or ''}.xlsx")
+    elif kind == "pnoolr":
+        from ecodoc.development import pnoolr
+        path = pnoolr.generate(
+            ctx, out_dir / f"ПНООЛР_расчётная_часть_{ctx.period.year or ''}.xlsx")
+    elif kind == "tu-waste":
+        from ecodoc.development import tu_waste
+        path = tu_waste.generate(ctx, out_dir / "запрос_ТУ.docx",
+                                 receiver=body.get("receiver", ""),
+                                 purpose=body.get("purpose", ""))
+    elif kind == "waste-passport":
+        from ecodoc.development import waste_passport
+        made = waste_passport.generate(ctx, out_dir / "паспорта")
+        if not made:
+            return {"error": "Нет отходов I–IV класса — паспорта не требуются."}
+        return {"path": str(made[0].parent), "files": [p.name for p in made]}
     else:
         return {"error": f"неизвестный документ: {kind}"}
     return {"path": str(path)}

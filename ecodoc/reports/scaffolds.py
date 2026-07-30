@@ -34,6 +34,7 @@ class _Dev(NotImplementedReport):
 class PNOOLR(_Dev):
     code = "pnoolr"
     title = "ПНООЛР — проект нормативов образования отходов и лимитов"
+    devdoc = True        # расчётная часть: ecodoc/development/pnoolr.py
 
 
 @register
@@ -66,6 +67,21 @@ class DVOS(_Dev):
 class AirInventory(_Dev):
     code = "air-inventory"
     title = "Инвентаризация источников выбросов (пр. МПР № 871)"
+    devdoc = True        # генерируется: ecodoc/development/air_inventory.py
+
+
+@register
+class WasteInventory(_Dev):
+    code = "waste-inventory"
+    title = "Инвентаризация отходов (перечень по объекту)"
+    devdoc = True        # генерируется: ecodoc/development/waste_inventory.py
+
+
+@register
+class WastePassportDoc(_Dev):
+    code = "waste-passport"
+    title = "Паспорта отходов I–IV класса (пр. МПР № 1026)"
+    devdoc = True        # генерируется: ecodoc/development/waste_passport.py
 
 
 @register
@@ -78,4 +94,5 @@ class PEKProgram(_Dev):
 @register
 class TUWaste(_Dev):
     code = "tu-waste"
+    devdoc = True        # письмо-запрос: ecodoc/development/tu_waste.py
     title = "ТУ / письма о технических условиях (грунты, отходы строительства)"
