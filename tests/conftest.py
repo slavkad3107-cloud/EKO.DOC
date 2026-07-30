@@ -40,3 +40,9 @@ def _isolate_workspace(tmp_path, monkeypatch):
     from ecodoc.ai.config import DEFAULT_KEY_ENV
     for env in DEFAULT_KEY_ENV.values():
         monkeypatch.delenv(env, raising=False)
+    # папка бланков-образцов: пустая временная, иначе формы генерировались бы
+    # по бланкам конкретного компьютера и тесты зависели бы от его содержимого
+    forms = tmp_path / "_forms"
+    forms.mkdir(exist_ok=True)
+    monkeypatch.setenv("ECODOC_FORMS", str(forms))
+    monkeypatch.setenv("ECODOC_FORMS_SEARCH", str(forms))

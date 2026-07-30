@@ -61,6 +61,15 @@ class WasteMovement(Report):
     # --- печатная форма ---
     def render_print(self, out_path: Path) -> Path:
         out_path = self._ensure_dir(out_path)
+        # если у пользователя есть свой бланк журнала (папка «Формы») — заполняем
+        # ЕГО: там формулы и привычная вёрстка. Нет бланка — рисуем лист сами.
+        try:
+            from ecodoc.reports.waste_movement.template import fill
+            filled = fill(self.ctx, out_path)
+            if filled is not None:
+                return filled
+        except Exception:
+            pass                     # бланк не подошёл — обычная генерация
         wb = xlsx.new_workbook()
         self._sheet_title(wb)
         self._sheet_app1(wb)

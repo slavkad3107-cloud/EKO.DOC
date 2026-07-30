@@ -403,6 +403,12 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
           (удалить готовые документы и старые исходники)</button>
         <span class="spin" id="sp-clean">чистка…</span>
       </div>
+      <div class="row" style="margin-top:6px">
+        <button class="b sec" onclick="loadFormsRegistry(false)">Бланки документов: что есть</button>
+        <button class="b sec" onclick="loadFormsRegistry(true)">Поискать недостающие на диске</button>
+        <span class="spin" id="sp-forms">поиск…</span>
+      </div>
+      <div id="formsbox"></div>
       <div class="hint">База хранит только данные (context.json, отчёты приёма).
         Исходники удаляются после анализа; готовые формы сохраняются в папку
         результатов на этом компьютере и в базу не попадают.</div>
@@ -1103,6 +1109,42 @@ function applyOktmo(oktmo){
   CTX.organization = CTX.organization || {};
   CTX.organization.oktmo = oktmo;
   $("obj-msg").textContent = "ОКТМО " + oktmo + " записан в реквизиты — нажмите «Сохранить»";
+}
+
+// ── бланки-образцы документов (папка «Формы») ────────────────────────
+async function loadFormsRegistry(search){
+  spin("sp-forms", 1);
+  try{
+    const j = await post("forms_registry", {search: !!search, check_new: true}, 0);
+    const rows = (j.rows||[]).map(r =>
+      `<tr><td>${r.has ? '<span style="color:var(--acc)">✓</span>' : "○"}</td>`+
+      `<td>${esc(r.title)}</td><td class="hint">${esc(r.kind === "reporting" ? "отчётность" : "разработка")}</td>`+
+      `<td class="hint">${r.files.length ? esc(r.files.slice(0,2).join("; ")) +
+        (r.files.length > 2 ? ` … всего ${r.files.length}` : "") : "нет бланка"}</td></tr>`).join("");
+    let h = `<div class="dsec"><h4>Бланки документов</h4>`+
+      `<div class="hint">${j.root ? esc(j.root) : "папка «Формы» не найдена"} · `+
+      `есть образцы: ${j.have} из ${j.total}</div>`+
+      '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th></th><th>Документ</th>'+
+      '<th>Контур</th><th>Файлы</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    const ch = j.changes || {};
+    if (Object.keys(ch.added||{}).length)
+      h += `<div class="issue">Появились новые бланки: ${esc(Object.keys(ch.added).join(", "))}</div>`;
+    if (Object.keys(ch.removed||{}).length)
+      h += `<div class="issue warn">Пропали бланки: ${esc(Object.keys(ch.removed).join(", "))}</div>`;
+    if (j.found && Object.keys(j.found).length){
+      h += `<h4>Найдено на диске (можно положить в папку «Формы»)</h4>`;
+      for (const [title, files] of Object.entries(j.found))
+        h += `<div class="issue">${esc(title)}:<div class="hint">${
+          files.map(f=>esc(f)).join("<br>")}</div></div>`;
+    } else if (search){
+      h += '<div class="hint">На диске подходящих бланков не нашлось.</div>';
+    }
+    h += `<div class="hint" style="margin-top:6px">Где есть бланк-образец в Excel — `+
+      `программа заполняет его (формулы сохраняются), где нет — строит форму сама. `+
+      `Соответствие бланка нормам проверяйте перед использованием.</div></div>`;
+    $("formsbox").innerHTML = h;
+  }catch(e){ $("formsbox").innerHTML = `<div class="issue error">${esc(errText(e))}</div>`; }
+  spin("sp-forms", 0);
 }
 
 // ── проверка кодов отходов по действующему каталогу ФККО ─────────────

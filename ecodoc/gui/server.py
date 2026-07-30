@@ -586,6 +586,22 @@ def api_object_check(params, body):
     return out
 
 
+def api_forms_registry(params, body):
+    """Бланки-образцы документов: что есть в папке «Формы», чего не хватает."""
+    from ecodoc.core import forms_registry as fr
+    base = fr.root()
+    slots = fr.scan()
+    rows = [{"code": s.code, "title": s.title, "kind": s.kind, "folder": s.folder,
+             "files": s.files, "has": s.has_sample} for s in slots]
+    out = {"root": str(base) if base else "", "rows": rows,
+           "have": sum(1 for s in slots if s.has_sample), "total": len(slots)}
+    if str((body or {}).get("search", "")).lower() in ("1", "true", "yes"):
+        out["found"] = fr.find_missing(slots)
+    if str((body or {}).get("check_new", "")).lower() in ("1", "true", "yes"):
+        out["changes"] = fr.check_new()
+    return out
+
+
 def api_fkko_check(params, body):
     """Проверка кодов отходов объекта по действующему каталогу ФККО."""
     from ecodoc.core import fkko
@@ -882,7 +898,8 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "source_page": api_source_page,
               "source_meta": api_source_meta,
               "sources": api_sources, "candidates": api_candidates,
-              "fkko_check": api_fkko_check}
+              "fkko_check": api_fkko_check,
+              "forms_registry": api_forms_registry}
 POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add, "site_del": api_site_del,
                "org_del": api_org_del,
@@ -910,7 +927,8 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "org_verify": api_org_verify,
                "object_check": api_object_check,
                "fkko_check": api_fkko_check,
-               "fkko_update": api_fkko_update}
+               "fkko_update": api_fkko_update,
+               "forms_registry": api_forms_registry}
 
 
 class Raw:
