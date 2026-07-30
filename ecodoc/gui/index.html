@@ -130,6 +130,9 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
     <button data-t="data">ДАННЫЕ</button>
     <button data-t="org">ОРГАНИЗАЦИЯ</button>
     <button data-t="obj">ОБЪЕКТ</button>
+    <button data-t="waste">ОТХОДЫ</button>
+    <button data-t="air">ВЫБРОСЫ</button>
+    <button data-t="water">СБРОСЫ</button>
     <button data-t="report">Отчётность</button>
     <button data-t="dev">Разработка</button>
     <button data-t="cal">Календарь</button>
@@ -222,6 +225,43 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       </div>
       <div id="objcheck"></div>
       <div id="objform"></div>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-waste">
+    <div class="card">
+      <h2>Отходы — перечень по объекту</h2>
+      <div class="row">
+        <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+        <button class="b sec" onclick="checkFkko()">Проверить ФККО по каталогу</button>
+        <button class="b sec" onclick="updateFkko()">Обновить каталог ФККО</button>
+        <button class="b sec" onclick="doWasteSummary()">📊 Сводная (мес/кв/год)</button>
+        <span class="spin" id="sp-waste">…</span><span class="hint" id="waste-msg"></span>
+      </div>
+      <div id="fkkobox"></div>
+      <div id="wasteform"></div>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-air">
+    <div class="card">
+      <h2>Выбросы — источники и вещества</h2>
+      <div class="row">
+        <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+        <span class="spin" id="sp-air">…</span><span class="hint" id="air-msg"></span>
+      </div>
+      <div id="airform"></div>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-water">
+    <div class="card">
+      <h2>Сбросы и водопользование</h2>
+      <div class="row">
+        <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+        <span class="spin" id="sp-water">…</span><span class="hint" id="water-msg"></span>
+      </div>
+      <div id="waterform"></div>
     </div>
   </div>
 
@@ -494,6 +534,9 @@ $("tabs").addEventListener("click", e => {
   if (e.target.dataset.t === "data" && ORG) loadCandidates().catch(()=>{});
   if (e.target.dataset.t === "org" && CTX) renderOrgTab();
   if (e.target.dataset.t === "obj" && CTX) renderObjTab();
+  if (e.target.dataset.t === "waste" && CTX){ renderWasteTab(); checkFkko(); }
+  if (e.target.dataset.t === "air" && CTX) renderAirTab();
+  if (e.target.dataset.t === "water" && CTX) renderWaterTab();
   if (e.target.dataset.t === "report" && ORG){
     const act = MODS.rep.find(m => $("mt-"+m) && $("mt-"+m).classList.contains("on")) || "rc";
     loadMissing(act).catch(()=>{});
@@ -1062,6 +1105,56 @@ function applyOktmo(oktmo){
   $("obj-msg").textContent = "ОКТМО " + oktmo + " записан в реквизиты — нажмите «Сохранить»";
 }
 
+// ── проверка кодов отходов по действующему каталогу ФККО ─────────────
+async function checkFkko(){
+  const box = $("fkkobox");
+  if (!box || !ORG || !SITE) return;
+  spin("sp-waste", 1);
+  try{
+    const j = await get("fkko_check", {org:ORG, site:SITE});
+    if (!j.rows || !j.rows.length){
+      box.innerHTML = '<div class="hint">Отходы не заданы — добавьте справки-акты '+
+        'или строки движения ниже.</div>';
+    } else {
+      const rows = j.rows.map(r => {
+        const mark = !r.ok ? '<span class="issue error">✖</span>'
+                   : r.verified ? '<span style="color:var(--acc)">✓</span>'
+                   : '<span class="hint">?</span>';
+        const note = r.problem || r.note || "";
+        const extra = [];
+        if (r.name_mismatch) extra.push("в каталоге: " + esc(r.name_mismatch));
+        if (r.class_mismatch) extra.push(`класс по каталогу: ${r.catalog_class}, у нас ${r.our_class}`);
+        return `<tr><td>${mark}</td><td>${esc(r.code)}</td>`+
+          `<td>${esc(r.our_name||"")}</td>`+
+          `<td class="hint">${esc(note)}${extra.length ? "<br>"+extra.join("<br>") : ""}</td></tr>`;
+      }).join("");
+      box.innerHTML = `<div class="dsec"><h4>Проверка ФККО по каталогу</h4>`+
+        `<div class="hint">каталог: ${j.size} кодов`+
+        `${j.updated ? ", обновлён " + esc(j.updated) : ""}`+
+        `${j.partial ? " (частичный — загрузите полный ФККО)" : ""}`+
+        ` · неверных кодов: ${j.bad}, непроверенных: ${j.unverified}</div>`+
+        '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th></th>'+
+        '<th>ФККО</th><th>Наименование у нас</th><th>Замечание</th></tr></thead>'+
+        `<tbody>${rows}</tbody></table></div></div>`;
+    }
+  }catch(e){ box.innerHTML = `<div class="issue error">${esc(errText(e))}</div>`; }
+  spin("sp-waste", 0);
+}
+async function updateFkko(){
+  const path = prompt("Обновить каталог ФККО.\n\nОставьте пустым — попробуем "+
+    "скачать из открытых источников.\nИли укажите путь к скачанному файлу "+
+    "каталога (xlsx / csv / json):", "");
+  if (path === null) return;
+  spin("sp-waste", 1); $("waste-msg").textContent = "";
+  try{
+    const j = await post("fkko_update", {path: path.trim()}, 0);
+    $("waste-msg").textContent = j.error ? ("Ошибка: " + j.error)
+      : `каталог обновлён: ${j.codes} кодов${j.partial ? " (частичный)" : ""}`;
+    if (!j.error) checkFkko();
+  }catch(e){ $("waste-msg").textContent = "Ошибка: " + errText(e); }
+  spin("sp-waste", 0);
+}
+
 // ── найденные данные: что взять в базу (кросс-сверка между документами) ──
 let CAND = null;
 function srcLink(p){
@@ -1205,26 +1298,25 @@ function tinput(val, path, ph, num){
 }
 function renderDataForm(){
   const per = CTX.period || {};
-  // реквизиты организации — вкладка ОРГАНИЗАЦИЯ, объекты — вкладка ОБЪЕКТ;
-  // здесь остаются периоды и данные по средам
-  renderOrgTab(); renderObjTab();
+  // поля разнесены по вкладкам: ОРГАНИЗАЦИЯ, ОБЪЕКТ, ОТХОДЫ, ВЫБРОСЫ, СБРОСЫ.
+  // здесь остаётся общее — отчётный год и подсказки, куда идти дальше
+  renderOrgTab(); renderObjTab(); renderWasteTab(); renderAirTab(); renderWaterTab();
   let h = '<div class="dsec"><h4>Отчётный год</h4><div class="fgrid">'+
     `<div class="fld"><label>Год (обязателен для всех форм)</label>${tinput(per.year||'','period.year','напр. 2025',true)}</div>`+
     `</div></div>`;
-  h += '<div class="hint" style="margin:-4px 0 10px">Реквизиты организации — '+
-    'во вкладке «ОРГАНИЗАЦИЯ», объекты НВОС — во вкладке «ОБЪЕКТ».</div>';
+  h += '<div class="hint">Реквизиты — вкладка «ОРГАНИЗАЦИЯ», объект НВОС — «ОБЪЕКТ», '+
+    'перечень отходов — «ОТХОДЫ», источники и вещества — «ВЫБРОСЫ» и «СБРОСЫ».</div>';
   const badObjs = (CTX.objects||[]).filter(o=>!isGoodObjCode(o.code)).length;
-  if (badObjs){
-    h += `<div class="issue warn">⚠ Объектов с некорректным кодом: ${badObjs} — `+
-      `откройте вкладку «ОБЪЕКТ», там проверка и удаление.</div>`;
-  }
+  if (badObjs) h += `<div class="issue warn">⚠ Объектов с некорректным кодом: `+
+    `${badObjs} — откройте вкладку «ОБЪЕКТ».</div>`;
+  $("dataform").innerHTML = h;
+}
 
-  const DET = (title, open) =>
-    `<details class="dsec"${open?' open':''}><summary style="cursor:pointer;`+
-    `font-weight:700;font-size:15px;color:var(--acc)">${title}</summary>`;
-
+function renderWasteTab(){
+  if (!$("wasteform") || !CTX) return;
+  let h = "";
   // ── 1. ОТХОДЫ ──────────────────────────────────────────────
-  h += DET("1. Отходы", true);
+  // h += DET("1. Отходы", true);
   h += tableSection("Справки-акты (первичный ввод)", "waste_acts", CTX.waste_acts||[],
     [["name","Наименование отхода"],["fkko_code","ФККО"],["hazard_class","Класс",,"num"],
      ["mass","Масса, т",,"num"],["volume_m3","Объём, м³",,"num"],
@@ -1269,15 +1361,21 @@ function renderDataForm(){
       `Позиции без масс — ${zeros.length} шт. (скрыты) — показать</summary>`;
     h += tablePairs("", "wastes", zeros, wcols);
     h += `<button class="b sec" onclick="deleteZeroWastes()">Удалить все позиции без масс</button>`;
-    h += '</details>';
+    
   }
   h += '<div class="hint" style="margin:2px 0 8px">Кст — стимулирующий коэффициент '+
     'к плате за размещение (пусто = 1; 0,3 — отходы IV–V кл. от утилизации/обезвреживания '+
     'в пределах лимита; 0 — утилизация в собственном производстве).</div>';
-  h += '</details>';
+  
 
+  $("wasteform").innerHTML = h;
+}
+
+function renderAirTab(){
+  if (!$("airform") || !CTX) return;
+  let h = "";
   // ── 2. ВОЗДУХ ──────────────────────────────────────────────
-  h += DET("2. Воздух (выбросы)", (CTX._pair||[]).length > 0);
+  // h += DET("2. Воздух (выбросы)", (CTX._pair||[]).length > 0);
   h += tableSection("Вещества (выбросы в атмосферу)", "_pair", CTX._pair||[],
     [["name","Вещество"],["code","Код"],
      ["mass_norm","В пределах норм., т",,"num"],["mass_limit","В пределах лимита, т",,"num"],
@@ -1286,12 +1384,18 @@ function renderDataForm(){
     'или раздела ООС (перечень веществ и нормативы ПДВ/ВСВ).</div>';
   h += pbreakHtml(CTX._pair, "т", "a");     // разбивка мес/квартал/год
   h += aiTaskHtml("air", "Воздух");
-  h += '</details>';
+  
 
+  $("airform").innerHTML = h;
+}
+
+function renderWaterTab(){
+  if (!$("waterform") || !CTX) return;
+  let h = "";
   // ── 3. ВОДА ────────────────────────────────────────────────
   const wm = CTX._wmeta || {};
   const hasW = (CTX._pwater||[]).length || (CTX._wintake||[]).length || (CTX._wdischarge||[]).length;
-  h += DET("3. Вода (сбросы и водопользование)", !!hasW);
+  // h += DET("3. Вода (сбросы и водопользование)", !!hasW);
   h += tableSection("Вещества (сбросы в водные объекты)", "_pwater", CTX._pwater||[],
     [["name","Вещество"],["code","Код"],
      ["mass_norm","В пределах норм., т",,"num"],["mass_limit","В пределах лимита, т",,"num"],
@@ -1306,7 +1410,7 @@ function renderDataForm(){
     `<div class="fld"><label>Оборотная/повторная вода, тыс. м³</label>${tinput(wm.recycled,'_wmeta.recycled','',true)}</div>`+
     `<div class="fld"><label>Использовано на собств. нужды, тыс. м³</label>${tinput(wm.used_own,'_wmeta.used_own','',true)}</div>`+
     '</div></details>';
-  $("dataform").innerHTML = h;
+  $("waterform").innerHTML = h;
 }
 
 // есть ли у позиции движения хоть одна ненулевая масса

@@ -586,6 +586,35 @@ def api_object_check(params, body):
     return out
 
 
+def api_fkko_check(params, body):
+    """Проверка кодов отходов объекта по действующему каталогу ФККО."""
+    from ecodoc.core import fkko
+    src = body if (body or {}).get("org") else params
+    fkko.seed_builtin()
+    ctx = workspace.load_context(src["org"], src["site"])
+    rows = fkko.check_context(ctx)
+    return {"rows": rows, "updated": fkko.updated(),
+            "partial": bool(fkko.catalog().get("partial")),
+            "size": len(fkko.codes()),
+            "bad": sum(1 for r in rows if not r["ok"]),
+            "unverified": sum(1 for r in rows if r["ok"] and not r["verified"])}
+
+
+def api_fkko_update(params, body):
+    """Обновить каталог ФККО: из сети или из файла, скачанного пользователем."""
+    from ecodoc.core import fkko
+    path = (body.get("path") or "").strip()
+    try:
+        if path:
+            n, src = fkko.load_file(path)
+        else:
+            n, src = fkko.update()
+        return {"ok": True, "codes": n, "source": src,
+                "partial": bool(fkko.catalog().get("partial"))}
+    except Exception as e:
+        return {"error": str(e)[:400]}
+
+
 def api_candidates(params, body):
     """Найденные данные на выбор: значение, источник (файл + лист), статус."""
     from ecodoc.intake import candidates, crosscheck
@@ -852,7 +881,8 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "ai_health": api_ai_health,
               "source_page": api_source_page,
               "source_meta": api_source_meta,
-              "sources": api_sources, "candidates": api_candidates}
+              "sources": api_sources, "candidates": api_candidates,
+              "fkko_check": api_fkko_check}
 POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add, "site_del": api_site_del,
                "org_del": api_org_del,
@@ -878,7 +908,9 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "candidate_decide": api_candidate_decide,
                "candidate_manual": api_candidate_manual,
                "org_verify": api_org_verify,
-               "object_check": api_object_check}
+               "object_check": api_object_check,
+               "fkko_check": api_fkko_check,
+               "fkko_update": api_fkko_update}
 
 
 class Raw:
