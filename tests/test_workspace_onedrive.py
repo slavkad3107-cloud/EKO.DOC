@@ -52,10 +52,12 @@ def test_results_root_env_and_default(monkeypatch, tmp_path):
     monkeypatch.setenv("ECODOC_RESULTS", str(tmp_path / "res"))
     assert workspace.results_root() == tmp_path / "res"
     monkeypatch.delenv("ECODOC_RESULTS")
-    monkeypatch.setattr(workspace, "_UI_PATH", tmp_path / "ui.json")
+    monkeypatch.setenv("ECODOC_HOME", str(tmp_path / "cfg"))
     assert workspace.results_root().name == "ЭКО.DOC"      # Downloads/ЭКО.DOC
-    (tmp_path / "ui.json").write_text(
-        json.dumps({"results_dir": str(tmp_path / "мои")}), encoding="utf-8")
+    ui = workspace._ui_path()
+    ui.parent.mkdir(parents=True, exist_ok=True)
+    ui.write_text(json.dumps({"results_dir": str(tmp_path / "мои")}),
+                  encoding="utf-8")
     assert workspace.results_root() == tmp_path / "мои"
 
 

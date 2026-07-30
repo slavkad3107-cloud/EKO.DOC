@@ -314,6 +314,21 @@ def api_settings(params, body):
             "workspace": str(workspace.root().resolve())}
 
 
+def api_storage(params, body):
+    """Где держать базу: общая (OneDrive) или только на этом компьютере."""
+    mode = (body or {}).get("mode")
+    if mode:
+        try:
+            res = workspace.set_storage_mode(mode)
+        except Exception as e:
+            return {"error": str(e)[:300]}
+        return {**res, "results": str(workspace.results_root())}
+    return {"mode": workspace.storage_mode(),
+            "root": str(workspace.root().resolve()),
+            "results": str(workspace.results_root()),
+            "onedrive": bool(workspace._onedrive())}
+
+
 def api_cleanup(params, body):
     """Освободить место в базе: удалить out и старые исходники attachments."""
     res = workspace.cleanup_base(days=int(body.get("days", 7)))
@@ -940,6 +955,7 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "devdoc": api_devdoc, "submit": api_submit, "open": api_open,
                "waste_summary": api_waste_summary, "missing": api_missing,
                "settings": api_settings, "cleanup": api_cleanup,
+               "storage": api_storage,
                "ai_health": api_ai_health, "ai_task": api_ai_task,
                "intake_url": api_intake_url,
                "source_page": api_source_page,

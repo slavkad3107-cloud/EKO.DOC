@@ -60,6 +60,11 @@ def root() -> Path:
     with _MERGE_LOCK:
         if _ROOT_CACHE is not None:
             return _ROOT_CACHE
+        # выбор пользователя: «общая база в OneDrive» или «только этот компьютер»
+        # (ТЗ: «реализовать ВОЗМОЖНОСТЬ сохранять на онедрайве»)
+        if storage_mode() == "local":
+            _ROOT_CACHE = Path.home() / "ЭКО.DOC"
+            return _ROOT_CACHE
         od = _onedrive()
         legacy = Path.home() / "ЭКО.DOC"
         if od is None:
@@ -80,7 +85,43 @@ def root() -> Path:
         return _ROOT_CACHE
 
 
-def _merge_local_into_shared(local: Path, shared: Path) -> list[str]:
+def storage_mode() -> str:
+    """Где держать базу: 'shared' (OneDrive, по умолчанию) или 'local'."""
+    mode = str(_ui_config().get("storage", "")).lower()
+    return "local" if mode == "local" else "shared"
+
+
+def set_storage_mode(mode: str) -> dict:
+    """Переключить хранилище и перенести данные в выбранную сторону.
+
+    Возвращает {'mode', 'root', 'log'}. Перенос — то же слияние, что при
+    первом запуске: чего нет — копируется, при конфликте площадки побеждает
+    более свежая, проигравшая версия сохраняется рядом в папке-бэкапе."""
+    global _ROOT_CACHE
+    mode = "local" if str(mode).lower() == "local" else "shared"
+    was = root()
+    od = _onedrive()
+    shared = (od / "ЭКО.DOC") if od else None
+    local = Path.home() / "ЭКО.DOC"
+    if mode == "shared" and shared is None:
+        raise RuntimeError("OneDrive на этом компьютере не найден — общая база "
+                           "недоступна. Оставлено хранение только на этом ПК.")
+    target = shared if mode == "shared" else local
+    log: list[str] = []
+    with _MERGE_LOCK:
+        if was.exists() and target.resolve() != was.resolve():
+            log = _merge_local_into_shared(was, target, keep_source=True)
+        cfg = _ui_config()
+        cfg["storage"] = mode
+        _ui_path().parent.mkdir(parents=True, exist_ok=True)
+        _ui_path().write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                              encoding="utf-8")
+        _ROOT_CACHE = target
+    return {"mode": mode, "root": str(target), "log": log}
+
+
+def _merge_local_into_shared(local: Path, shared: Path,
+                             keep_source: bool = False) -> list[str]:
     """Влить локальную базу в общую (OneDrive) и переименовать локальную.
 
     Правила: организации/площадки, которых нет в общей, — копируются целиком;
@@ -127,6 +168,11 @@ def _merge_local_into_shared(local: Path, shared: Path) -> list[str]:
             else:
                 log.append(f"площадка {org_d.name}/{site_d.name}: в общей базе "
                            f"свежее — оставлена общая")
+    if keep_source:
+        # переключение хранилища вручную: исходную папку не трогаем —
+        # пользователь сам решит, удалять ли её
+        log.append(f"источник оставлен как есть: {local}")
+        return log
     # локальную папку переименовываем (не удаляем) — повторный перенос не нужен.
     # Если папка занята другим процессом (старый сервер, OneDrive-синк) —
     # оставляем её с файлом-маркером: данные уже в общей базе, работа
@@ -154,22 +200,30 @@ def _merge_local_into_shared(local: Path, shared: Path) -> list[str]:
     return log
 
 
-_UI_PATH = Path.home() / ".ecodoc" / "ui.json"   # локальные настройки машины
+def _ui_path() -> Path:
+    """Файл локальных настроек машины (папка результатов, режим хранения).
+
+    Путь вычисляется КАЖДЫЙ раз и уважает ECODOC_HOME — иначе тесты писали бы
+    в настоящий конфиг пользователя (уже случалось: тест переключил режим
+    хранения базы на живой машине).
+    """
+    from ecodoc.ai.config import config_dir
+    return config_dir() / "ui.json"
 
 
 def _ui_config() -> dict:
     try:
-        return json.loads(_UI_PATH.read_text(encoding="utf-8-sig"))
+        return json.loads(_ui_path().read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
 
 
 def set_results_root(path: str) -> Path:
-    _UI_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ui_path().parent.mkdir(parents=True, exist_ok=True)
     cfg = _ui_config()
     cfg["results_dir"] = str(path)
-    _UI_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
-                        encoding="utf-8")
+    _ui_path().write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
     return Path(path)
 
 

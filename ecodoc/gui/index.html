@@ -392,6 +392,14 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <h2>Хранение</h2>
       <div class="hint" id="storage-info"></div>
       <div class="row" style="margin-top:6px">
+        <label>База данных:
+          <select id="storage-mode" onchange="setStorage()">
+            <option value="shared">общая (OneDrive) — доступна со всех компьютеров</option>
+            <option value="local">только на этом компьютере</option>
+          </select></label>
+        <span class="spin" id="sp-storage">перенос…</span>
+      </div>
+      <div class="row" style="margin-top:6px">
         <label>Папка готовых документов:
           <input type="text" id="results-dir" style="width:340px"></label>
         <button class="b sec" onclick="saveResultsDir()">Сохранить</button>
@@ -1109,6 +1117,40 @@ function applyOktmo(oktmo){
   CTX.organization = CTX.organization || {};
   CTX.organization.oktmo = oktmo;
   $("obj-msg").textContent = "ОКТМО " + oktmo + " записан в реквизиты — нажмите «Сохранить»";
+}
+
+// ── где хранится база: общая (OneDrive) или только на этом компьютере ──
+async function loadStorage(){
+  if (!$("storage-mode")) return;
+  try{
+    const j = await post("storage", {}, 0);
+    $("storage-mode").value = j.mode || "shared";
+    if (!j.onedrive){
+      const opt = $("storage-mode").querySelector('option[value="shared"]');
+      if (opt){ opt.disabled = true; opt.textContent += " — OneDrive не найден"; }
+    }
+  }catch(e){ /* не критично */ }
+}
+async function setStorage(){
+  const mode = $("storage-mode").value;
+  const where = mode === "shared" ? "общую базу в OneDrive"
+                                  : "локальную базу этого компьютера";
+  if (!confirm(`Перенести данные в ${where}?\n\nОрганизации и площадки будут `+
+      `скопированы; при совпадении победит более свежая версия, прежняя `+
+      `сохранится рядом в папке-бэкапе. Исходная папка останется на месте.`)){
+    loadStorage(); return;
+  }
+  spin("sp-storage", 1);
+  try{
+    const j = await post("storage", {mode}, 0);
+    if (j.error){ $("storage-msg").textContent = "Ошибка: " + j.error; loadStorage(); }
+    else {
+      $("storage-msg").textContent = `база: ${j.root}` +
+        ((j.log||[]).length ? ` · перенесено записей: ${j.log.length}` : "");
+      await refreshMeta(); await loadTree();
+    }
+  }catch(e){ $("storage-msg").textContent = "Ошибка: " + errText(e); }
+  spin("sp-storage", 0);
 }
 
 // ── бланки-образцы документов (папка «Формы») ────────────────────────
@@ -2249,6 +2291,7 @@ async function refreshMeta(){
       (shared ? " (общая, OneDrive)" : "") +
       " · Готовые документы: " + META.results + " (локально)";
     $("results-dir").value = META.results;
+    loadStorage();
   }
   renderForms();
 }
