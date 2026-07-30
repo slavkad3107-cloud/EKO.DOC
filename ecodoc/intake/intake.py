@@ -394,12 +394,18 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
 
     # 3. ИИ-анализ (семантика: акты, массы, протоколы) — по флагу
     ai_failed: set = set()
+    rep = None
     if use_ai and docs:
         from ecodoc.ai.analyzer import analyze_docs
         rep = analyze_docs(docs, ctx, scope=scope)
         ai_failed = rep.failed_files
         lines.append("")
         lines.append(rep.render())
+
+    # 3.5 СНИМКИ ЛИСТОВ-ИСТОЧНИКОВ — строго до удаления исходников (шаг 5):
+    #     сохраняем картинку только тех листов, где что-то нашлось.
+    if in_workspace and docs:
+        lines += _snap_sources(docs, rep, ctx, org, site)
 
     # 4. контроль полноты: чего не хватает и что донести
     target_forms = forms or list(requirements.REQUIREMENTS)
@@ -446,6 +452,46 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
                              f"не проанализировал ({sample}) — когда ИИ станет доступен, "
                              "нажмите «Анализ» ещё раз.")
     return "\n".join(lines)
+
+
+def _snap_sources(docs, rep, ctx: ReportContext, org: str, site: str) -> list[str]:
+    """Снять картинки листов, на которых ИИ что-то нашёл, и записать паспорта
+    документов в sources.json. Исходники на этом шаге ещё не удалены."""
+    from ecodoc.intake import sources
+    from ecodoc.parsers import page_image
+
+    site_dir = workspace.site_dir(org, site)
+    att = site_dir / "attachments"
+    _reg, _by_sha, _names = _load_registry(att)
+    sha_of = {row.get("file"): row.get("sha1", "") for row in _reg}
+    found_pages = dict(getattr(rep, "pages", {}) or {})
+    # regex-разбор (реквизиты, коды НВОС) тоже отмечает листы — снимок нужен
+    # и при загрузке без ИИ
+    for name, fields in (ctx.provenance.get("_pages") or {}).items():
+        found_pages.setdefault(name, {}).update(fields)
+    notes, snapped = [], 0
+    for doc in docs:
+        name = doc.path.name
+        sha = sha_of.get(name) or _sha1(doc.path)
+        pages = {v.get("page") for v in (found_pages.get(name) or {}).values()
+                 if isinstance(v, dict) and v.get("page")}
+        images, note = ({}, "")
+        if pages:
+            images, note = page_image.capture(doc.path, pages, site_dir, sha)
+            snapped += len(images)
+        if note:
+            notes.append(note)
+        sources.remember(site_dir, sha, file=name, method=doc.method,
+                         page_kind=getattr(doc, "page_kind", "page"),
+                         pages_total=len(getattr(doc, "pages", []) or []),
+                         images=images,
+                         size=doc.path.stat().st_size if doc.path.exists() else 0)
+    out = []
+    if snapped:
+        out.append(f"Сохранено листов-источников: {snapped} "
+                   f"(смотрите «откуда взято» в Данных)")
+    out += [f"  ⚠ {n}" for n in notes[:5]]
+    return out
 
 
 def _purge_sources(att_dir: Path, names: list[str]) -> int:

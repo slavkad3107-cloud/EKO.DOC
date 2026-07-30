@@ -58,11 +58,36 @@ def parse_files(paths: list[str | Path], ocr: bool = True) -> ReportContext:
     return ctx
 
 
+def page_of_value(doc: ExtractedDoc, value: str) -> int:
+    """Номер листа, на котором встретилось значение (1 — если не нашли).
+
+    Нужен, чтобы показать пользователю скан именно того листа, откуда взято
+    значение, — и для regex-разбора тоже, не только для ИИ."""
+    pages = getattr(doc, "pages", None) or []
+    needle = re.sub(r"\s+", "", str(value or ""))
+    if not needle:
+        return 1
+    for i, page in enumerate(pages, 1):
+        if needle in re.sub(r"\s+", "", page or ""):
+            return i
+    return 1
+
+
+def _note_page(ctx: ReportContext, doc: ExtractedDoc, field: str, value: str):
+    """Запомнить лист-источник значения (для снимка страницы при приёме)."""
+    if not isinstance(ctx.provenance, dict):
+        return
+    by_doc = ctx.provenance.setdefault("_pages", {})
+    by_doc.setdefault(doc.path.name, {})[field] = {
+        "page": page_of_value(doc, value), "exact": True}
+
+
 def _set(ctx: ReportContext, obj, attr: str, value: str, doc: ExtractedDoc):
     """Заполнить поле, только если оно ещё пустое; записать провенанс."""
     if value and not getattr(obj, attr, ""):
         setattr(obj, attr, value)
         ctx.provenance[attr] = doc.path.name
+        _note_page(ctx, doc, attr, value)
 
 
 def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
@@ -90,7 +115,9 @@ def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
                 obj = NVOSObject(code=code, region_code=code.split("-")[0])
                 ctx.objects.append(obj)
                 ctx.provenance.setdefault("objects", []).append(
-                    {"code": code, "src": doc.path.name})
+                    {"code": code, "src": doc.path.name,
+                     "page": page_of_value(doc, code)})
+                _note_page(ctx, doc, f"objects[{code}].code", code)
 
     if scope not in ("all", "acts", "passports"):
         return

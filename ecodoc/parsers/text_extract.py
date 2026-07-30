@@ -9,14 +9,73 @@ from pathlib import Path
 
 
 class ExtractedDoc:
-    def __init__(self, path: Path, text: str, pages: list[str], method: str):
+    def __init__(self, path: Path, text: str, pages: list[str], method: str,
+                 page_kind: str = "page"):
         self.path = Path(path)
         self.text = text
-        self.pages = pages          # текст постранично (для провенанса)
+        self.pages = pages          # текст «постранично» — для провенанса
         self.method = method        # как извлекли: pdf-text / pdf-ocr / docx / ocr
+        # что считать «листом» в этом формате: page — страница PDF/скан,
+        # sheet — лист книги Excel, block — кусок сплошного текста (docx и т.п.).
+        # Нужно, чтобы подпись в интерфейсе была честной: «лист 2 из 4»,
+        # «лист "Отходы 2025"», «фрагмент 3 из 7».
+        self.page_kind = page_kind
+
+    def page_label(self, index: int) -> str:
+        """Человекочитаемая подпись страницы (index — 1-based)."""
+        total = len(self.pages) or 1
+        if self.page_kind == "sheet":
+            title = _sheet_title(self.pages[index - 1]) if 0 < index <= total else ""
+            return f"лист «{title}»" if title else f"лист {index} из {total}"
+        if self.page_kind == "block":
+            return f"фрагмент {index} из {total}"
+        return f"лист {index} из {total}"
 
     def __repr__(self) -> str:
         return f"<ExtractedDoc {self.path.name} method={self.method} chars={len(self.text)}>"
+
+
+_SHEET_MARK = "═ Лист: "
+_BLOCK_CHARS = 3000       # размер «фрагмента» для форматов без страниц
+
+
+def _sheet_title(page_text: str) -> str:
+    head = page_text.lstrip().split("\n", 1)[0]
+    if head.startswith(_SHEET_MARK):
+        return head[len(_SHEET_MARK):].rstrip(" ═")
+    return ""
+
+
+def _split_sheets(text: str) -> list[str]:
+    """Текст книги Excel → страницы по маркерам листов."""
+    if _SHEET_MARK not in text:
+        return [text]
+    pages, cur = [], []
+    for line in text.split("\n"):
+        if line.startswith(_SHEET_MARK) and cur:
+            pages.append("\n".join(cur))
+            cur = []
+        cur.append(line)
+    if cur:
+        pages.append("\n".join(cur))
+    return pages or [text]
+
+
+def _split_blocks(text: str, size: int = _BLOCK_CHARS) -> list[str]:
+    """Сплошной текст → «фрагменты» по абзацам (не режем строки посередине)."""
+    if len(text) <= size:
+        return [text]
+    blocks, cur = [], []
+    length = 0
+    for line in text.split("\n"):
+        if length and length + len(line) + 1 > size:
+            blocks.append("\n".join(cur))
+            cur, length = [], 0
+        cur.append(line)
+        length += len(line) + 1
+    if cur:
+        blocks.append("\n".join(cur))
+    return blocks or [text]
 
 
 def extract(path: str | Path, ocr: bool = True) -> ExtractedDoc:
@@ -36,7 +95,7 @@ def extract(path: str | Path, ocr: bool = True) -> ExtractedDoc:
         return _extract_image(p)
     if suffix in (".txt", ".csv"):
         text = p.read_text(encoding="utf-8", errors="replace")
-        return ExtractedDoc(p, text, [text], "txt")
+        return ExtractedDoc(p, text, _split_blocks(text), "txt", "block")
     if suffix in (".xml",):
         return _extract_xml(p)
     if suffix in (".rtf",):
@@ -57,7 +116,7 @@ def _extract_xlsx(p: Path) -> ExtractedDoc:
                 parts.append("\t".join(cells))
     wb.close()
     text = "\n".join(parts)
-    return ExtractedDoc(p, text, [text], "xlsx")
+    return ExtractedDoc(p, text, _split_sheets(text), "xlsx", "sheet")
 
 
 def _extract_xls(p: Path) -> ExtractedDoc:
@@ -73,7 +132,7 @@ def _extract_xls(p: Path) -> ExtractedDoc:
             if cells:
                 parts.append("\t".join(cells))
     text = "\n".join(parts)
-    return ExtractedDoc(p, text, [text], "xls")
+    return ExtractedDoc(p, text, _split_sheets(text), "xls", "sheet")
 
 
 def _extract_xml(p: Path) -> ExtractedDoc:
@@ -83,7 +142,7 @@ def _extract_xml(p: Path) -> ExtractedDoc:
     # оставляем текстовое содержимое + значения атрибутов (в них часто ИНН/КПП)
     text = re.sub(r"<[^>]+>", " ", raw)
     text = re.sub(r"\s+", " ", text).strip()
-    return ExtractedDoc(p, text or raw, [text], "xml")
+    return ExtractedDoc(p, text or raw, _split_blocks(text or raw), "xml", "block")
 
 
 def _extract_rtf(p: Path) -> ExtractedDoc:
@@ -97,7 +156,7 @@ def _extract_rtf(p: Path) -> ExtractedDoc:
         text = re.sub(r"\\[a-z]+-?\d* ?", " ", raw)
         text = re.sub(r"[{}]", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
-    return ExtractedDoc(p, text, [text], "rtf")
+    return ExtractedDoc(p, text, _split_blocks(text), "rtf", "block")
 
 
 _OCR_DPI = 300
@@ -132,7 +191,7 @@ def _extract_docx(p: Path) -> ExtractedDoc:
         for row in table.rows:
             parts.append("\t".join(cell.text for cell in row.cells))
     text = "\n".join(parts)
-    return ExtractedDoc(p, text, [text], "docx")
+    return ExtractedDoc(p, text, _split_blocks(text), "docx", "block")
 
 
 def _extract_doc(p: Path) -> ExtractedDoc:
@@ -175,12 +234,12 @@ def _extract_doc(p: Path) -> ExtractedDoc:
         finally:
             if _com_inited:
                 pythoncom.CoUninitialize()
-        return ExtractedDoc(p, text, [text], "doc-com")
+        return ExtractedDoc(p, text, _split_blocks(text), "doc-com", "block")
     except Exception as com_exc:
         # запасной путь: LibreOffice → txt
         txt = _soffice_to_txt(short)
         if txt is not None:
-            return ExtractedDoc(p, txt, [txt], "doc-soffice")
+            return ExtractedDoc(p, txt, _split_blocks(txt), "doc-soffice", "block")
         raise RuntimeError(
             f"Не удалось прочитать .doc ({com_exc}). "
             f"Сконвертируйте {p.name} в .docx или .pdf."

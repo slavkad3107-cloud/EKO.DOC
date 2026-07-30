@@ -82,6 +82,10 @@ class ExtractionReport:
     # файлы, которые ИИ НЕ проанализировал (провайдер упал/не настроен) —
     # intake не удаляет их исходники, чтобы анализ можно было повторить
     failed_files: set = field(default_factory=set)
+    # лист-источник для каждой цитаты: {имя файла: {путь поля: {page, exact}}}
+    pages: dict = field(default_factory=dict)
+    # диапазон листов каждого чанка: {метка чанка: (первый, последний)}
+    page_span: dict = field(default_factory=dict)
 
     def render(self) -> str:
         lines = ["── ИИ-анализ: что принято и откуда взято ──"]
@@ -147,6 +151,55 @@ def _dec(v) -> Decimal | None:
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", str(s)).strip().lower().replace("ё", "е")
+
+
+def page_chunks(doc) -> list[tuple[str, int, int]]:
+    """Текст документа → чанки для модели, нарезанные ПО СТРАНИЦАМ.
+
+    Возвращает [(текст, первая страница, последняя страница)] — 1-based.
+    Границы чанка совпадают с границами страниц, поэтому лист-источник
+    известен всегда, даже если модель не вернула цитату. Страница длиннее
+    лимита режется внутри себя (обе части ссылаются на неё же).
+    """
+    pages = [p for p in (getattr(doc, "pages", None) or [doc.text])]
+    out: list[tuple[str, int, int]] = []
+    buf: list[str] = []
+    first = 0
+    for i, page in enumerate(pages, 1):
+        if not (page or "").strip():
+            continue
+        if len(page) > _CHUNK:                      # огромная страница — режем
+            if buf:
+                out.append(("\n".join(buf), first, i - 1))
+                buf, first = [], 0
+            for j in range(0, len(page), _CHUNK):
+                out.append((page[j:j + _CHUNK], i, i))
+            continue
+        size = sum(len(b) + 1 for b in buf)
+        if buf and size + len(page) > _CHUNK:
+            out.append(("\n".join(buf), first, i - 1))
+            buf, first = [], 0
+        if not buf:
+            first = i
+        buf.append(page)
+    if buf:
+        out.append(("\n".join(buf), first, len(pages)))
+    return out or [(doc.text, 1, max(1, len(pages)))]
+
+
+def page_of_quote(pages: list[str], quote: str,
+                  span: tuple[int, int]) -> tuple[int, bool]:
+    """(номер листа 1-based, точно ли найдено) для цитаты внутри диапазона.
+
+    Если цитаты нет в тексте (или модель её сочинила) — возвращаем первый лист
+    чанка: он всё равно верен, просто менее точен."""
+    lo, hi = max(1, span[0]), min(len(pages), span[1]) if pages else span[1]
+    q = _norm(quote or "")
+    if q:
+        for i in range(lo, hi + 1):
+            if q in _norm(pages[i - 1]):
+                return i, True
+    return lo, False
 
 
 def _verify_quotes(quotes: dict, chunk: str) -> dict:
@@ -449,25 +502,32 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
         rep.failed_files.update(d.path.name for d in docs)
         return rep
 
-    # список задач (документ, кусок текста, метка)
+    # список задач: чанки нарезаны ПО СТРАНИЦАМ — так у каждого найденного
+    # значения есть лист-источник (для показа скана страницы пользователю)
     tasks = []
+    by_name = {}
     for doc in docs:
-        chunks = [doc.text[i:i + _CHUNK] for i in range(0, len(doc.text), _CHUNK)] \
-            or [""]
-        for n, chunk in enumerate(chunks, 1):
+        by_name[doc.path.name] = doc
+        chunks = page_chunks(doc)
+        for chunk, p_from, p_to in chunks:
             if not chunk.strip():
                 continue
-            label = doc.path.name if len(chunks) == 1 else f"{doc.path.name} (ч.{n})"
-            tasks.append((label, doc.path.name, chunk))
+            where = (f" (лист {p_from})" if p_from == p_to
+                     else f" (листы {p_from}–{p_to})")
+            label = doc.path.name + ("" if len(chunks) == 1 else where)
+            tasks.append((label, doc.path.name, chunk, p_from, p_to))
 
     def _ask(task):
-        label, docname, chunk = task
+        label, docname, chunk, p_from, p_to = task
+        where = (f"страница {p_from}" if p_from == p_to
+                 else f"страницы {p_from}–{p_to}")
         try:
             answer, model = chat_with_fallback(
-                cfg, SYSTEM, f"Документ «{docname}»:\n\n{chunk}")
-            return (label, docname, chunk, _parse_json(answer), model, None)
+                cfg, SYSTEM, f"Документ «{docname}», {where}:\n\n{chunk}")
+            return (label, docname, chunk, _parse_json(answer), model, None,
+                    (p_from, p_to))
         except (AIError, ValueError, json.JSONDecodeError) as e:
-            return (label, docname, chunk, None, "", str(e))
+            return (label, docname, chunk, None, "", str(e), (p_from, p_to))
 
     # локальный провайдер (ollama) — без параллелизма (перегрузит одну модель);
     # облачный — до 6 одновременных запросов
@@ -481,13 +541,22 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
     # слияние — последовательно, в порядке документов; scope определяет,
     # какие категории данных принимаются из этой партии
     from ecodoc.core.models import Medium
-    for label, docname, chunk, data, model, err in results:
+    for label, docname, chunk, data, model, err, span in results:
         if err:
             rep.errors.append(f"{label}: {err}")
             rep.failed_files.add(docname)
             continue
         rep.used_model = model
         quotes = _verify_quotes(data.get("quotes") or {}, chunk)
+        # лист-источник для каждой цитаты: пригодится и в отчёте, и для показа
+        # скана страницы; при отсутствии цитаты берём первый лист чанка
+        doc_obj = by_name.get(docname)
+        doc_pages = getattr(doc_obj, "pages", None) or [chunk]
+        pages_seen = rep.pages.setdefault(docname, {})
+        for key, q in quotes.items():
+            page, exact = page_of_quote(doc_pages, q, span)
+            pages_seen[key] = {"page": page, "exact": exact}
+        rep.page_span[label] = span
         if scope in ("all", "org"):
             _merge_org(ctx, data, quotes, label, rep)
             _merge_objects(ctx, data, label, rep)

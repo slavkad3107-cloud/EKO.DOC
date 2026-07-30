@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import tempfile
 import threading
 import urllib.parse
@@ -20,6 +21,7 @@ from ecodoc import __version__
 from ecodoc.core import registry, serialize, workspace
 
 INDEX = Path(__file__).parent / "index.html"
+SOURCE = Path(__file__).parent / "source.html"   # просмотр листа-источника
 
 
 def _forms() -> list[dict]:
@@ -464,6 +466,128 @@ def api_ai_save(params, body):
     return {"ok": True, "text": detect.describe(load_config())}
 
 
+_SHA_RE = re.compile(r"^[0-9a-f]{16,40}$")
+
+
+def _source_paths(src: dict) -> tuple[Path, str, int, dict]:
+    """Проверить параметры запроса листа-источника и вернуть безопасный путь.
+
+    Защита как в api_open: sha1 — только hex, номер листа — целое,
+    итоговый путь обязан лежать внутри папки площадки."""
+    from ecodoc.intake import sources
+    from ecodoc.parsers import page_image
+    org, site = src.get("org", ""), src.get("site", "")
+    doc = str(src.get("doc", "")).lower()
+    if not org or not site or not _SHA_RE.match(doc):
+        raise ValueError("неверные параметры листа-источника")
+    raw_page = src.get("page")
+    try:
+        # именно так, а не `or 1`: явный 0 — это ошибка, а не «первый лист»
+        page = 1 if raw_page in (None, "") else int(raw_page)
+    except (TypeError, ValueError):
+        raise ValueError("неверный номер листа")
+    if not 1 <= page <= 9999:
+        raise ValueError("неверный номер листа")
+    site_dir = workspace.site_dir(org, site).resolve()
+    rec = sources.doc_by_sha(site_dir, doc) or {}
+    name = (rec.get("images") or {}).get(str(page), "")
+    if not name:
+        return Path(), doc, page, rec
+    path = (page_image.pages_dir(site_dir) / name).resolve()
+    path.relative_to(site_dir)                     # бросит, если вышли наружу
+    return path, doc, page, rec
+
+
+def api_source_page(params, body):
+    """Картинка листа-источника (image/jpeg)."""
+    path, _doc, _page, _rec = _source_paths(body if (body or {}).get("doc") else params)
+    if not path or not path.is_file():
+        return {"error": "лист не сохранён (исходник уже удалён или формат без картинки)"}
+    return Raw(path.read_bytes(), "image/jpeg")
+
+
+def api_source_meta(params, body):
+    """Сведения о документе и листе: имя файла, способ разбора, что найдено."""
+    src = body if (body or {}).get("doc") else params
+    path, doc, page, rec = _source_paths(src)
+    ctx = workspace.load_context(src["org"], src["site"])
+    found = []
+    for fld, info in (ctx.provenance.get("_pages") or {}).get(rec.get("file"), {}).items():
+        if isinstance(info, dict) and int(info.get("page") or 0) == page:
+            found.append({"field": fld, "exact": bool(info.get("exact"))})
+    images = rec.get("images") or {}
+    nums = sorted(int(k) for k in images)
+    return {"file": rec.get("file", ""), "method": rec.get("method", ""),
+            "page_kind": rec.get("page_kind", "page"),
+            "pages_total": rec.get("pages_total", 0),
+            "doc_type": rec.get("doc_type", ""), "page": page,
+            "has_image": bool(path and path.is_file()),
+            "found": found, "doc": doc,
+            "prev": max([n for n in nums if n < page], default=0),
+            "next": min([n for n in nums if n > page], default=0)}
+
+
+def api_sources(params, body):
+    """Разобранные документы площадки: что нашли и с каких листов (для ЗАГРУЗКИ)."""
+    from ecodoc.intake import sources
+    src = body if (body or {}).get("org") else params
+    site_dir = workspace.site_dir(src["org"], src["site"])
+    ctx = workspace.load_context(src["org"], src["site"])
+    by_file = ctx.provenance.get("_pages") or {}
+    out = []
+    for sha, rec in sources.load(site_dir)["docs"].items():
+        fields = by_file.get(rec.get("file"), {})
+        pages = sorted({int(v["page"]) for v in fields.values()
+                        if isinstance(v, dict) and v.get("page")})
+        images = {int(k): v for k, v in (rec.get("images") or {}).items()}
+        out.append({"doc": sha, "file": rec.get("file", ""),
+                    "method": rec.get("method", ""),
+                    "page_kind": rec.get("page_kind", "page"),
+                    "pages_total": rec.get("pages_total", 0),
+                    "found": len(fields), "fields": sorted(fields),
+                    "pages": pages,
+                    "image_pages": sorted(images),
+                    "size": rec.get("size", 0)})
+    out.sort(key=lambda r: (-r["found"], r["file"]))
+    return {"docs": out, "total": len(out)}
+
+
+def api_intake_url(params, body):
+    """Загрузка исходника ПО ССЫЛКЕ (требование ТЗ: doc/pdf/jpg/XML/zip/папка/ссылка)."""
+    import shutil
+    import tempfile
+    import urllib.request
+
+    from ecodoc.intake import intake
+    url = (body.get("url") or "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return {"error": "Укажите ссылку, начинающуюся с http:// или https://"}
+    tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_url_"))
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "EcoDoc/1.0"})
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            head = resp.headers
+            name = ""
+            disp = head.get("Content-Disposition") or ""
+            m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', disp)
+            if m:
+                name = urllib.parse.unquote(m.group(1)).strip()
+            if not name:
+                name = Path(urllib.parse.urlparse(url).path).name or "файл_по_ссылке"
+            size = int(head.get("Content-Length") or 0)
+            if size > 300 * 1024 * 1024:
+                return {"error": f"файл больше 300 МБ ({size // 1024 // 1024} МБ)"}
+            dst = tmpdir / Path(name).name
+            with open(dst, "wb") as f:
+                shutil.copyfileobj(resp, f, 1024 * 256)
+        names, log = intake.store([str(dst)], body["org"], body["site"])
+        return {"stored": names, "log": log, "file": dst.name}
+    except Exception as e:
+        return {"error": f"не удалось скачать: {str(e)[:200]}"}
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def api_ai_health(params, body):
     """Состояние всех моделей: работает / лимит / нет ключа + кто выбран.
 
@@ -598,7 +722,10 @@ def api_open(params, body):
 GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "context": api_context_get, "calendar": api_calendar,
               "reference": api_reference, "ai_config": api_ai_config,
-              "ai_health": api_ai_health}
+              "ai_health": api_ai_health,
+              "source_page": api_source_page,
+              "source_meta": api_source_meta,
+              "sources": api_sources}
 POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add, "site_del": api_site_del,
                "org_del": api_org_del,
@@ -616,12 +743,32 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "devdoc": api_devdoc, "submit": api_submit, "open": api_open,
                "waste_summary": api_waste_summary, "missing": api_missing,
                "settings": api_settings, "cleanup": api_cleanup,
-               "ai_health": api_ai_health, "ai_task": api_ai_task}
+               "ai_health": api_ai_health, "ai_task": api_ai_task,
+               "intake_url": api_intake_url,
+               "source_page": api_source_page,
+               "source_meta": api_source_meta,
+              "sources": api_sources}
+
+
+class Raw:
+    """Не-JSON ответ (картинка листа-источника, страница просмотра)."""
+
+    def __init__(self, data: bytes, ctype: str, max_age: int = 86400):
+        self.data, self.ctype, self.max_age = data, ctype, max_age
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # тихий лог в консоль
         pass
+
+    def _raw(self, r: "Raw"):
+        self.send_response(200)
+        self.send_header("Content-Type", r.ctype)
+        self.send_header("Content-Length", str(len(r.data)))
+        if r.max_age:
+            self.send_header("Cache-Control", f"max-age={r.max_age}")
+        self.end_headers()
+        self.wfile.write(r.data)
 
     def _json(self, obj, status=200):
         data = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
@@ -639,13 +786,22 @@ class Handler(BaseHTTPRequestHandler):
         if not fn:
             return self._json({"error": f"нет такого API: {name}"}, 404)
         try:
-            self._json(fn(params, body))
+            out = fn(params, body)
+            return self._raw(out) if isinstance(out, Raw) else self._json(out)
         except Exception as e:  # ошибка — в интерфейс, не в консоль
             self._json({"error": f"{type(e).__name__}: {e}"}, 500)
 
     def do_GET(self):
         if self.path.startswith("/api/"):
             return self._route(GET_ROUTES, {})
+        # отдельная страница просмотра листа-источника
+        if urllib.parse.urlparse(self.path).path == "/source":
+            data = SOURCE.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            return self.wfile.write(data)
         # всё остальное — одна страница
         data = INDEX.read_bytes()
         self.send_response(200)

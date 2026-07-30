@@ -121,7 +121,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 <main>
   <div class="hint" id="selinfo">← выберите площадку слева (или создайте организацию и площадку)</div>
   <div class="tabs" id="tabs">
-    <button data-t="intake" class="on">Приём документов</button>
+    <button data-t="intake" class="on">ЗАГРУЗКА</button>
     <button data-t="data">Данные</button>
     <button data-t="report">Отчётность</button>
     <button data-t="dev">Разработка</button>
@@ -150,12 +150,21 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
           </select></label>
         <label><input type="checkbox" id="useai" checked> ИИ-анализ (значения с цитатами)</label>
         <button class="b" id="btn-intake" onclick="doIntake()">Принять</button>
+        <button class="b sec" id="btn-pause" onclick="pauseIntake()" style="display:none">⏸ Пауза</button>
         <button class="b sec" id="btn-stop" onclick="stopIntake()" style="display:none">Стоп</button>
         <span class="spin" id="sp-intake">обработка… (ИИ-анализ может занять минуты)</span>
+      </div>
+      <div class="row">
+        <label>или ссылка на файл:
+          <input type="text" id="intake-url" style="width:330px"
+                 placeholder="https://… (pdf, doc, xls, jpg, zip)"></label>
+        <button class="b sec" onclick="doIntakeUrl()">Загрузить по ссылке</button>
+        <span class="spin" id="sp-url">скачиваю…</span>
       </div>
       <div class="hint">Каждый файл будет распределён: что это за документ,
         какие данные из него можно взять и для каких форм; в конце — чего не хватает.</div>
       <div class="filelist" id="filelist"></div>
+      <div id="srcbox"></div>
       <pre class="out" id="out-intake" style="display:none"></pre>
     </div>
   </div>
@@ -444,6 +453,7 @@ $("tabs").addEventListener("click", e => {
   e.target.classList.add("on");
   $("tab-" + e.target.dataset.t).classList.add("on");
   if (e.target.dataset.t === "svc" && !AICONF) loadAiPanel();
+  if (e.target.dataset.t === "intake" && ORG) loadSources().catch(()=>{});
   if (e.target.dataset.t === "report" && ORG){
     const act = MODS.rep.find(m => $("mt-"+m) && $("mt-"+m).classList.contains("on")) || "rc";
     loadMissing(act).catch(()=>{});
@@ -684,7 +694,7 @@ function renderReport(text, boxId){
     box.appendChild(det);
   }
 }
-let INTAKE_STOP = false;
+let INTAKE_STOP = false, INTAKE_PAUSE = false;
 async function uploadBatch(batch){
   // закодировать и отправить одну партию; вернуть массив имён (stored)
   const files = [];
@@ -702,16 +712,20 @@ async function uploadBatch(batch){
 async function runIntake(cfg){
   // общий конвейер приёма: cfg = {files, scope, useAi, list, out, btn, spin}
   // (элементы — главной вкладки Приём или блока загрузки модуля)
-  INTAKE_STOP = false;
+  INTAKE_STOP = false; INTAKE_PAUSE = false;
   const fs = cfg.files;
   $(cfg.btn).disabled = true;
   if ($("btn-stop")) $("btn-stop").style.display = "inline-block";
+  if ($("btn-pause")){ $("btn-pause").style.display = "inline-block";
+                       $("btn-pause").textContent = "⏸ Пауза"; }
   spin(cfg.spin, 1);
   const stored = [];
   let failedBatches = 0, failedFiles = 0, lastUpErr = "";
   try{
     const batches = makeBatches(fs);
     for (let i = 0; i < batches.length && !INTAKE_STOP; i++){
+      await waitResume(cfg.list);
+      if (INTAKE_STOP) break;
       $(cfg.list).textContent =
         `Загрузка: партия ${i+1}/${batches.length} · принято ${stored.length}/${fs.length}` +
         (failedFiles ? ` · сбоев: ${failedFiles}` : "");
@@ -739,6 +753,8 @@ async function runIntake(cfg){
     const CH = 40;   // извлечение и ИИ идут параллельно на сервере
     let rep = "", analyzed = 0, analyzeFail = 0;
     for (let k = 0; k < stored.length && !INTAKE_STOP; k += CH){
+      await waitResume(cfg.list);
+      if (INTAKE_STOP) break;
       const chunk = stored.slice(k, k + CH);
       $(cfg.list).textContent =
         `Анализ ${Math.min(k+CH, stored.length)}/${stored.length}` +
@@ -759,6 +775,7 @@ async function runIntake(cfg){
     renderReport(rep, cfg.out);
     $(cfg.list).textContent = `✓ Принято ${stored.length} файл(ов).`;
     loadCtx().catch(()=>{});
+    loadSources().catch(()=>{});          // таблица «что нашли и с какого листа»
     return stored.length;
   }catch(e){
     show(cfg.out, "Ошибка: " + errText(e) +
@@ -766,6 +783,7 @@ async function runIntake(cfg){
   }finally{
     $(cfg.btn).disabled = false;
     if ($("btn-stop")) $("btn-stop").style.display = "none";
+    if ($("btn-pause")) $("btn-pause").style.display = "none";
     spin(cfg.spin, 0);
   }
 }
@@ -800,7 +818,65 @@ async function doModIntake(mod){
   if (n) inp.value = "";
   loadMissing(mod).catch(()=>{});
 }
-function stopIntake(){ INTAKE_STOP = true; }
+function stopIntake(){ INTAKE_STOP = true; INTAKE_PAUSE = false; }
+function pauseIntake(){
+  INTAKE_PAUSE = !INTAKE_PAUSE;
+  $("btn-pause").textContent = INTAKE_PAUSE ? "▶ Продолжить" : "⏸ Пауза";
+}
+// ждём, пока снята пауза (проверяется между партиями и чанками анализа)
+async function waitResume(listId){
+  while (INTAKE_PAUSE && !INTAKE_STOP){
+    if (listId) $(listId).textContent = "⏸ Пауза — нажмите «Продолжить»";
+    await new Promise(r => setTimeout(r, 400));
+  }
+}
+async function doIntakeUrl(){
+  needSite();
+  const url = ($("intake-url").value||"").trim();
+  if (!url){ alert("Вставьте ссылку на файл"); return; }
+  spin("sp-url", 1);
+  try{
+    const j = await post("intake_url", {org:ORG, site:SITE, url}, 0);
+    if (j.error){ show("out-intake", "Ошибка: " + j.error); }
+    else {
+      $("filelist").textContent = `Скачано: ${j.file}. Анализирую…`;
+      const r = await post("intake_run", {org:ORG, site:SITE, names:j.stored,
+        ai:$("useai").checked, scope:$("intake-scope").value}, 0);
+      renderReport(r.report, "out-intake");
+      $("filelist").textContent = `✓ Принято по ссылке: ${j.file}`;
+      $("intake-url").value = "";
+      loadCtx().catch(()=>{}); loadSources().catch(()=>{});
+    }
+  }catch(e){ show("out-intake", "Ошибка: " + errText(e)); }
+  spin("sp-url", 0);
+}
+// ── что нашли в каждом файле и с какого листа (таблица под загрузкой) ──
+async function loadSources(){
+  const box = $("srcbox");
+  if (!box || !ORG || !SITE) return;
+  let j;
+  try{ j = await get("sources", {org:ORG, site:SITE}); }catch(e){ return; }
+  if (!j.docs || !j.docs.length){ box.innerHTML = ""; return; }
+  const rows = j.docs.map(d => {
+    const label = d.page_kind === "sheet" ? "листов книги"
+                : d.page_kind === "block" ? "фрагментов" : "листов";
+    const links = (d.image_pages||[]).map(p =>
+      `<a class="link" target="_blank" href="/source?org=${encodeURIComponent(ORG)}`+
+      `&site=${encodeURIComponent(SITE)}&doc=${d.doc}&page=${p}">📄 ${p}</a>`).join(" ");
+    return `<tr><td>${esc(d.file)}</td>`+
+      `<td class="hint">${d.pages_total||"?"} ${label}<br>${esc(d.method||"")}</td>`+
+      `<td>${d.found ? d.found + " знач." : "<span class='hint'>—</span>"}`+
+      `<div class="hint">${esc((d.fields||[]).slice(0,4).join(", "))}</div></td>`+
+      `<td>${links || "<span class='hint'>нет скана</span>"}</td></tr>`;
+  }).join("");
+  box.innerHTML = `<details class="dsec" open><summary style="cursor:pointer;color:var(--acc)">`+
+    `Разобранные документы (${j.total}) — что найдено и с какого листа</summary>`+
+    `<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>Файл</th>`+
+    `<th>Разбор</th><th>Найдено</th><th>Лист-источник</th></tr></thead><tbody>`+
+    rows + `</tbody></table></div>`+
+    `<div class="hint">Исходные файлы не хранятся — сохранены только листы, `+
+    `на которых нашлись данные. «📄 N» открывает скан листа в новой вкладке.</div></details>`;
+}
 
 // ── данные (форма вместо сырого JSON) ──
 let CTX = null;

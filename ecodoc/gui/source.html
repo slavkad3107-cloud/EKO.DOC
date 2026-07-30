@@ -1,0 +1,102 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Лист-источник — ЭКО.DOC</title>
+<style>
+:root{--acc:#1a6d42;--mut:#6b7280;--line:#d8dee9;--panel:#f7f9fb}
+*{box-sizing:border-box}
+body{margin:0;font:15px/1.45 "Segoe UI",Arial,sans-serif;color:#1f2933;background:#fff}
+header{padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);
+  display:flex;gap:14px;align-items:center;flex-wrap:wrap;position:sticky;top:0}
+h1{font-size:16px;margin:0}
+.hint{color:var(--mut);font-size:13px}
+main{display:flex;gap:16px;padding:16px;align-items:flex-start;flex-wrap:wrap}
+#sheet{position:relative;flex:1 1 620px;min-width:320px;border:1px solid var(--line);
+  border-radius:8px;overflow:hidden;background:#fff}
+#sheet img{display:block;width:100%;height:auto}
+.side{flex:0 1 320px;min-width:260px}
+.b{padding:6px 12px;border:1px solid var(--acc);border-radius:6px;background:var(--acc);
+  color:#fff;cursor:pointer;font-size:14px}
+.b.sec{background:#fff;color:var(--acc)}
+.b:disabled{opacity:.45;cursor:default}
+.item{border:1px solid var(--line);border-radius:6px;padding:8px 10px;margin-bottom:8px}
+.item .f{font-weight:600}
+pre.txt{white-space:pre-wrap;border:1px solid var(--line);border-radius:8px;padding:12px;
+  background:var(--panel);max-height:70vh;overflow:auto}
+.err{color:#b3261e}
+</style>
+
+<header>
+  <h1 id="ttl">Лист-источник</h1>
+  <span class="hint" id="sub"></span>
+  <span style="flex:1"></span>
+  <button class="b sec" id="prev" onclick="go(-1)">‹ предыдущий лист</button>
+  <button class="b sec" id="next" onclick="go(1)">следующий лист ›</button>
+  <button class="b sec" onclick="window.print()">Печать</button>
+</header>
+
+<main>
+  <div id="sheet"><div class="hint" style="padding:16px" id="ph">загрузка…</div></div>
+  <div class="side">
+    <h2 style="font-size:15px;margin:0 0 8px">Что взято с этого листа</h2>
+    <div id="found"><div class="hint">—</div></div>
+    <div class="hint" id="note" style="margin-top:10px"></div>
+  </div>
+</main>
+
+<script>
+const Q = new URLSearchParams(location.search);
+const esc = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+let META = null;
+
+async function load(){
+  const p = new URLSearchParams({org:Q.get("org")||"", site:Q.get("site")||"",
+                                doc:Q.get("doc")||"", page:Q.get("page")||"1"});
+  try{
+    const r = await fetch("/api/source_meta?" + p);
+    META = await r.json();
+    if (META.error){ show_error(META.error); return; }
+  }catch(e){ show_error(e.message); return; }
+
+  const kind = META.page_kind === "sheet" ? "лист книги"
+             : META.page_kind === "block" ? "фрагмент" : "лист";
+  document.getElementById("ttl").textContent = META.file || "Лист-источник";
+  document.getElementById("sub").textContent =
+    `${kind} ${META.page}${META.pages_total ? " из " + META.pages_total : ""}` +
+    (META.method ? " · " + (META.method === "pdf-ocr" ? "распознано с картинки (OCR)"
+                          : META.method === "pdf-text" ? "текстовый PDF" : META.method) : "") +
+    (META.doc_type ? " · " + META.doc_type : "");
+
+  const sheet = document.getElementById("sheet");
+  if (META.has_image){
+    sheet.innerHTML = `<img alt="лист ${META.page}" src="/api/source_page?${p}">`;
+  } else {
+    sheet.innerHTML = '<div class="hint" style="padding:16px">Изображение листа '+
+      'недоступно: у этого формата (или после удаления исходника) картинки нет — '+
+      'ниже перечислено, что с него взято.</div>';
+  }
+
+  const box = document.getElementById("found");
+  box.innerHTML = (META.found||[]).length
+    ? META.found.map(f => `<div class="item"><div class="f">${esc(f.field)}</div>`+
+        `<div class="hint">${f.exact ? "найдено на этом листе" : "лист определён приблизительно"}</div></div>`).join("")
+    : '<div class="hint">С этого листа значения в базу не попали.</div>';
+
+  document.getElementById("prev").disabled = !META.prev;
+  document.getElementById("next").disabled = !META.next;
+  document.getElementById("note").textContent =
+    "Исходный файл в базе не хранится — сохранена только картинка листа, "+
+    "на котором нашлись данные.";
+}
+function show_error(msg){
+  document.getElementById("sheet").innerHTML =
+    '<div class="err" style="padding:16px">' + esc(msg) + '</div>';
+}
+function go(step){
+  const target = step < 0 ? META.prev : META.next;
+  if (!target) return;
+  const p = new URLSearchParams(location.search);
+  p.set("page", target);
+  location.search = p.toString();
+}
+load();
+</script>
