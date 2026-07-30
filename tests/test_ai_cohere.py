@@ -33,19 +33,31 @@ def test_cohere_without_key_says_where_to_get_it(monkeypatch, tmp_path):
 
 
 def test_setup_prefers_free_cloud_over_local(monkeypatch, tmp_path):
-    """Есть бесплатный ключ — он и дефолт; локальная Ollama уходит в запас."""
+    """Есть бесплатный ключ — он и дефолт; локальная Ollama уходит в запас.
+
+    Порядок бесплатных задан FREE_PREFERENCE (по замеру: Mistral впереди)."""
     monkeypatch.setenv("ECODOC_HOME", str(tmp_path))
     monkeypatch.setattr(detect, "detect_all", lambda: {
         "ollama": ["qwen2.5:7b", "bge-m3:latest"], "lmstudio": [],
         "keys": ["cohere", "mistral"]})
     cfg = detect.setup()
-    assert cfg.provider == "cohere"
-    assert cfg.model == "command-a-03-2025"
+    assert cfg.provider == detect.FREE_PREFERENCE[0] == "mistral"
+    assert cfg.model == detect.CLOUD_DEFAULT_MODEL["mistral"]
     chain = [f["provider"] for f in cfg.fallbacks]
-    assert chain[0] == "cohere"                       # быстрая модель того же
-    assert "mistral" in chain and "ollama" in chain
-    assert chain.index("mistral") < chain.index("ollama")   # облако раньше
+    assert "cohere" in chain and "ollama" in chain
+    assert chain.index("cohere") < chain.index("ollama")   # облако раньше
     assert cfg.embed_model == "bge-m3:latest"
+
+
+def test_setup_cohere_chain_adds_fast_model(monkeypatch, tmp_path):
+    """Если выбран Cohere — первым запасным идёт его же быстрая модель."""
+    monkeypatch.setenv("ECODOC_HOME", str(tmp_path))
+    monkeypatch.setattr(detect, "detect_all", lambda: {
+        "ollama": [], "lmstudio": [], "keys": ["cohere"]})
+    cfg = detect.setup()
+    assert cfg.provider == "cohere"
+    assert cfg.fallbacks[0] == {"provider": "cohere",
+                                "model": "command-r7b-12-2024"}
 
 
 def test_setup_falls_back_to_ollama_without_keys(monkeypatch, tmp_path):

@@ -108,6 +108,17 @@ def _cmd_generate(args):
         print("Печать: (для этой формы не реализована)")
 
 
+def _cmd_ai_health(args):
+    """Проверить все модели ИИ и выбрать лучшую по ранжированию ТЗ."""
+    from ecodoc.ai import health
+    results = health.fresh() if getattr(args, "cached", False) else health.check_all()
+    print(health.summary(results))
+    if not getattr(args, "cached", False):
+        cfg = health.apply_best(results)
+        if cfg.provider:
+            print(f"\nКонфиг обновлён: {cfg.provider}/{cfg.model}")
+
+
 def _cmd_waste_summary(args):
     """Сводная таблица по отходам из справок-актов («Справки-2025»)."""
     from ecodoc.core.waste_summary import build_xlsx
@@ -419,6 +430,12 @@ def build_parser() -> argparse.ArgumentParser:
     _target_args(sm)
     sm.add_argument("-o", "--outdir", default="out")
     sm.set_defaults(func=_cmd_submit)
+
+    aih = sub.add_parser("ai-health",
+                         help="проверить все модели ИИ (работа/лимит) и выбрать лучшую")
+    aih.add_argument("--cached", action="store_true",
+                     help="показать прошлую проверку, не опрашивая модели")
+    aih.set_defaults(func=_cmd_ai_health)
 
     wsm = sub.add_parser("waste-summary",
                          help="сводная по отходам из справок-актов (мес/кв/год, .xlsx)")

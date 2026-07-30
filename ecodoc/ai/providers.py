@@ -119,6 +119,7 @@ TogetherProvider = _compat("together", "https://api.together.xyz/v1")
 VseGPTProvider = _compat("vsegpt", "https://api.vsegpt.ru/v1")
 ProxyAPIProvider = _compat("proxyapi", "https://api.proxyapi.ru/openai/v1")
 CerebrasProvider = _compat("cerebras", "https://api.cerebras.ai/v1")
+MoonshotProvider = _compat("moonshot", "https://api.moonshot.ai/v1")
 LMStudioProvider = _compat("lmstudio", "http://localhost:1234/v1")
 
 
@@ -268,6 +269,7 @@ PROVIDERS: dict[str, type] = {p.name: p for p in (
     DeepSeekProvider, GeminiProvider, GroqProvider, MistralProvider,
     XAIProvider, TogetherProvider, VseGPTProvider, ProxyAPIProvider,
     GigaChatProvider, YandexGPTProvider, CohereProvider, CerebrasProvider,
+    MoonshotProvider,
 )}
 
 

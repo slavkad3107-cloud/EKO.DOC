@@ -349,7 +349,20 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <pre class="out" id="out-cp" style="display:none"></pre>
     </div>
     <div class="card">
-      <h2>Выбор ИИ (провайдер и модель)</h2>
+      <h2>Модели ИИ — состояние и выбор лучшей</h2>
+      <div class="hint">Порядок выбора: сначала большие бесплатные, затем локальная
+        Ollama, и только потом платный DeepSeek. «Проверить все модели» опрашивает
+        каждую и переключает программу на лучшую рабочую.</div>
+      <div class="row" style="margin-top:6px">
+        <button class="b" onclick="doHealth(true)">Проверить все модели</button>
+        <button class="b sec" onclick="doHealth(false)">Показать прошлую проверку</button>
+        <span class="spin" id="sp-health">опрос моделей… (до минуты)</span>
+        <span class="hint" id="health-when"></span>
+      </div>
+      <div id="health-box"></div>
+    </div>
+    <div class="card">
+      <h2>Выбор ИИ вручную (провайдер и модель)</h2>
       <div class="hint">По умолчанию — <b>Cohere</b>: ключ бесплатный, без карты
         (получить: <a class="link" href="https://dashboard.cohere.com/api-keys"
         target="_blank">dashboard.cohere.com/api-keys</a> → вставьте в поле
@@ -846,6 +859,7 @@ function renderDataForm(){
     `<div class="fld"><label>Год (обязателен для всех форм)</label>${tinput(per.year||'','period.year','напр. 2025',true)}</div>`+
     `</div></div>`;
   // объекты НВОС
+  h += aiTaskHtml("org", "Организация");
   h += tableSection("Объекты НВОС", "objects", CTX.objects||[],
     [["code","Код НВОС"],["name","Наименование"],["category","Категория"],["address","Адрес"]]);
   const badObjs = (CTX.objects||[]).filter(o=>!isGoodObjCode(o.code)).length;
@@ -869,6 +883,7 @@ function renderDataForm(){
      ["operation","Вид обращения"],["carrier","Перевозчик"],
      ["carrier_license","Лиц. перевозчика"],["receiver","Приёмщик/полигон"],
      ["license","Лиц. полигона"]]);
+  h += aiTaskHtml("waste", "Отходы");
   h += '<div class="hint" style="margin:-4px 0 8px">Вид обращения: '+
     'утилизация / обезвреживание / размещение / хранение. Из актов '+
     'рассчитываются журнал 1028, 2-ТП (отходы), кадастр, раздел отходов декларации '+
@@ -921,6 +936,7 @@ function renderDataForm(){
   h += '<div class="hint" style="margin:-4px 0 8px">Массы берутся из проекта НДВ '+
     'или раздела ООС (перечень веществ и нормативы ПДВ/ВСВ).</div>';
   h += pbreakHtml(CTX._pair, "т", "a");     // разбивка мес/квартал/год
+  h += aiTaskHtml("air", "Воздух");
   h += '</details>';
 
   // ── 3. ВОДА ────────────────────────────────────────────────
@@ -932,6 +948,7 @@ function renderDataForm(){
      ["mass_norm","В пределах норм., т",,"num"],["mass_limit","В пределах лимита, т",,"num"],
      ["mass_over","Сверх лимита, т",,"num"]]);
   h += pbreakHtml(CTX._pwater, "т", "v");   // разбивка мес/квартал/год
+  h += aiTaskHtml("water", "Вода");
   h += tableSection("Забор воды, тыс. м³/год", "_wintake", CTX._wintake||[],
     [["name","Источник"],["type","Тип"],["volume","Объём, тыс. м³",,"num"]]);
   h += tableSection("Водоотведение, тыс. м³/год", "_wdischarge", CTX._wdischarge||[],
@@ -1262,10 +1279,19 @@ function modUploadHtml(mod){
     <div class="filelist" id="ml-${mod}"></div>
     <div class="out" id="mo-${mod}" style="display:none;white-space:pre-wrap"></div></details>`;
 }
+// какой раздел данных отдавать ИИ в модуле (окно доп. задания)
+const MOD_AI_SCOPE = {rw:["waste","Отходы"], ra:["air","Воздух"], rv:["water","Вода"],
+                      rc:["all","Общая"], dw:["waste","Отходы"], da:["air","Воздух"],
+                      dv:["water","Вода"]};
 function seedModUploads(){
   for (const mods of Object.values(MODS))
     for (const m of mods)
-      if ($("up-"+m)) $("up-"+m).innerHTML = modUploadHtml(m);
+      if ($("up-"+m)){
+        const ai = MOD_AI_SCOPE[m];
+        // scope окна ИИ уникален на модуль (иначе id полей повторятся)
+        $("up-"+m).innerHTML = modUploadHtml(m) +
+          (ai ? aiTaskHtml(m + "_" + ai[0], ai[1]) : "");
+      }
 }
 function showMod(group, key){
   for (const m of MODS[group]){
@@ -1474,6 +1500,91 @@ async function doUpraza(){
     post("open", {path: j.excel}).catch(()=>{});
   }catch(e){ show("out-disp", "Ошибка: " + e.message); }
   spin("sp-disp",0);
+}
+
+// ── сервис: состояние моделей ИИ ──
+async function doHealth(refresh){
+  spin("sp-health", 1);
+  try{
+    const j = refresh ? await post("ai_health", {refresh:true}, 0)
+                      : await get("ai_health", {}, 0);
+    renderHealth(j);
+    if (refresh){ refreshMeta(); loadAiPanel(); }
+  }catch(e){ show("out-ai", "Ошибка: " + errText(e)); }
+  spin("sp-health", 0);
+}
+function renderHealth(j){
+  const box = $("health-box");
+  if (!j.items || !j.items.length){
+    box.innerHTML = '<div class="hint">Проверка ещё не выполнялась — '+
+      'нажмите «Проверить все модели».</div>';
+    $("health-when").textContent = ""; return;
+  }
+  $("health-when").textContent = j.checked
+    ? "проверено: " + new Date(j.checked*1000).toLocaleString("ru-RU") : "";
+  const cur = (j.current||{});
+  let h = '<div style="overflow-x:auto"><table class="dtbl"><thead><tr>'+
+    '<th></th><th>Модель</th><th>Тариф</th><th>Ответ</th><th>Лимит</th>'+
+    '<th>Состояние</th></tr></thead><tbody>';
+  for (const it of j.items){
+    const isCur = it.provider === cur.provider && (it.model||"") === (cur.model||"");
+    h += `<tr${isCur?' style="background:rgba(26,109,66,.16)"':''}>`+
+      `<td>${it.ok ? "✅" : "✖"}</td>`+
+      `<td>${esc(it.label || it.id)}<div class="hint">${esc(it.id)}`+
+      `${isCur ? " · выбрана сейчас" : ""}</div></td>`+
+      `<td>${esc(it.tier_label)}</td>`+
+      `<td>${it.sec ? it.sec + " с" : "—"}${it.score ? ' <span class="hint">'+esc(it.score)+'</span>' : ""}</td>`+
+      `<td class="hint">${esc(it.limit||"")}</td>`+
+      `<td>${esc(it.reason||"")}</td></tr>`;
+  }
+  h += '</tbody></table></div>';
+  if ((j.working||[]).length)
+    h += '<div class="hint" style="margin-top:6px">Цепочка на сейчас: '+
+      esc(j.working.slice(0,6).join(" → "))+'</div>';
+  else h += '<div class="issue error">Ни одна модель не ответила — проверьте ключи '+
+    'и интернет; локальная Ollama работает без интернета.</div>';
+  box.innerHTML = h;
+}
+
+// ── доп. задание ИИ по данным раздела ──
+function aiTaskHtml(scope, title){
+  return `<details class="dsec"><summary style="cursor:pointer;color:var(--acc)">`+
+    `🤖 Задание ИИ по разделу${title?" «"+title+"»":""}</summary>`+
+    `<div class="hint">Напишите, что сделать с данными этого раздела: например `+
+    `«пересчитай массы из кг в тонны», «сведи одинаковые отходы», `+
+    `«проверь класс опасности по ФККО». Изменения вносятся только после `+
+    `нажатия «Применить к базе».</div>`+
+    `<textarea id="at-in-${scope}" style="min-height:60px" `+
+    `placeholder="например: объедини строки с одинаковым ФККО и просуммируй массы"></textarea>`+
+    `<div class="row"><button class="b" id="at-run-${scope}" `+
+    `onclick="runAiTask('${scope}',0)">Спросить</button>`+
+    `<button class="b sec" onclick="runAiTask('${scope}',1)">Применить к базе</button>`+
+    `<span class="spin" id="at-sp-${scope}">думает…</span></div>`+
+    `<div class="out" id="at-out-${scope}" style="display:none;white-space:pre-wrap"></div>`+
+    `</details>`;
+}
+async function runAiTask(scope, apply){
+  needSite();
+  const task = ($("at-in-"+scope).value||"").trim();
+  if (!task){ alert("Напишите задание для ИИ"); return; }
+  if (apply && !confirm("Применить изменения ИИ к базе данных раздела?")) return;
+  spin("at-sp-"+scope, 1);
+  try{
+    // в модулях id окна = "<модуль>_<раздел>" (иначе id полей повторятся) —
+    // серверу отдаём только раздел
+    const srvScope = scope.includes("_") ? scope.split("_").pop() : scope;
+    const j = await post("ai_task", {org:ORG, site:SITE, scope:srvScope, task,
+                                     apply:!!apply}, 0);
+    if (j.error){ show("at-out-"+scope, "Ошибка: " + j.error); }
+    else {
+      let t = `[${j.model||"ИИ"}]\n${j.answer||""}`;
+      if ((j.warnings||[]).length) t += "\n\n⚠ " + j.warnings.join("\n⚠ ");
+      if ((j.applied||[]).length){ t += "\n\n✓ Применено: " + j.applied.join(", "); loadCtx().catch(()=>{}); }
+      else if (apply) t += "\n\n(модель не предложила изменений — данные не тронуты)";
+      show("at-out-"+scope, t);
+    }
+  }catch(e){ show("at-out-"+scope, "Ошибка: " + errText(e)); }
+  spin("at-sp-"+scope, 0);
 }
 
 // ── сервис: выбор ИИ ──

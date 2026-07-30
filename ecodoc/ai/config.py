@@ -29,6 +29,7 @@ def keys_path() -> Path:
 DEFAULT_KEY_ENV = {
     "cohere": "COHERE_API_KEY",       # бесплатный trial-ключ (20 запросов/мин)
     "cerebras": "CEREBRAS_API_KEY",   # бесплатный тариф, очень быстрый
+    "moonshot": "MOONSHOT_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",

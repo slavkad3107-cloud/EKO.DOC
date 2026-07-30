@@ -464,6 +464,55 @@ def api_ai_save(params, body):
     return {"ok": True, "text": detect.describe(load_config())}
 
 
+def api_ai_health(params, body):
+    """Состояние всех моделей: работает / лимит / нет ключа + кто выбран.
+
+    По умолчанию отдаём кэш (проверка всех моделей — это десятки сетевых
+    запросов); `refresh: true` — прогнать проверку заново и выбрать лучшую.
+    """
+    from ecodoc.ai import health, registry
+    src = body if (body or {}).get("refresh") is not None else params
+    refresh = str((src or {}).get("refresh", "")).lower() in ("1", "true", "yes")
+    if refresh:
+        results = health.check_all()
+        cfg = health.apply_best(results)
+    else:
+        results = health.fresh()
+        cfg = None
+    checked, _ = health.load_cache()
+    rows = []
+    for h in sorted(results, key=lambda x: (not x.ok, x.tier, x.sec or 999)):
+        spec = registry.by_id(h.id) or registry.by_id(h.provider)
+        rows.append({"id": h.id, "provider": h.provider, "model": h.model,
+                     "tier": h.tier, "tier_label": registry.tier_label(h.tier),
+                     "ok": h.ok, "sec": h.sec, "reason": h.reason,
+                     "limit": spec.limit if spec else "",
+                     "score": spec.score if spec else "",
+                     "label": spec.label if spec else h.id})
+    working = [h.id for h in health.ranked_working(results)]
+    from ecodoc.ai.config import load_config
+    cfg = cfg or load_config()
+    return {"checked": checked, "items": rows, "working": working,
+            "current": {"provider": cfg.provider, "model": cfg.model,
+                        "fallbacks": cfg.fallbacks},
+            "text": health.summary(results) if results else ""}
+
+
+def api_ai_task(params, body):
+    """Доп. задание модели вручную по данным раздела (окно в каждом разделе)."""
+    from ecodoc.ai.task import run_task
+    task = (body.get("task") or "").strip()
+    if not task:
+        return {"error": "Напишите, что нужно сделать с данными раздела."}
+    ctx = workspace.load_context(body["org"], body["site"])
+    try:
+        return run_task(ctx, body.get("scope") or "all", task,
+                        apply_changes=bool(body.get("apply")),
+                        org=body["org"], site=body["site"])
+    except Exception as e:
+        return {"error": str(e)[:300]}
+
+
 def api_ai_test(params, body):
     from ecodoc.ai import load_config
     from ecodoc.ai.providers import chat_with_fallback
@@ -548,7 +597,8 @@ def api_open(params, body):
 
 GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "context": api_context_get, "calendar": api_calendar,
-              "reference": api_reference, "ai_config": api_ai_config}
+              "reference": api_reference, "ai_config": api_ai_config,
+              "ai_health": api_ai_health}
 POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add, "site_del": api_site_del,
                "org_del": api_org_del,
@@ -565,7 +615,8 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "hazard_class": api_hazard_class,
                "devdoc": api_devdoc, "submit": api_submit, "open": api_open,
                "waste_summary": api_waste_summary, "missing": api_missing,
-               "settings": api_settings, "cleanup": api_cleanup}
+               "settings": api_settings, "cleanup": api_cleanup,
+               "ai_health": api_ai_health, "ai_task": api_ai_task}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -626,12 +677,32 @@ class Handler(BaseHTTPRequestHandler):
         self._route(POST_ROUTES, body)
 
 
+def _startup_ai_check():
+    """Проверка моделей при запуске (требование ТЗ) — в фоне, чтобы окно
+    открывалось сразу. Если прошлая проверка ещё свежа, ничего не опрашиваем."""
+    try:
+        from ecodoc.ai import health
+        if health.fresh():
+            return
+        results = health.check_all()
+        cfg = health.apply_best(results)
+        working = health.ranked_working(results)
+        if working:
+            print(f"ИИ: выбрана {cfg.provider}/{cfg.model} "
+                  f"(рабочих моделей {len(working)} из {len(results)})")
+        else:
+            print("ИИ: ни одна модель не ответила — Сервис → Модели ИИ")
+    except Exception as e:                      # проверка не должна ломать запуск
+        print(f"ИИ: проверка моделей не выполнена ({e})")
+
+
 def run(port: int = 8737, open_browser: bool = True):
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}"
     print(f"ЭКО.DOC GUI: {url}  (Ctrl+C — остановить)")
     if open_browser:
         threading.Timer(0.4, webbrowser.open, args=(url,)).start()
+    threading.Thread(target=_startup_ai_check, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -72,7 +72,15 @@ def _to_int(v):
 
 def from_json(path: str | Path) -> ReportContext:
     # utf-8-sig: терпим BOM от Блокнота и прочих Windows-редакторов
-    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    return from_dict(json.loads(Path(path).read_text(encoding="utf-8-sig")))
+
+
+def from_dict(data: dict) -> ReportContext:
+    """Контекст из уже разобранного JSON (файл, форма GUI, ответ ИИ).
+
+    Единственное место, где сырые строки приводятся к типам модели (Decimal,
+    Medium, int) — поэтому любой внешний источник данных должен проходить
+    через него, а не собирать dataclass'ы напрямую."""
     ctx = ReportContext()
     ctx.organization = _build(Organization, data.get("organization", {}))
     # у ИП КПП не бывает — вычищаем мусор, попавший из счетов контрагентов

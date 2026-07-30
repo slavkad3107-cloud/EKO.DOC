@@ -134,8 +134,7 @@ def _approval_block(doc, org: Organization, AL, Cm, Pt):
         p.paragraph_format.space_after = Pt(0)
         p.add_run(text).bold = True
 
-    for _ in range(2):
-        doc.add_paragraph()  # место для подписи и печати
+    doc.add_paragraph()  # место для подписи и печати
 
     t = doc.add_table(rows=2, cols=2)
     t.alignment = 2  # WD_TABLE_ALIGNMENT.RIGHT

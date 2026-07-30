@@ -21,13 +21,14 @@ _EMBED_MARKERS = ("bge", "embed", "nomic", "mxbai", "e5")
 
 # человекочитаемые метки провайдеров (для выпадающего списка в GUI)
 PROVIDER_LABEL = {
-    "cohere": "Cohere (облако, БЕСПЛАТНЫЙ ключ — по умолчанию)",
+    "mistral": "Mistral (облако, БЕСПЛАТНЫЙ тариф — лучший по замеру)",
+    "cohere": "Cohere (облако, бесплатный ключ)",
     "cerebras": "Cerebras (облако, бесплатный тариф, очень быстро)",
+    "moonshot": "Moonshot / Kimi (облако)",
     "deepseek": "DeepSeek (облако, быстро)",
     "openrouter": "OpenRouter (облако, много моделей)",
     "groq": "Groq (облако, очень быстро)",
-    "mistral": "Mistral (облако)",
-    "gemini": "Google Gemini (облако)",
+    "gemini": "Google Gemini (облако, бесплатный лимит)",
     "openai": "OpenAI / GPT (облако)",
     "anthropic": "Anthropic / Claude (облако)",
     "together": "Together (облако)",
@@ -45,6 +46,7 @@ PROVIDER_LABEL = {
 KNOWN_MODELS = {
     "cohere": ["command-a-03-2025", "command-r7b-12-2024", "command-r-08-2024",
                "command-a-plus-05-2026", "command-r-plus-08-2024"],
+    "moonshot": ["kimi-k2-0905-preview", "moonshot-v1-32k"],
     "cerebras": ["llama-3.3-70b", "qwen-3-32b", "gpt-oss-120b", "llama3.1-8b"],
     "deepseek": ["deepseek-chat", "deepseek-reasoner"],
     "openrouter": ["openai/gpt-oss-20b:free", "deepseek/deepseek-chat",
@@ -71,12 +73,13 @@ KNOWN_MODELS = {
 # cohere command-a ~3 с/документ, mistral small ~1 с, openrouter :free ~6 с,
 # gemini flash ~13 с. Cohere первым: бесплатный ключ без карты и без
 # ограничения по дням (лимит — 20 запросов/мин, обрабатывается ретраем).
-FREE_PREFERENCE = ("cohere", "cerebras", "groq", "mistral", "openrouter", "gemini")
+FREE_PREFERENCE = ("mistral", "gemini", "cohere", "groq", "cerebras", "openrouter")
 
 # дефолтные модели для облачных провайдеров (быстрые и пригодные для
 # извлечения структурных данных из русскоязычных документов)
 CLOUD_DEFAULT_MODEL = {
     "cohere": "command-a-03-2025",
+    "moonshot": "kimi-k2-0905-preview",
     "cerebras": "llama-3.3-70b",
     "deepseek": "deepseek-chat",
     "openrouter": "openai/gpt-oss-20b:free",   # бесплатная модель агрегатора
@@ -213,12 +216,22 @@ def setup(prefer: str = "") -> AIConfig:
 def ensure_configured() -> AIConfig:
     """Конфиг для работы; если ИИ ещё не настроен — настроить автоматически.
 
-    «Из коробки» пользователь ничего не выбирает: есть ключ бесплатного
-    облака (COHERE_API_KEY) — работаем через него, нет — через локальную
-    Ollama. Результат сохраняется, чтобы не детектить каждый раз.
+    «Из коробки» пользователь ничего не выбирает: если есть свежая проверка
+    моделей (`ai/health.py`) — берём лучшую рабочую по ранжированию ТЗ
+    (бесплатные → локальные → платный DeepSeek); иначе быстрый локальный
+    детект. Результат сохраняется, чтобы не детектить каждый раз.
     """
     from ecodoc.ai.config import load_config
+    from ecodoc.ai.health import fresh, pick_best
     cfg = load_config()
+    checked = fresh()
+    if checked:
+        best, _ = pick_best(checked)
+        if best.provider:
+            from ecodoc.ai.config import save_config
+            if (best.provider, best.model) != (cfg.provider, cfg.model):
+                save_config(best)
+            return best
     if not cfg.provider:
         return setup()
     return _migrate_to_free(cfg)
