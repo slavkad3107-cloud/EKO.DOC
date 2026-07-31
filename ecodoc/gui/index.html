@@ -236,6 +236,8 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
         <button class="b sec" onclick="checkFkko()">Проверить ФККО по каталогу</button>
         <button class="b sec" onclick="updateFkko()">Обновить каталог ФККО</button>
         <button class="b sec" onclick="doWasteSummary()">📊 Сводная (мес/кв/год)</button>
+        <button class="b sec" onclick="doWasteTable()"
+          title="т / м³ по классам опасности с итогами — по бланку «форма таблички по отходам»">📋 Табличка (т/м³)</button>
         <span class="spin" id="sp-waste">…</span><span class="hint" id="waste-msg"></span>
       </div>
       <div id="fkkobox"></div>
@@ -290,6 +292,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
         <div id="up-rw"></div>
         <div class="row" style="margin:8px 0 2px">
           <button class="b sec" onclick="doWasteSummary()">📊 Сводная по отходам из справок-актов (мес/кв/год, .xlsx)</button>
+          <button class="b sec" onclick="doWasteTable()">📋 Табличка по отходам (т/м³ по классам, .xlsx)</button>
         </div>
         <h3 style="margin:8px 0 6px;color:var(--acc)">Формы по отходам</h3>
         <div class="grid" id="forms-waste"></div>
@@ -385,6 +388,30 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <div id="mapbox" style="margin-top:10px;overflow:auto"></div>
       <pre class="out" id="out-disp" style="display:none"></pre>
     </div>
+    <div class="card">
+      <h2>Том НДВ / НДС / СЗЗ — сборка с результатами УПРЗА</h2>
+      <div class="hint">Круг обмена: 1) выгрузите источники кнопкой «Выгрузить для УПРЗА» выше →
+        2) расчёт в аттестованной УПРЗА («Эколог») → 3) её Excel-выгрузки загрузите здесь —
+        том соберётся с настоящими таблицами. Без выгрузок источники возьмутся из
+        инвентаризации, а вместо результатов останется заглушка.</div>
+      <div class="row">
+        <label>Том: <select id="vol-type">
+          <option value="ndv">НДВ (выбросы)</option>
+          <option value="nds">НДС (сбросы)</option>
+          <option value="szz">СЗЗ</option></select></label>
+        <label class="b sec" style="display:inline-block">Источники (Excel из «Эколога»)…
+          <input type="file" id="vol-src" accept=".xlsx,.xlsm" style="display:none"
+            onchange="$('vol-src-n').textContent=this.files.length?this.files[0].name:''"></label>
+        <span class="hint" id="vol-src-n"></span>
+        <label class="b sec" style="display:inline-block">Рассеивание (Excel из «Эколога»)…
+          <input type="file" id="vol-disp" accept=".xlsx,.xlsm" style="display:none"
+            onchange="$('vol-disp-n').textContent=this.files.length?this.files[0].name:''"></label>
+        <span class="hint" id="vol-disp-n"></span>
+        <button class="b" onclick="doVolume()">Собрать том (.docx)</button>
+        <span class="spin" id="sp-vol">сборка…</span>
+      </div>
+      <pre class="out" id="out-vol" style="display:none"></pre>
+    </div>
   </div>
 
   <div class="tab" id="tab-svc">
@@ -414,6 +441,10 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <div class="row" style="margin-top:6px">
         <button class="b sec" onclick="loadFormsRegistry(false)">Бланки документов: что есть</button>
         <button class="b sec" onclick="loadFormsRegistry(true)">Поискать недостающие на диске</button>
+        <button class="b sec" onclick="checkFormsNorms(false)"
+          title="Признаки формы в бланке + давность против редакции НПА">Проверить бланки по НПА</button>
+        <button class="b sec" onclick="checkFormsNorms(true)"
+          title="То же + проверка страниц-источников в интернете">…с проверкой в интернете</button>
         <span class="spin" id="sp-forms">поиск…</span>
       </div>
       <div id="formsbox"></div>
@@ -433,9 +464,39 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <div class="row">
         <button class="b sec" onclick="addHzRow()">+ компонент</button>
         <button class="b" onclick="doHazard()">Рассчитать класс</button>
+        <button class="b sec" onclick="doHazard(true)"
+          title="Расчёт с таблицей компонентов и выводом — прикладывается к паспорту отхода">
+          Оформить расчёт (.docx)</button>
         <span class="spin" id="sp-hz">…</span>
       </div>
+      <div class="row">
+        <input id="hz-name" placeholder="наименование отхода (для документа)" style="min-width:260px">
+        <input id="hz-fkko" placeholder="код ФККО" style="width:140px">
+        <input id="hz-basis" placeholder="исходные данные: протокол КХА №…, источник Wi" style="min-width:300px">
+      </div>
       <pre class="out" id="out-hz" style="display:none"></pre>
+    </div>
+    <div class="card">
+      <h2>Оценка грунта: почва (СанПиН 1.2.3685-21) + отход (пр. № 536)</h2>
+      <div class="hint">Из протоколов КХА грунта. Ci — измеренная концентрация;
+        ПДК/ОДК подставится из справочника (можно поправить); фон нужен для Zc;
+        Wi — для класса отхода (необязательно). Категория почвы говорит, куда
+        грунт можно использовать; класс отхода — как его передавать.</div>
+      <div style="overflow-x:auto"><table class="dtbl" id="soiltbl"><thead><tr>
+        <th>Вещество</th><th>Ci, мг/кг</th><th>ПДК/ОДК</th>
+        <th>Фон, мг/кг</th><th>Wi</th><th></th>
+      </tr></thead><tbody></tbody></table></div>
+      <div class="row">
+        <button class="b sec" onclick="addSoilRow()">+ вещество</button>
+        <button class="b" onclick="doSoil()">Оценить грунт</button>
+        <button class="b sec" onclick="doSoil(true)">Оформить оценку (.docx)</button>
+        <span class="spin" id="sp-soil">…</span>
+      </div>
+      <div class="row">
+        <input id="soil-label" placeholder="участок / № пробы (для документа)" style="min-width:240px">
+        <input id="soil-basis" placeholder="исходные данные: протокол КХА №…" style="min-width:280px">
+      </div>
+      <pre class="out" id="out-soil" style="display:none"></pre>
     </div>
     <div class="card">
       <h2>Проверка контрагента (получателя отходов) по ИНН</h2>
@@ -924,6 +985,17 @@ async function doModIntake(mod){
     btn:"mb-"+mod, spin:"msp-"+mod});
   if (n) inp.value = "";
   loadMissing(mod).catch(()=>{});
+  if (TAB_MODS[mod]){
+    // вкладка перерисуется со свежими данными — сохранём и вернём отчёт приёма
+    const saveL = $("ml-"+mod) ? $("ml-"+mod).innerHTML : "";
+    const saveO = $("mo-"+mod) ? $("mo-"+mod).innerHTML : "";
+    const visO  = $("mo-"+mod) ? $("mo-"+mod).style.display : "none";
+    await loadCtx().catch(()=>{});
+    const det = $("md-"+mod);
+    if (det) det.open = true;
+    if ($("ml-"+mod)) $("ml-"+mod).innerHTML = saveL;
+    if ($("mo-"+mod)){ $("mo-"+mod).innerHTML = saveO; $("mo-"+mod).style.display = visO; }
+  }
 }
 function stopIntake(){ INTAKE_STOP = true; INTAKE_PAUSE = false; }
 function pauseIntake(){
@@ -1025,6 +1097,7 @@ function renderOrgTab(){
   h += '</div><div class="row" style="margin-top:6px">'+
     '<button class="b sec" onclick="detectOktmo()">Определить ОКТМО по адресу</button>'+
     '<span class="hint" id="oktmo-msg"></span></div></div>';
+  h += modUploadHtml("torg");
   h += aiTaskHtml("org", "Организация");
   box.innerHTML = h;
 }
@@ -1085,6 +1158,7 @@ function renderObjTab(){
   h += '<div class="hint" style="margin:-4px 0 8px">Формат кода: '+
     '<b>40-0278-013459-П</b> (2 цифры − 4 цифры − 6 цифр − буква категории). '+
     'ОКТМО/ОКАТО определяются по адресу объекта.</div>';
+  h += modUploadHtml("tobj");
   h += aiTaskHtml("object", "Объект");
   box.innerHTML = h;
 }
@@ -1184,6 +1258,34 @@ async function loadFormsRegistry(search){
     h += `<div class="hint" style="margin-top:6px">Где есть бланк-образец в Excel — `+
       `программа заполняет его (формулы сохраняются), где нет — строит форму сама. `+
       `Соответствие бланка нормам проверяйте перед использованием.</div></div>`;
+    $("formsbox").innerHTML = h;
+  }catch(e){ $("formsbox").innerHTML = `<div class="issue error">${esc(errText(e))}</div>`; }
+  spin("sp-forms", 0);
+}
+
+async function checkFormsNorms(online){
+  spin("sp-forms", 1);
+  try{
+    const j = await post("forms_norms", {online: !!online}, 0);
+    const mark = v => v.level==="error" ? "✖" : v.level==="warn" ? "⚠" : "✓";
+    const rows = (j.verdicts||[]).map(v =>
+      `<tr><td>${mark(v)}</td><td>${esc(v.title)}</td>`+
+      `<td class="hint">${esc(v.npa)}</td>`+
+      `<td>${(v.notes||[]).length ? v.notes.map(esc).join("<br>")
+             : '<span style="color:var(--acc)">признаки формы на месте</span>'}</td></tr>`).join("");
+    let h = `<div class="dsec"><h4>Сверка бланков с НПА</h4>`+
+      '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th></th><th>Бланк</th>'+
+      '<th>Чем утверждена форма</th><th>Замечания</th></tr></thead><tbody>'+
+      (rows || '<tr><td colspan="4" class="hint">бланков не найдено</td></tr>')+'</tbody></table></div>';
+    if (j.checked_online){
+      h += (j.changed||[]).length
+        ? `<div class="issue warn">⚠ Изменения на страницах-источниках:<br>${j.changed.map(esc).join("<br>")}</div>`
+        : '<div class="issue" style="color:var(--acc)">✓ Страницы-источники не менялись с прошлой проверки.</div>';
+      for (const e of j.online_errors||[])
+        h += `<div class="hint">не проверился источник: ${esc(e)}</div>`;
+    }
+    h += '<div class="hint" style="margin-top:6px">Машина проверяет признаки формы, давность '+
+      'бланка и изменения источников. Юридическое соответствие подтверждает пользователь.</div></div>';
     $("formsbox").innerHTML = h;
   }catch(e){ $("formsbox").innerHTML = `<div class="issue error">${esc(errText(e))}</div>`; }
   spin("sp-forms", 0);
@@ -1408,6 +1510,7 @@ function renderWasteTab(){
      ["operation","Вид обращения"],["carrier","Перевозчик"],
      ["carrier_license","Лиц. перевозчика"],["receiver","Приёмщик/полигон"],
      ["license","Лиц. полигона"]]);
+  h += modUploadHtml("tw");
   h += aiTaskHtml("waste", "Отходы");
   h += '<div class="hint" style="margin:-4px 0 8px">Вид обращения: '+
     'утилизация / обезвреживание / размещение / хранение. Из актов '+
@@ -1467,6 +1570,7 @@ function renderAirTab(){
   h += '<div class="hint" style="margin:-4px 0 8px">Массы берутся из проекта НДВ '+
     'или раздела ООС (перечень веществ и нормативы ПДВ/ВСВ).</div>';
   h += pbreakHtml(CTX._pair, "т", "a");     // разбивка мес/квартал/год
+  h += modUploadHtml("ta");
   h += aiTaskHtml("air", "Воздух");
   
 
@@ -1485,6 +1589,7 @@ function renderWaterTab(){
      ["mass_norm","В пределах норм., т",,"num"],["mass_limit","В пределах лимита, т",,"num"],
      ["mass_over","Сверх лимита, т",,"num"]]);
   h += pbreakHtml(CTX._pwater, "т", "v");   // разбивка мес/квартал/год
+  h += modUploadHtml("tv");
   h += aiTaskHtml("water", "Вода");
   h += tableSection("Забор воды, тыс. м³/год", "_wintake", CTX._wintake||[],
     [["name","Источник"],["type","Тип"],["volume","Объём, тыс. м³",,"num"]]);
@@ -1754,9 +1859,9 @@ const FORM_MEDIUM = {
   "declaration-nvos":"common", "pek":"common"};
 // формы разработки — по средам (модули вкладки «Разработка»)
 const DEV_MEDIUM = {
-  "pnoolr":"waste", "hazard-class":"waste", "hazard-class-doc":"waste",
+  "pnoolr":"waste", "hazard-class":"waste",
   "tu-waste":"waste", "waste-inventory":"waste", "waste-passport":"waste",
-  "air-inventory":"air", "nmu":"air",
+  "air-inventory":"air", "nmu":"air", "ndv":"air", "nds":"water",
   "dvos":"common", "plarn":"common", "pek-program":"common", "oos":"common"};
 function renderForms(){
   for (const id of ["forms-waste","forms-air","forms-water","forms-common",
@@ -1795,7 +1900,19 @@ const MOD_SCOPES = {   // категории загрузки в каждом м
   dw:[["passports","паспорта отходов (ФККО/класс/состав)"],
       ["acts","справки-акты на отходы"]],
   da:[["air","воздух: ООС / НДВ / инвентаризация (вещества, источники)"]],
-  dv:[["water","вода: НДС / водхоз (вещества)"]]};
+  dv:[["water","вода: НДС / водхоз (вещества)"]],
+  // дозагрузка исходников прямо во вкладках разделов (требование ТЗ)
+  torg:[["org","реквизиты: ЕГРЮЛ / карточка / объекты НВОС"],
+        ["all","авто (все данные)"]],
+  tobj:[["org","карточка объекта НВОС / свидетельство о постановке"],
+        ["all","авто (все данные)"]],
+  tw:[["acts","справки-акты на отходы (движение по датам)"],
+      ["passports","паспорта отходов (ФККО/класс/состав)"], ["all","авто (все данные)"]],
+  ta:[["air","воздух: ООС / НДВ / инвентаризация (вещества, источники)"],
+      ["all","авто (все данные)"]],
+  tv:[["water","вода: НДС / водхоз (вещества)"], ["all","авто (все данные)"]]};
+// вкладки-разделы: после приёма перечитываем данные и восстанавливаем отчёт
+const TAB_MODS = {torg:1, tobj:1, tw:1, ta:1, tv:1};
 // какие ФОРМЫ относятся к модулю — для чек-листа «чего не хватает»
 const MOD_FORMS = {
   rc:["declaration-nvos","pek"],
@@ -1805,7 +1922,7 @@ function modUploadHtml(mod){
   const scopes = MOD_SCOPES[mod];
   if (!scopes) return "";
   const opts = scopes.map(s=>`<option value="${s[0]}">${s[1]}</option>`).join("");
-  return `<details class="dsec"><summary style="cursor:pointer;color:var(--acc)">📥 Загрузить документы модуля</summary>
+  return `<details class="dsec" id="md-${mod}"><summary style="cursor:pointer;color:var(--acc)">📥 ${TAB_MODS[mod] ? "Догрузить исходники раздела" : "Загрузить документы модуля"}</summary>
     <div class="row" style="margin-top:6px">
       <label class="b sec" style="display:inline-block">Файлы…
         <input type="file" id="mf-${mod}" multiple style="display:none"
@@ -1853,6 +1970,21 @@ async function loadMissing(mod){
       : `<div class="issue" style="color:var(--acc)">✓ ${f}: данных достаточно</div>`;
   }
   box.innerHTML = h ? `<h3 style="margin:12px 0 6px;color:var(--acc)">Чего не хватает</h3>${h}` : "";
+}
+async function doWasteTable(){
+  needSite(); spin("sp-gen",1); spin("sp-waste",1);
+  try{
+    const j = await post("waste_table", {org:ORG, site:SITE}, 0);
+    if (j.error){ show("out-gen", "Табличка: " + j.error); alert(j.error); }
+    else {
+      let t = `Табличка по отходам (${j.rows} позиций): ` + j.path;
+      if (j.no_density) t += `\n⚠ У ${j.no_density} позиций нет плотности — графа м³ пустая. `+
+        "Плотность берётся из справок-актов (графа «Плотн., т/м³»).";
+      show("out-gen", t);
+      post("open", {path:j.path}).catch(()=>{});
+    }
+  }catch(e){ show("out-gen", "Ошибка: " + errText(e)); }
+  spin("sp-gen",0); spin("sp-waste",0);
 }
 async function doWasteSummary(){
   needSite(); spin("sp-gen",1);
@@ -2030,6 +2162,21 @@ async function doMap(){
     show("out-disp", j.summary);
   }catch(e){ show("out-disp", "Ошибка: " + e.message); }
   spin("sp-disp",0);
+}
+async function doVolume(){
+  needSite(); spin("sp-vol",1);
+  try{
+    const body = {org:ORG, site:SITE, vtype:$("vol-type").value};
+    const fs = $("vol-src").files, fd = $("vol-disp").files;
+    if (fs.length) body.sources_file = {name:fs[0].name, b64: await b64(fs[0])};
+    if (fd.length) body.dispersion_file = {name:fd[0].name, b64: await b64(fd[0])};
+    const j = await post("volume", body, 0);
+    let t = "Том собран: " + j.path;
+    if ((j.notes||[]).length) t += "\n" + j.notes.map(n=>"  " + n).join("\n");
+    show("out-vol", t);
+    post("open", {path:j.path}).catch(()=>{});
+  }catch(e){ show("out-vol", "Ошибка: " + errText(e)); }
+  spin("sp-vol",0);
 }
 async function doUpraza(){
   spin("sp-disp",1);
@@ -2210,7 +2357,7 @@ function addHzRow(c){
     `<td><button class="delrow" onclick="this.closest('tr').remove()">✕</button></td>`;
   tb.appendChild(tr);
 }
-async function doHazard(){
+async function doHazard(save){
   const comps = [...$("hztbl").querySelectorAll("tbody tr")].map(tr=>{
     const g = s=>tr.querySelector(`[data-c="${s}"]`).value.trim().replace(",",".");
     return {name: tr.querySelector('[data-c="name"]').value.trim(),
@@ -2219,14 +2366,75 @@ async function doHazard(){
   if(!comps.length){ alert("Добавьте компоненты"); return; }
   spin("sp-hz",1);
   try{
-    const j = await post("hazard_class", {components:comps}, 0);
+    const body = {components:comps};
+    if(save){
+      body.save = 1;
+      body.waste_name = $("hz-name").value.trim();
+      body.fkko = $("hz-fkko").value.trim();
+      body.basis = $("hz-basis").value.trim();
+      if(ORG && SITE){ body.org = ORG; body.site = SITE; }
+    }
+    const j = await post("hazard_class", body, 0);
     let t = `K = Σ(Ci/Wi) = ${(+j.k_total).toPrecision(4)}\nКЛАСС ОПАСНОСТИ: ${j.hazard_class}`;
     if(j.hazard_class===5) t += "\n⚠ V класс требует подтверждения биотестированием.";
     if(j.warnings && j.warnings.length) t += "\n"+j.warnings.map(w=>"⚠ "+w).join("\n");
+    if(j.path){ t += "\nДокумент: " + j.path; post("open", {path:j.path}).catch(()=>{}); }
     show("out-hz", t);
   }catch(e){ show("out-hz", "Ошибка: " + e.message); } spin("sp-hz",0); }
 addHzRow({name:"Нефтепродукты", ci:"50000", wi:"100"});
 addHzRow({name:"Песок (диоксид кремния)", ci:"950000", wi:"1000000"});
+// калькулятор грунта: СанПиН + № 536
+const SOIL_NORMS_JS = {"свинец":130,"кадмий":2,"цинк":220,"медь":132,
+  "никель":80,"мышьяк":10,"ртуть":2.1,"бенз(а)пирен":0.02,"нефтепродукты":1000};
+function addSoilRow(c){
+  c = c || {name:"", ci:"", norm:"", background:"", wi:""};
+  const tb = $("soiltbl").querySelector("tbody");
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<td><input data-c="name" value="${esc(c.name)}" list="soil-norm-list"
+      onchange="const n=SOIL_NORMS_JS[this.value.trim().toLowerCase()];
+        if(n && !this.closest('tr').querySelector('[data-c=norm]').value)
+          this.closest('tr').querySelector('[data-c=norm]').value=n;"></td>`+
+    `<td><input data-c="ci" value="${esc(c.ci)}" inputmode="decimal"></td>`+
+    `<td><input data-c="norm" value="${esc(c.norm)}" inputmode="decimal"></td>`+
+    `<td><input data-c="background" value="${esc(c.background)}" inputmode="decimal"></td>`+
+    `<td><input data-c="wi" value="${esc(c.wi)}" inputmode="decimal"></td>`+
+    `<td><button class="delrow" onclick="this.closest('tr').remove()">✕</button></td>`;
+  tb.appendChild(tr);
+}
+addSoilRow({name:"нефтепродукты", ci:"2500", norm:"1000"});
+addSoilRow({name:"свинец", ci:"25", norm:"130", background:"15"});
+{ const dl=document.createElement("datalist"); dl.id="soil-norm-list";
+  dl.innerHTML=Object.keys(SOIL_NORMS_JS).map(n=>`<option value="${n}">`).join("");
+  document.body.appendChild(dl); }
+async function doSoil(save){
+  const comps = [...$("soiltbl").querySelectorAll("tbody tr")].map(tr=>{
+    const g = s=>parseFloat((tr.querySelector(`[data-c="${s}"]`).value||"").trim().replace(",","."))||0;
+    return {name: tr.querySelector('[data-c="name"]').value.trim(),
+            ci: g("ci"), norm: g("norm"), background: g("background"), wi: g("wi")};
+  }).filter(c=>c.name);
+  if(!comps.length){ alert("Добавьте вещества"); return; }
+  spin("sp-soil",1);
+  try{
+    const body = {components:comps};
+    if(save){
+      body.save = 1;
+      body.site_label = $("soil-label").value.trim();
+      body.basis = $("soil-basis").value.trim();
+      if(ORG && SITE){ body.org = ORG; body.site = SITE; }
+    }
+    const j = await post("soil_class", body, 0);
+    if (j.error){ show("out-soil", "Ошибка: " + j.error); spin("sp-soil",0); return; }
+    let t = "1) Почва (СанПиН): КАТЕГОРИЯ — " + j.category.toUpperCase();
+    if (j.zc !== null && j.zc !== undefined) t += `, Zc = ${j.zc}`;
+    for (const [n, r] of j.exceedances||[]) t += `\n   ${n}: превышение ПДК/ОДК в ${r} раза`;
+    t += "\n   " + j.use;
+    t += "\n2) Отход (№ 536): " + (j.hazard_class
+      ? `КЛАСС ${j.hazard_class} (K = ${(+j.k_total).toPrecision(4)})`
+      : "не считался — заполните Wi");
+    if (j.warnings && j.warnings.length) t += "\n" + j.warnings.map(w=>"⚠ "+w).join("\n");
+    if (j.path){ t += "\nДокумент: " + j.path; post("open", {path:j.path}).catch(()=>{}); }
+    show("out-soil", t);
+  }catch(e){ show("out-soil", "Ошибка: " + errText(e)); } spin("sp-soil",0); }
 
 // ── справочники (автоподстановка) ──
 let REF = {substances:[], wastes:[]};
@@ -2282,9 +2490,29 @@ async function doCleanup(){
 }
 
 // ── старт ──
+function showStartupNotes(st){
+  // плашка «что нашла проверка при запуске»: свежий ФККО, новые/пропавшие бланки
+  if (!st || (!st.fkko && !(st.forms||[]).length)) return;
+  let box = $("startup-notes");
+  if (!box){
+    box = document.createElement("div");
+    box.id = "startup-notes"; box.className = "dsec";
+    box.style.cssText = "margin:0 0 10px;padding:8px 12px;background:#fff7e0;"+
+      "border:1px solid #e5c862;border-radius:8px;font-size:13px";
+    const main = document.querySelector("main");
+    main.insertBefore(box, main.firstChild);
+  }
+  const lines = [];
+  if (st.fkko) lines.push("✓ " + st.fkko);
+  for (const f of st.forms || []) lines.push("• " + f);
+  box.innerHTML = "<b>Проверка при запуске:</b> " +
+    lines.map(esc).join("<br>") +
+    ` <button class="delrow" style="float:right" onclick="this.parentNode.remove()">✕</button>`;
+}
 async function refreshMeta(){
   META = await get("meta", {});
   $("ver").textContent = "v" + META.version;
+  showStartupNotes(META.startup);
   $("aibox").textContent = META.ai.provider
     ? `ИИ: ${META.ai.provider}/${META.ai.model}` : "ИИ: не настроен (Сервис → Найти ИИ)";
   const shared = /onedrive/i.test(META.workspace);
@@ -2303,6 +2531,8 @@ async function refreshMeta(){
 $("calyear").value = new Date().getFullYear();
 get("reference", {}).then(r=>{ REF=r; buildDatalists(); }).catch(()=>{});
 refreshMeta().then(loadTree).catch(e => $("selinfo").textContent = "Ошибка: " + e.message);
+// фоновая проверка форм на старте занимает пару секунд — доспросим её итог
+setTimeout(()=>get("meta",{}).then(m=>showStartupNotes(m.startup)).catch(()=>{}), 5000);
 </script>
 </body>
 </html>

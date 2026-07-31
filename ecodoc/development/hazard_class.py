@@ -75,6 +75,89 @@ def wi_from_logk(log_k: float) -> float:
     return math.pow(10, log_k)
 
 
+def generate(components: list[Component], out_path,
+             waste_name: str = "", fkko: str = "", org_name: str = "",
+             basis: str = "") -> "Path":
+    """Оформить расчёт документом (.docx): по Приказу № 536 такой расчёт
+    прикладывается к паспорту отхода и к материалам отнесения к классу.
+
+    Машина считает K и класс; откуда взяты Ci (протоколы КХА) и Wi
+    (приложения к приказу / БДО) — пишет пользователь в поле basis."""
+    from pathlib import Path
+
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
+    from docx.shared import Cm, Pt
+
+    r = calculate(components)
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Times New Roman"
+    style.font.size = Pt(12)
+    for s in doc.sections:
+        s.left_margin, s.right_margin = Cm(3), Cm(1.5)
+        s.top_margin, s.bottom_margin = Cm(2), Cm(2)
+
+    if org_name:
+        head = doc.add_paragraph()
+        head.alignment = AL.CENTER
+        head.add_run(org_name).bold = True
+    title = doc.add_paragraph()
+    title.alignment = AL.CENTER
+    run = title.add_run(
+        "РАСЧЁТ класса опасности отхода\n"
+        "(критерии — приказ Минприроды России от 04.12.2014 № 536)")
+    run.bold = True
+    run.font.size = Pt(14)
+
+    doc.add_paragraph(f"Отход: {waste_name or '[наименование отхода]'}"
+                      + (f", код ФККО {fkko}" if fkko else ""))
+    doc.add_paragraph(
+        "Метод: компонентный. Показатель степени опасности отхода "
+        "K = Σ(Ci / Wi), где Ci — концентрация i-го компонента (мг/кг), "
+        "Wi — коэффициент степени опасности компонента (мг/кг).")
+    if basis:
+        doc.add_paragraph(f"Исходные данные: {basis}")
+
+    table = doc.add_table(rows=1, cols=5)
+    table.style = "Table Grid"
+    for i, text in enumerate(["№", "Компонент", "Ci, мг/кг", "Wi, мг/кг",
+                              "Ki = Ci/Wi"]):
+        table.rows[0].cells[i].text = text
+    for i, c in enumerate(r.components, start=1):
+        cells = table.add_row().cells
+        cells[0].text = str(i)
+        cells[1].text = c["name"]
+        cells[2].text = f"{c['ci']:g}"
+        cells[3].text = f"{c['wi']:g}"
+        cells[4].text = f"{c['ki']:g}"
+
+    doc.add_paragraph()
+    doc.add_paragraph(f"K = Σ(Ci/Wi) = {r.k_total:.4g}")
+    bands = ("K ≥ 10⁶ — I класс; 10⁴ ≤ K < 10⁶ — II; 10³ ≤ K < 10⁴ — III; "
+             "10² ≤ K < 10³ — IV; K < 10² — V")
+    doc.add_paragraph(f"Границы классов: {bands}.")
+    concl = doc.add_paragraph()
+    concl.add_run(f"ВЫВОД: отход относится к {r.hazard_class} классу "
+                  f"опасности.").bold = True
+    if r.hazard_class == 5:
+        doc.add_paragraph(
+            "Примечание: отнесение к V классу подлежит подтверждению "
+            "биотестированием водной вытяжки на двух тест-объектах из разных "
+            "систематических групп (приказ № 536, п. 6).")
+    for w in r.warnings:
+        doc.add_paragraph(f"⚠ {w}")
+
+    doc.add_paragraph()
+    doc.add_paragraph("Расчёт выполнил: ____________________ "
+                      "/______________________/")
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(out)
+    return out
+
+
 def report(components: list[Component]) -> str:
     r = calculate(components)
     lines = ["── Расчёт класса опасности отхода (Приказ МПР № 536) ──"]

@@ -67,6 +67,30 @@ def test_check_new_detects_added_file(forms_dir):
     assert not third["added"]                     # повторно не сигналит
 
 
+def test_startup_forms_check_fills_notes(forms_dir, monkeypatch):
+    """Проверка при запуске: свежий ФККО подхвачен, изменения бланков видны."""
+    import openpyxl
+
+    from ecodoc.gui import server
+    monkeypatch.setattr(server, "STARTUP_NOTES", {})
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Код", "Наименование", "Класс опасности"])
+    ws.append([47110101521, "лампы ртутные", "I"])
+    wb.save(forms_dir / "ФККО.xlsx")
+
+    fr.check_new()                                    # первый снимок
+    _sample_1028(forms_dir / "Отчетность" / "Движение отходов 1028" / "ж.xlsx")
+    server._startup_forms_check()
+    st = server.STARTUP_NOTES
+    assert "ФККО" in st.get("fkko", "")
+    forms = "\n".join(st.get("forms", []))
+    assert "Движение отходов 1028" in forms          # новый бланк замечен
+    assert "нет образцов" in forms                   # и список пустых слотов
+    # итог виден в meta — GUI рисует плашку из этого поля
+    assert server.api_meta({}, {})["startup"] == st
+
+
 def test_find_missing_searches_disk(forms_dir, tmp_path, monkeypatch):
     stash = tmp_path / "склад"
     stash.mkdir()

@@ -50,6 +50,7 @@ def api_meta(params, body):
             "forms": _forms(),
             "workspace": str(workspace.root().resolve()),
             "results": str(workspace.results_root()),
+            "startup": dict(STARTUP_NOTES),
             "ai": {"provider": cfg.provider, "model": cfg.model,
                    "fallbacks": cfg.fallbacks}}
 
@@ -349,6 +350,21 @@ def api_waste_summary(params, body):
     return {"path": str(path), "acts": len(ctx.waste_acts)}
 
 
+def api_waste_table(params, body):
+    """«Табличка по отходам» (т/м³ по классам) — по бланку пользователя."""
+    from ecodoc.core.waste_table import build_xlsx, rows
+    ctx = workspace.load_context(body["org"], body["site"])
+    data = rows(ctx)
+    if not data:
+        return {"error": "Перечень отходов пуст — загрузите справки-акты или "
+                         "заполните вкладку «ОТХОДЫ»."}
+    out_dir = workspace.results_dir(body["org"], body["site"])
+    year = ctx.period.year or ""
+    path = build_xlsx(ctx, out_dir / f"табличка_отходы_{year or 'все_годы'}.xlsx")
+    no_rho = sum(1 for r in data if r["mass"] and not r["density"])
+    return {"path": str(path), "rows": len(data), "no_density": no_rho}
+
+
 def api_missing(params, body):
     """Чего не хватает по формам — для чек-листов модулей."""
     from ecodoc.intake import requirements
@@ -439,15 +455,113 @@ def api_devdoc(params, body):
 
 
 def api_hazard_class(params, body):
-    from ecodoc.development.hazard_class import Component, calculate
+    from ecodoc.development.hazard_class import Component, calculate, generate
     comps = [Component(name=c.get("name", ""), ci=float(c.get("ci") or 0),
                        wi=float(c.get("wi") or 0))
              for c in body.get("components", []) if c.get("name")]
     if not comps:
         return {"error": "Добавьте компоненты отхода (наименование, Ci, Wi)."}
     r = calculate(comps)
-    return {"k_total": r.k_total, "hazard_class": r.hazard_class,
-            "components": r.components, "warnings": r.warnings}
+    out = {"k_total": r.k_total, "hazard_class": r.hazard_class,
+           "components": r.components, "warnings": r.warnings}
+    if body.get("save"):                       # оформить расчёт документом
+        org_name = ""
+        if body.get("org") and body.get("site"):
+            out_dir = workspace.results_dir(body["org"], body["site"])
+            org_name = workspace.load_context(body["org"], body["site"]) \
+                .organization.name
+        else:                                  # калькулятор без объекта
+            out_dir = workspace.results_root() / "расчёты"
+        name = re.sub(r'[\\/:*?"<>|]', "_",
+                      (body.get("waste_name") or "отход").strip())[:60]
+        path = generate(comps, out_dir / f"расчёт_класса_{name}.docx",
+                        waste_name=body.get("waste_name", ""),
+                        fkko=body.get("fkko", ""), org_name=org_name,
+                        basis=body.get("basis", ""))
+        out["path"] = str(path)
+    return out
+
+
+def api_volume(params, body):
+    """Собрать том НДВ/НДС/СЗЗ: наши данные + выгрузки УПРЗА «Эколог».
+
+    Контур обмена с УПРЗА: источники выгружаются кнопкой «Выгрузить для
+    УПРЗА», расчёт делает аттестованная программа («Эколог»), её Excel-выгрузки
+    возвращаются сюда — и том собирается с настоящими таблицами."""
+    import shutil
+
+    from ecodoc.development import volume_builder as vb
+    ctx = workspace.load_context(body["org"], body["site"])
+    vtype = body.get("vtype") or "ndv"
+    src = vb.VolumeSources()
+    tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_volume_"))
+    notes = []
+    try:
+        for key, attr in (("sources_file", "sources"),
+                          ("dispersion_file", "dispersion")):
+            f = body.get(key)
+            if not f:
+                continue
+            try:
+                path = Path(_decode_to_tmp([f], tmpdir)[0])
+                header, rows = vb.ingest_excel(path)
+                setattr(src, attr + "_header", header)
+                setattr(src, attr + "_table", rows)
+                notes.append(f"{f.get('name')}: строк {len(rows)}")
+            except Exception as e:
+                notes.append(f"⚠ {f.get('name')}: не прочитан ({e})")
+        src.appendices = [str(n) for n in body.get("appendices") or []]
+        # без выгрузки «Эколога» таблицы источников берём из своей инвентаризации
+        if not src.sources_table:
+            from ecodoc.development.air_inventory import sources as inv_sources
+            inv = inv_sources(ctx)
+            if inv:
+                src.sources_header = ["№", "Наименование", "Тип"]
+                src.sources_table = [[s.get("number", ""), s.get("name", ""),
+                                      s.get("kind", "")] for s in inv]
+                notes.append(f"источники из инвентаризации: {len(inv)}")
+        out_dir = workspace.results_dir(body["org"], body["site"])
+        names = {"ndv": "НДВ", "nds": "НДС", "szz": "СЗЗ"}
+        path = vb.build(vtype, ctx, src,
+                        out_dir / f"том_{names.get(vtype, vtype)}"
+                                  f"_{ctx.period.year or ''}.docx")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    if not src.dispersion_table:
+        notes.append("⚠ результатов рассеивания нет — в томе остаётся "
+                     "заглушка: выполните расчёт в УПРЗА и загрузите выгрузку")
+    return {"path": str(path), "notes": notes}
+
+
+def api_soil_class(params, body):
+    """Грунт: категория почвы по СанПиН + класс отхода по № 536."""
+    from ecodoc.development.soil_class import (SOIL_NORMS, SoilComponent,
+                                               assess, generate)
+    comps = [SoilComponent(name=c.get("name", ""),
+                           ci=float(c.get("ci") or 0),
+                           norm=float(c.get("norm") or 0),
+                           background=float(c.get("background") or 0),
+                           wi=float(c.get("wi") or 0))
+             for c in body.get("components", []) if c.get("name")]
+    if not comps:
+        return {"error": "Добавьте вещества (наименование и Ci, мг/кг).",
+                "norms": SOIL_NORMS}
+    r = assess(comps)
+    out = {"category": r.category, "zc": r.zc, "use": r.use,
+           "exceedances": r.exceedances, "hazard_class": r.hazard_class,
+           "k_total": r.k_total, "warnings": r.warnings, "norms": SOIL_NORMS}
+    if body.get("save"):
+        if body.get("org") and body.get("site"):
+            out_dir = workspace.results_dir(body["org"], body["site"])
+        else:
+            out_dir = workspace.results_root() / "расчёты"
+        label = re.sub(r'[\\/:*?"<>|]', "_",
+                       (body.get("site_label") or "грунт").strip())[:60]
+        path = generate(comps, out_dir / f"оценка_грунта_{label}.docx",
+                        site_label=body.get("site_label", ""),
+                        basis=body.get("basis", ""))
+        out["path"] = str(path)
+    return out
 
 
 def api_watch(params, body):
@@ -627,6 +741,13 @@ def api_object_check(params, body):
         except Exception as e:
             out["oktmo_error"] = str(e)[:200]
     return out
+
+
+def api_forms_norms(params, body):
+    """Сверка бланков с действующими НПА (+ по интернету, если online)."""
+    from ecodoc.core import forms_norms
+    online = str((body or {}).get("online", "")).lower() in ("1", "true", "yes")
+    return forms_norms.check_all(online=online)
 
 
 def api_forms_registry(params, body):
@@ -957,8 +1078,11 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "upraza_export": api_upraza_export,
                "counterparty": api_counterparty, "oktmo": api_oktmo,
                "hazard_class": api_hazard_class,
+               "soil_class": api_soil_class,
+               "volume": api_volume,
                "devdoc": api_devdoc, "submit": api_submit, "open": api_open,
                "waste_summary": api_waste_summary, "missing": api_missing,
+               "waste_table": api_waste_table,
                "settings": api_settings, "cleanup": api_cleanup,
                "storage": api_storage,
                "ai_health": api_ai_health, "ai_task": api_ai_task,
@@ -972,7 +1096,8 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "object_check": api_object_check,
                "fkko_check": api_fkko_check,
                "fkko_update": api_fkko_update,
-               "forms_registry": api_forms_registry}
+               "forms_registry": api_forms_registry,
+               "forms_norms": api_forms_norms}
 
 
 class Raw:
@@ -1077,6 +1202,38 @@ def _startup_ai_check():
         print(f"ИИ: проверка моделей не выполнена ({e})")
 
 
+# что нашла фоновая проверка старта — GUI показывает это плашкой (api_meta)
+STARTUP_NOTES: dict = {}
+
+
+def _startup_forms_check():
+    """Проверка форм и справочников при запуске (требование ТЗ:
+    «проверять на наличие новых форм при запуске приложения»)."""
+    try:
+        from ecodoc.core import fkko, forms_registry
+        n = fkko.sync_from_forms()             # свежий ФККО из «Форм» — в базу
+        if n:
+            STARTUP_NOTES["fkko"] = f"каталог ФККО обновлён из «Форм»: {n} кодов"
+            print(STARTUP_NOTES["fkko"])
+        ch = forms_registry.check_new()
+        notes = []
+        if not ch.get("first_run"):
+            for title, files in (ch.get("added") or {}).items():
+                notes.append(f"новые бланки «{title}»: {', '.join(files)}")
+            for title, files in (ch.get("removed") or {}).items():
+                notes.append(f"пропали бланки «{title}»: {', '.join(files)}")
+        slots = forms_registry.scan()
+        miss = [s.title for s in slots if not s.has_sample]
+        if miss:
+            notes.append("нет образцов: " + ", ".join(miss))
+        if notes:
+            STARTUP_NOTES["forms"] = notes
+            print("Формы: " + "; ".join(notes[:3])
+                  + ("…" if len(notes) > 3 else ""))
+    except Exception as e:                      # проверка не должна ломать запуск
+        print(f"Формы: проверка при запуске не выполнена ({e})")
+
+
 def run(port: int = 8737, open_browser: bool = True):
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}"
@@ -1084,6 +1241,7 @@ def run(port: int = 8737, open_browser: bool = True):
     if open_browser:
         threading.Timer(0.4, webbrowser.open, args=(url,)).start()
     threading.Thread(target=_startup_ai_check, daemon=True).start()
+    threading.Thread(target=_startup_forms_check, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -40,7 +40,8 @@ class PNOOLR(_Dev):
 @register
 class HazardClassCalc(_Dev):
     code = "hazard-class"
-    title = "Расчёт класса опасности отхода (пр. МПР № 536) — калькулятор во вкладке «Сервис»"
+    title = ("Расчёт класса опасности отхода (пр. МПР № 536) — калькулятор во "
+             "вкладке «Сервис», там же кнопка «Оформить расчёт (.docx)»")
     implemented = False   # интерактивный калькулятор в GUI (Сервис), не форма-генератор
 
 
@@ -107,7 +108,17 @@ class OOSVolume(_Dev):
 
 
 @register
-class HazardClassDoc(_Dev):
-    code = "hazard-class-doc"
-    devdoc = True        # расчёт с обоснованием: ecodoc/development/hazard_class.py
-    title = "Расчёт класса опасности отхода — документ с таблицей компонентов"
+class NDVVolume(_Dev):
+    code = "ndv"
+    title = ("Том НДВ — сборка во вкладке «УПРЗА»: выгрузка источников → "
+             "расчёт в «Экологе» → загрузка результатов → том .docx")
+    implemented = False   # собирается кнопкой «Собрать том» во вкладке УПРЗА
+
+
+@register
+class NDSVolume(_Dev):
+    code = "nds"
+    title = "Том НДС — сборка во вкладке «УПРЗА» (кнопка «Собрать том»)"
+    implemented = False
+
+
