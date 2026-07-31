@@ -11,7 +11,8 @@ from ecodoc.core.models import ReportContext, WasteAct, WasteFlow
 @pytest.fixture(autouse=True)
 def _own_catalog(tmp_path, monkeypatch):
     """Каждый тест — со своим файлом каталога, реальный не трогаем."""
-    monkeypatch.setattr(fkko, "DATA_FILE", tmp_path / "fkko.json")
+    monkeypatch.setenv("ECODOC_FKKO", str(tmp_path / "fkko.json"))
+    monkeypatch.setattr(fkko, "BUILTIN_FILE", tmp_path / "встроенный.json")
     fkko._CACHE.clear()
     yield
     fkko._CACHE.clear()
@@ -53,6 +54,50 @@ def test_seed_builtin_from_reference():
     assert fkko.seed_builtin() > 0
     assert fkko.catalog()["partial"] is True
     assert fkko.seed_builtin() == 0            # второй раз не перезаписывает
+
+
+def test_catalog_from_forms_folder(tmp_path, monkeypatch):
+    """Полный ФККО пользователь держит в папке «Формы» — берём его оттуда."""
+    openpyxl = pytest.importorskip("openpyxl")
+    forms = tmp_path / "Формы"
+    forms.mkdir()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Код", "Наименование", "Агрегатное состояние", "Класс опасности"])
+    ws.append([47110101521, "лампы ртутные", "изделие", "I"])
+    ws.append([73310001724, "мусор от офисных помещений", "смесь", "IV"])
+    ws.append([73310000000, "отходы коммунальные (группа)", "", "-"])
+    wb.save(forms / "ФККО.xlsx")
+    monkeypatch.setenv("ECODOC_FORMS", str(forms))
+
+    n = fkko.seed_builtin()
+    assert n == 3
+    assert "ФККО" in fkko.catalog()["source"]
+    assert fkko.check("47110101521").hazard == 1    # римская I разобрана
+    assert fkko.codes()["73310000000"]["group"] is True
+    assert not fkko.check("73310000000").ok         # групповой код в отчёт не идёт
+
+
+def test_forms_catalog_reloaded_when_file_changes(tmp_path, monkeypatch):
+    """Положили в «Формы» свежий ФККО — при следующем старте он подхватится."""
+    openpyxl = pytest.importorskip("openpyxl")
+    forms = tmp_path / "Формы"
+    forms.mkdir()
+    monkeypatch.setenv("ECODOC_FORMS", str(forms))
+
+    def write(rows):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Код", "Наименование", "Класс опасности"])
+        for code, name, cls in rows:
+            ws.append([code, name, cls])
+        wb.save(forms / "ФККО.xlsx")
+
+    write([(47110101521, "лампы", "I")])
+    assert fkko.sync_from_forms() == 1
+    assert fkko.sync_from_forms() == 0              # тот же файл — не перечитываем
+    write([(47110101521, "лампы", "I"), (73310001724, "мусор", "IV")])
+    assert fkko.sync_from_forms() == 2              # файл изменился — перечитали
 
 
 def test_parse_json_and_text():

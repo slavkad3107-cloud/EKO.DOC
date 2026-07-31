@@ -23,7 +23,27 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-DATA_FILE = Path(__file__).resolve().parents[1] / "data" / "fkko.json"
+BUILTIN_FILE = Path(__file__).resolve().parents[1] / "data" / "fkko.json"
+
+
+def user_file() -> Path:
+    """Куда пишется каталог, загруженный пользователем.
+
+    В общую базу, а не в папку программы: базой пользуются все компьютеры, и
+    при переходе на новую версию каталог не теряется вместе со старой папкой.
+    Путь берётся функцией (не константой), иначе тесты писали бы в живую базу."""
+    import os
+    env = os.environ.get("ECODOC_FKKO", "")
+    if env:
+        return Path(env)
+    from ecodoc.core import workspace
+    return workspace.root() / "справочники" / "fkko.json"
+
+
+def data_file() -> Path:
+    """Действующий файл каталога: пользовательский, если он есть."""
+    u = user_file()
+    return u if u.exists() else BUILTIN_FILE
 
 # официальные источники каталога (проверяются по порядку)
 SOURCES = [
@@ -47,16 +67,17 @@ class Check:
 
 
 def catalog() -> dict:
-    """Каталог из файла (кэш по времени изменения файла)."""
-    if not DATA_FILE.exists():
+    """Каталог из файла (кэш по пути и времени изменения)."""
+    path = data_file()
+    if not path.exists():
         return {}
-    mtime = DATA_FILE.stat().st_mtime
-    if _CACHE.get("mtime") != mtime:
+    key = (str(path), path.stat().st_mtime)
+    if _CACHE.get("key") != key:
         try:
-            _CACHE["data"] = json.loads(DATA_FILE.read_text(encoding="utf-8-sig"))
+            _CACHE["data"] = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             _CACHE["data"] = {}
-        _CACHE["mtime"] = mtime
+        _CACHE["key"] = key
     return _CACHE.get("data") or {}
 
 
@@ -139,19 +160,22 @@ def check_context(ctx) -> list[dict]:
     return out
 
 
-def save(records: dict, source: str = "", partial: bool = False) -> Path:
+def save(records: dict, source: str = "", partial: bool = False,
+         stamp: str = "") -> Path:
     """Записать каталог (код → {name, class}).
 
     partial=True — набор заведомо неполный (встроенный минимум или выборка):
-    тогда отсутствие кода не считается ошибкой."""
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    тогда отсутствие кода не считается ошибкой.
+    stamp — отпечаток файла-источника, чтобы не перечитывать его каждый запуск."""
+    path = user_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"updated": date.today().isoformat(), "source": source,
-               "partial": bool(partial), "codes": records}
-    tmp = DATA_FILE.with_suffix(".tmp")
+               "partial": bool(partial), "stamp": stamp, "codes": records}
+    tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(DATA_FILE)
+    tmp.replace(path)
     _CACHE.clear()
-    return DATA_FILE
+    return path
 
 
 def parse(text: str) -> dict:
@@ -293,23 +317,59 @@ def load_file(path: str | Path) -> tuple[int, str]:
     return len(records), str(p)
 
 
-def from_forms_folder() -> tuple[int, str] | None:
-    """Найти каталог ФККО в папке «Формы» пользователя и загрузить его.
+def find_in_forms() -> Path | None:
+    """Файл каталога ФККО в папке «Формы» пользователя (если он там есть).
 
     Пользователь держит там бланки документов — там же лежит и выгрузка ФККО."""
     from ecodoc.core import forms_registry
     base = forms_registry.root()
     if base is None:
         return None
-    for pattern in ("ФККО*", "*фкко*", "*ФККО*"):
-        for f in base.rglob(pattern):
-            if f.is_file() and f.suffix.lower() in (".xls", ".xlsx", ".xlsm",
-                                                    ".csv", ".json", ".txt"):
-                try:
-                    return load_file(f)
-                except Exception:
-                    continue
+    exts = (".xls", ".xlsx", ".xlsm", ".csv", ".json", ".txt")
+    for f in sorted(base.rglob("*")):
+        if f.is_file() and f.suffix.lower() in exts and "фкко" in f.name.lower():
+            return f
     return None
+
+
+def from_forms_folder() -> tuple[int, str] | None:
+    """Загрузить каталог из папки «Формы», если файл там нашёлся."""
+    f = find_in_forms()
+    if f is None:
+        return None
+    try:
+        return load_file(f)
+    except Exception:
+        return None
+
+
+def sync_from_forms() -> int:
+    """Подхватить каталог из «Форм», если он новее загруженного.
+
+    Вызывается при запуске: пользователь кладёт свежую выгрузку ФККО в папку
+    с бланками, и она должна применяться сама, без кнопок. Возвращает число
+    загруженных кодов (0 — если перечитывать нечего."""
+    f = find_in_forms()
+    if f is None:
+        return 0
+    try:
+        st = f.stat()
+        # в отпечатке и размер: подменённый в ту же секунду файл тоже должен
+        # считаться новым
+        stamp = f"{f.name}@{int(st.st_mtime)}@{st.st_size}"
+    except OSError:
+        return 0
+    if catalog().get("stamp") == stamp:
+        return 0                       # тот же файл — уже загружен
+    try:
+        records = parse_table(f) if f.suffix.lower() in (".xls", ".xlsx", ".xlsm") \
+            else parse(f.read_text(encoding="utf-8-sig", errors="replace"))
+    except Exception:
+        return 0
+    if not records:
+        return 0
+    save(records, source=f.name, partial=len(records) < 1000, stamp=stamp)
+    return len(records)
 
 
 def seed_builtin() -> int:
@@ -358,5 +418,5 @@ def update(timeout: int = 60) -> tuple[int, str]:
     raise RuntimeError(
         "Не удалось получить каталог ФККО из открытых источников. "
         f"Последняя попытка — {last}. Каталог можно положить вручную: "
-        f"{DATA_FILE} в виде {{\"codes\": {{\"47110101521\": "
+        f"{user_file()} в виде {{\"codes\": {{\"47110101521\": "
         f"{{\"name\": \"…\", \"class\": 1}}}}}}.")
