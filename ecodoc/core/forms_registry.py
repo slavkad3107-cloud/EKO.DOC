@@ -100,6 +100,8 @@ SLOTS: list[FormSlot] = [
              keywords=("таблич", "отход")),
     FormSlot("", "Перечень для контроля (воздух)", "reporting", "",
              keywords=("перечень для контроля",)),
+    FormSlot("fkko-catalog", "Каталог ФККО", "reporting", "",
+             keywords=("фкко",)),
 ]
 
 

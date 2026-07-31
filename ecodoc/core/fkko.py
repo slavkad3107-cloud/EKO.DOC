@@ -197,8 +197,80 @@ def parse(text: str) -> dict:
     return records
 
 
+_ROMAN = {"I": 1, "II": 2, "III": 3, "IV": 4, "V": 5}
+
+
+def _hazard_from(value, code: str) -> int:
+    """Класс опасности: римская цифра из каталога, иначе последняя цифра кода."""
+    s = str(value or "").strip().upper().replace("КЛАСС", "").strip(" .")
+    if s in _ROMAN:
+        return _ROMAN[s]
+    if s.isdigit() and s in "12345":
+        return int(s)
+    return int(code[-1]) if code and code[-1] in "12345" else 0
+
+
+def _code_from(value) -> str:
+    """Код ФККО из ячейки: числа приходят как 11101011495.0."""
+    s = str(value or "").strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    return re.sub(r"\D", "", s)
+
+
+def parse_table(path: Path) -> dict:
+    """Каталог из таблицы Excel: колонки «Код», «Наименование», «Класс опасности».
+
+    Читаем ячейки напрямую, а не текстовое представление: в выгрузках ФККО
+    коды хранятся числами (11101011495.0), а класс — римскими цифрами, и по
+    тексту это разбирается ненадёжно."""
+    rows: list[list] = []
+    suffix = path.suffix.lower()
+    if suffix == ".xls":
+        import xlrd
+        book = xlrd.open_workbook(str(path))
+        for sh in book.sheets():
+            rows += [[sh.cell_value(r, c) for c in range(sh.ncols)]
+                     for r in range(sh.nrows)]
+    else:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        for ws in wb.worksheets:
+            rows += [list(r) for r in ws.iter_rows(values_only=True)]
+        wb.close()
+
+    records: dict = {}
+    col_code = col_name = col_class = None
+    for row in rows:
+        cells = [str(c or "").strip() for c in row]
+        low = [c.lower() for c in cells]
+        # строка заголовков — запоминаем, где какая колонка
+        if col_code is None and any(c.startswith("код") for c in low):
+            for i, c in enumerate(low):
+                if c.startswith("код"):
+                    col_code = i
+                elif c.startswith("наимен"):
+                    col_name = i
+                elif "класс" in c:
+                    col_class = i
+            continue
+        if col_code is None or col_code >= len(row):
+            continue
+        code = _code_from(row[col_code])
+        if len(code) != 11:
+            continue
+        name = cells[col_name] if col_name is not None and col_name < len(cells) else ""
+        hazard = _hazard_from(row[col_class] if col_class is not None
+                              and col_class < len(row) else "", code)
+        rec = {"name": name, "class": hazard}
+        if code[-1] == "0":            # групповой заголовок каталога, не позиция
+            rec["group"] = True
+        records[code] = rec
+    return records
+
+
 def load_file(path: str | Path) -> tuple[int, str]:
-    """Загрузить каталог из файла, скачанного пользователем (xlsx/csv/json/txt).
+    """Загрузить каталог из файла пользователя (xls/xlsx/csv/json/txt).
 
     Открытого машиночитаемого ФККО в сети нет (Росприроднадзор публикует
     каталог страницей и файлами), поэтому это основной путь получить полный
@@ -207,24 +279,53 @@ def load_file(path: str | Path) -> tuple[int, str]:
     if not p.exists():
         raise FileNotFoundError(f"Файл не найден: {p}")
     if p.suffix.lower() in (".xlsx", ".xlsm", ".xls"):
-        from ecodoc.parsers.text_extract import extract
-        text = extract(p, ocr=False).text
+        records = parse_table(p)
+        if not records:                       # вдруг это не таблица, а текст
+            from ecodoc.parsers.text_extract import extract
+            records = parse(extract(p, ocr=False).text)
     else:
-        text = p.read_text(encoding="utf-8-sig", errors="replace")
-    records = parse(text)
+        records = parse(p.read_text(encoding="utf-8-sig", errors="replace"))
     if not records:
         raise ValueError("В файле не найдено ни одной пары «код ФККО + наименование»")
-    save(records, source=str(p), partial=len(records) < 1000)
+    # в справочник пишем только имя файла: сам справочник лежит в публичном
+    # репозитории, полные пути с диска пользователя туда попадать не должны
+    save(records, source=p.name, partial=len(records) < 1000)
     return len(records), str(p)
 
 
-def seed_builtin() -> int:
-    """Встроенный минимум: коды из справочника частых отходов.
+def from_forms_folder() -> tuple[int, str] | None:
+    """Найти каталог ФККО в папке «Формы» пользователя и загрузить его.
 
-    Ставится при первом обращении, чтобы проверка работала «из коробки»;
-    помечается как частичный — отсутствие кода не считается ошибкой."""
+    Пользователь держит там бланки документов — там же лежит и выгрузка ФККО."""
+    from ecodoc.core import forms_registry
+    base = forms_registry.root()
+    if base is None:
+        return None
+    for pattern in ("ФККО*", "*фкко*", "*ФККО*"):
+        for f in base.rglob(pattern):
+            if f.is_file() and f.suffix.lower() in (".xls", ".xlsx", ".xlsm",
+                                                    ".csv", ".json", ".txt"):
+                try:
+                    return load_file(f)
+                except Exception:
+                    continue
+    return None
+
+
+def seed_builtin() -> int:
+    """Подготовить каталог, если его ещё нет.
+
+    Сначала ищем полную выгрузку ФККО в папке «Формы» пользователя (он держит
+    её там вместе с бланками), и только если не нашли — ставим встроенный
+    минимум из справочника частых отходов (помечается как частичный)."""
     if codes():
         return 0
+    try:
+        found = from_forms_folder()
+        if found:
+            return found[0]
+    except Exception:
+        pass
     try:
         from ecodoc.core.refdata import common_wastes
         records = {norm(w["fkko"]): {"name": w.get("name", ""),
