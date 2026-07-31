@@ -96,3 +96,18 @@ class TUWaste(_Dev):
     code = "tu-waste"
     devdoc = True        # письмо-запрос: ecodoc/development/tu_waste.py
     title = "ТУ / письма о технических условиях (грунты, отходы строительства)"
+
+
+@register
+class OOSVolume(_Dev):
+    code = "oos"
+    devdoc = True        # текстовая часть раздела: ecodoc/development/oos.py
+    title = ("Раздел ООС — перечень мероприятий по охране окружающей среды "
+             "(ПП РФ № 87, п. 25)")
+
+
+@register
+class HazardClassDoc(_Dev):
+    code = "hazard-class-doc"
+    devdoc = True        # расчёт с обоснованием: ecodoc/development/hazard_class.py
+    title = "Расчёт класса опасности отхода — документ с таблицей компонентов"

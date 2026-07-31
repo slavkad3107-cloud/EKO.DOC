@@ -1754,9 +1754,10 @@ const FORM_MEDIUM = {
   "declaration-nvos":"common", "pek":"common"};
 // формы разработки — по средам (модули вкладки «Разработка»)
 const DEV_MEDIUM = {
-  "pnoolr":"waste", "hazard-class":"waste", "tu-waste":"waste",
+  "pnoolr":"waste", "hazard-class":"waste", "hazard-class-doc":"waste",
+  "tu-waste":"waste", "waste-inventory":"waste", "waste-passport":"waste",
   "air-inventory":"air", "nmu":"air",
-  "dvos":"common", "plarn":"common", "pek-program":"common"};
+  "dvos":"common", "plarn":"common", "pek-program":"common", "oos":"common"};
 function renderForms(){
   for (const id of ["forms-waste","forms-air","forms-water","forms-common",
                     "forms-dev-waste","forms-dev-air","forms-dev-water","forms-dev-common"])
@@ -1880,7 +1881,11 @@ async function doDevDoc(kind){
   needSite(); spin("sp-dev",1);
   try{
     const j = await post("devdoc", {org:ORG, site:SITE, kind}, 0);
-    show("out-dev", "Документ (.docx): " + j.path);
+    let t = "Документ: " + j.path;
+    if ((j.gaps||[]).length)
+      t += "\n\nЧего не хватает в документе (в тексте помечено «[требуется: …]»):\n"
+         + j.gaps.map(g=>"  • " + g).join("\n");
+    show("out-dev", t);
     post("open", {path:j.path}).catch(()=>{});
   }catch(e){ show("out-dev", "Ошибка: " + e.message); }
   spin("sp-dev",0);

@@ -422,6 +422,11 @@ def api_devdoc(params, body):
         path = tu_waste.generate(ctx, out_dir / "запрос_ТУ.docx",
                                  receiver=body.get("receiver", ""),
                                  purpose=body.get("purpose", ""))
+    elif kind == "oos":
+        from ecodoc.development import oos
+        path = oos.generate(ctx, out_dir / f"раздел_ООС_{ctx.period.year or ''}.docx",
+                            stage=body.get("stage", "эксплуатация"))
+        return {"path": str(path), "gaps": oos.gaps(ctx)}
     elif kind == "waste-passport":
         from ecodoc.development import waste_passport
         made = waste_passport.generate(ctx, out_dir / "паспорта")
