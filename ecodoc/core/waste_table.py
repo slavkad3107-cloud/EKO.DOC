@@ -32,17 +32,37 @@ def _fkko_spaced(code: str) -> str:
 
 
 def densities(ctx: ReportContext) -> dict[str, float]:
-    """Плотность по коду ФККО — из справок-актов (первая ненулевая)."""
+    """Плотность по коду ФККО из справок-актов.
+
+    Берём явную графу «Плотн., т/м³», а где её нет — выводим из пары
+    масса/объём того же акта (в справках по строительным отходам обычно
+    заполняют именно т и м³): так же поступает и «Сводная по отходам»,
+    иначе два документа из одних актов расходились бы."""
     from ecodoc.core.waste_agg import norm_fkko
-    out: dict[str, float] = {}
+    explicit: dict[str, float] = {}
+    mass_sum: dict[str, float] = {}
+    vol_sum: dict[str, float] = {}
     for a in ctx.waste_acts:
         code = norm_fkko(a.fkko_code)
-        try:
-            d = float(a.density or 0)
-        except (TypeError, ValueError):
-            d = 0.0
-        if code and d > 0 and code not in out:
-            out[code] = d
+        if not code:
+            continue
+
+        def num(v) -> float:
+            try:
+                return float(v or 0)
+            except (TypeError, ValueError):
+                return 0.0
+        d = num(a.density)
+        if d > 0 and code not in explicit:
+            explicit[code] = d
+        m, v = num(a.mass), num(getattr(a, "volume_m3", 0))
+        if m > 0 and v > 0:
+            mass_sum[code] = mass_sum.get(code, 0.0) + m
+            vol_sum[code] = vol_sum.get(code, 0.0) + v
+    out = dict(explicit)
+    for code, v in vol_sum.items():
+        if code not in out and v > 0:
+            out[code] = mass_sum[code] / v
     return out
 
 

@@ -40,8 +40,8 @@ def test_zc_thresholds():
 def test_hazard_class_from_wi_with_mineral_rest():
     """Wi заданы → считается и класс отхода; остаток массы — мин. основа."""
     r = assess([SoilComponent("нефтепродукты", ci=50000, norm=1000, wi=100)])
-    # K = 50000/100 + 950000/1e6 = 500.95 → IV класс
-    assert r.hazard_class == 4
+    # K = 50000/100 + 950000/1e6 = 500.95 → 10³ ≥ K > 10² → III класс
+    assert r.hazard_class == 3
     assert 500 < r.k_total < 502
 
 
@@ -56,7 +56,7 @@ def test_document_contains_both_assessments(tmp_path):
                  tmp_path / "грунт.docx", site_label="скв. 1, 0,0–0,2 м",
                  basis="протокол КХА № 77-26")
     text = "\n".join(par.text for par in Document(str(p)).paragraphs)
-    assert "СанПиН 1.2.3685-21" in text and "№ 536" in text
+    assert "СанПиН 1.2.3685-21" in text and "№ 158" in text
     assert "КАТЕГОРИЯ ЗАГРЯЗНЕНИЯ" in text
     assert "КЛАСС ОПАСНОСТИ ОТХОДА" in text
     assert "скв. 1" in text and "77-26" in text

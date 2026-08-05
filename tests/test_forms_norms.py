@@ -43,6 +43,30 @@ def test_old_blank_warns_about_redaction(tmp_path):
     assert any("действующая редакция" in n for n in v.notes)
 
 
+def test_html_blank_from_lkpp_is_read(tmp_path):
+    """Бланки из ЛКПП сохраняются страницей — теги снимаем сами."""
+    p = tmp_path / "декларация.html"
+    p.write_text("<html><head><style>b{}</style></head><body>"
+                 "<h1>Декларация о плате за негативное воздействие</h1>"
+                 "</body></html>", encoding="utf-8")
+    v = forms_norms.check_blank("declaration-nvos", p)
+    assert v.ok and v.level == "ok" and not v.notes
+
+
+def test_scan_without_text_layer_is_warn_not_error(tmp_path):
+    """У скана PyMuPDF отдаёт одни переносы строк — это не «чужой бланк»."""
+    p = tmp_path / "скан.pdf"
+    p.write_bytes(b"%PDF-1.4 fake")
+    monkey = getattr(forms_norms, "_blank_text")
+    forms_norms._blank_text = lambda path, limit=20000: "\n\n\n\n"
+    try:
+        v = forms_norms.check_blank("waste-passport", p)
+    finally:
+        forms_norms._blank_text = monkey
+    assert v.ok and v.level == "warn"
+    assert any("нет текстового слоя" in n for n in v.notes)
+
+
 def test_unknown_form_is_honest(tmp_path):
     p = _blank(tmp_path / "х.xlsx", ["что-то"])
     v = forms_norms.check_blank("nds", p)
@@ -78,15 +102,15 @@ def test_check_all_online_reports_changes(tmp_path, monkeypatch):
         {"id": "чужой", "name": "не наш", "url": "http://y", "forms": ["pek"]}])
     seen = []
 
-    def fake_check(src):
-        seen.append(src["id"])
+    def fake_check(src, save=True):
+        seen.append((src["id"], save))
         return {"id": src["id"], "name": src["name"], "status": "changed",
                 "detail": "снимок от 2026-07-01 отличается"}
     monkeypatch.setattr(watcher, "check_source", fake_check)
 
     out = forms_norms.check_all(online=True)
     assert out["checked_online"] and out["changed"]
-    assert seen == ["fkko"]                  # чужие источники не дёргаем
+    assert seen == [("fkko", False)]         # чужие не дёргаем; снимок не едим
     assert "отличается" in out["changed"][0]
 
 

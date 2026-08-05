@@ -199,12 +199,21 @@ def check_new() -> dict:
         if gone:
             removed[title] = gone
     if p:
+        # запись через временный файл: снимок лежит в общей папке OneDrive,
+        # и его могут писать одновременно проверка при запуске и кнопка
+        tmp = p.with_suffix(f".tmp{os.getpid()}")
         try:
-            p.write_text(json.dumps({"checked": date.today().isoformat(),
-                                     "forms": now}, ensure_ascii=False, indent=1),
-                         encoding="utf-8")
+            tmp.write_text(json.dumps({"checked": date.today().isoformat(),
+                                       "forms": now}, ensure_ascii=False, indent=1),
+                           encoding="utf-8")
+            tmp.replace(p)
         except OSError:
             pass
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
     return {"added": added, "removed": removed, "first_run": not prev}
 
 

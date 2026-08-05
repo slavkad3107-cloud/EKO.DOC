@@ -41,7 +41,8 @@ def test_catalog_confirms_code_and_name():
 def test_missing_code_in_full_catalog_is_error():
     fkko.save({"47110101521": {"name": "Лампы", "class": 1}}, partial=False)
     bad = fkko.check("73310001724")
-    assert not bad.ok and "нет в действующем ФККО" in bad.problem
+    assert not bad.ok and "нет в каталоге ФККО" in bad.problem
+    assert "обновите" in bad.problem       # каталог — снимок, подсказываем путь
 
 
 def test_missing_code_in_partial_catalog_is_only_note():
@@ -76,6 +77,78 @@ def test_catalog_from_forms_folder(tmp_path, monkeypatch):
     assert fkko.check("47110101521").hazard == 1    # римская I разобрана
     assert fkko.codes()["73310000000"]["group"] is True
     assert not fkko.check("73310000000").ok         # групповой код в отчёт не идёт
+
+
+def test_manual_catalog_survives_startup_sync(tmp_path, monkeypatch):
+    """Загруженный пользователем каталог автосинхронизация не затирает."""
+    openpyxl = pytest.importorskip("openpyxl")
+    forms = tmp_path / "Формы"
+    forms.mkdir()
+    monkeypatch.setenv("ECODOC_FORMS", str(forms))
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Код", "Наименование", "Класс опасности"])
+    ws.append([47110101521, "лампы", "I"])
+    wb.save(forms / "ФККО.xlsx")
+    assert fkko.sync_from_forms() == 1              # старый файл в «Формах»
+
+    свежий = tmp_path / "свежий.json"
+    свежий.write_text(json.dumps([{"code": "47110101521", "name": "лампы"},
+                                  {"code": "73310001724", "name": "мусор"}]),
+                      encoding="utf-8")
+    fkko.load_file(свежий)                          # пользователь загрузил свой
+    assert fkko.catalog()["origin"] == "manual"
+
+    assert fkko.sync_from_forms() == 0              # старт не трогает ручной
+    assert len(fkko.codes()) == 2
+    # кнопка «Обновить каталог» — явное действие, берёт файл из «Форм»
+    assert fkko.sync_from_forms(force=True) == 1
+    assert fkko.catalog()["origin"] == "forms"
+
+
+def test_catalog_without_origin_field_still_syncs(tmp_path, monkeypatch):
+    """Каталог, записанный прошлой версией (без origin), не залипает."""
+    openpyxl = pytest.importorskip("openpyxl")
+    forms = tmp_path / "Формы"
+    forms.mkdir()
+    monkeypatch.setenv("ECODOC_FORMS", str(forms))
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Код", "Наименование", "Класс опасности"])
+    ws.append([47110101521, "лампы", "I"])
+    ws.append([73310001724, "мусор", "IV"])
+    wb.save(forms / "ФККО.xlsx")
+    # так писала версия 0.53.0: ни origin, ни stamp
+    fkko.user_file().parent.mkdir(parents=True, exist_ok=True)
+    fkko.user_file().write_text(json.dumps(
+        {"updated": "2026-07-31", "source": "старый.xls", "partial": False,
+         "codes": {"47110101521": {"name": "лампы", "class": 1}}}),
+        encoding="utf-8")
+    fkko._CACHE.clear()
+    assert "origin" not in fkko.catalog()
+    assert fkko.sync_from_forms() == 2          # подхватился, а не залип
+
+
+def test_api_fkko_update_without_path_takes_forms_folder(tmp_path, monkeypatch):
+    """Кнопка «Обновить каталог» без файла берёт ФККО из «Форм», не из сети."""
+    openpyxl = pytest.importorskip("openpyxl")
+    forms = tmp_path / "Формы"
+    forms.mkdir()
+    monkeypatch.setenv("ECODOC_FORMS", str(forms))
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Код", "Наименование", "Класс опасности"])
+    ws.append([73310001724, "мусор офисный", "IV"])
+    wb.save(forms / "ФККО новый.xlsx")
+
+    def _no_network(timeout=60):
+        raise AssertionError("в сеть ходить не должны — каталог есть в «Формах»")
+    monkeypatch.setattr(fkko, "update", _no_network)
+
+    from ecodoc.gui import server
+    out = server.api_fkko_update({}, {})
+    assert out["ok"] and out["codes"] == 1
+    assert "ФККО" in out["source"]
 
 
 def test_forms_catalog_reloaded_when_file_changes(tmp_path, monkeypatch):

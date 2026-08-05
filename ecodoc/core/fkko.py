@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -126,8 +127,14 @@ def check(code, name: str = "") -> Check:
             return Check(code=d, ok=True, verified=False,
                          note="кода нет в загруженном (частичном) каталоге — "
                               "загрузите полный ФККО, чтобы проверить")
+        # каталог — снимок на дату: код, внесённый в ФККО позже, здесь не
+        # найдётся, поэтому дату называем и подсказываем обновление
+        when = catalog().get("updated", "")
         return Check(code=d, ok=False, verified=False,
-                     problem="кода нет в действующем ФККО — проверьте по каталогу")
+                     problem="кода нет в каталоге ФККО"
+                             + (f" (снимок от {when})" if when else "")
+                             + " — проверьте код; если он новый, обновите "
+                               "каталог кнопкой «Обновить каталог ФККО»")
     chk = Check(code=d, ok=True, verified=True, name=rec.get("name", ""),
                 hazard=int(rec.get("class") or 0))
     if name and chk.name:
@@ -161,19 +168,28 @@ def check_context(ctx) -> list[dict]:
 
 
 def save(records: dict, source: str = "", partial: bool = False,
-         stamp: str = "") -> Path:
+         stamp: str = "", origin: str = "manual") -> Path:
     """Записать каталог (код → {name, class}).
 
     partial=True — набор заведомо неполный (встроенный минимум или выборка):
     тогда отсутствие кода не считается ошибкой.
-    stamp — отпечаток файла-источника, чтобы не перечитывать его каждый запуск."""
+    stamp — отпечаток файла-источника, чтобы не перечитывать его каждый запуск.
+    origin — «forms» (подхвачен автоматически из папки «Формы») или «manual»
+    (пользователь загрузил файл/скачал сам). Автосинхронизация ручной каталог
+    не трогает: явное действие пользователя автоматика отменять не должна."""
     path = user_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"updated": date.today().isoformat(), "source": source,
-               "partial": bool(partial), "stamp": stamp, "codes": records}
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+               "partial": bool(partial), "stamp": stamp, "origin": origin,
+               "codes": records}
+    # временный файл уникален на процесс: сохранение может идти одновременно
+    # из фонового потока запуска и из обработчика кнопки
+    tmp = path.with_suffix(f".tmp{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
     _CACHE.clear()
     return path
 
@@ -229,7 +245,7 @@ def _hazard_from(value, code: str) -> int:
     s = str(value or "").strip().upper().replace("КЛАСС", "").strip(" .")
     if s in _ROMAN:
         return _ROMAN[s]
-    if s.isdigit() and s in "12345":
+    if s in ("1", "2", "3", "4", "5"):     # именно одна цифра, не подстрока
         return int(s)
     return int(code[-1]) if code and code[-1] in "12345" else 0
 
@@ -326,10 +342,13 @@ def find_in_forms() -> Path | None:
     if base is None:
         return None
     exts = (".xls", ".xlsx", ".xlsm", ".csv", ".json", ".txt")
-    for f in sorted(base.rglob("*")):
-        if f.is_file() and f.suffix.lower() in exts and "фкко" in f.name.lower():
-            return f
-    return None
+    hits = [f for f in base.rglob("*")
+            if f.is_file() and f.suffix.lower() in exts
+            and "фкко" in f.name.lower()]
+    if not hits:
+        return None
+    # файлов может быть несколько (старая выгрузка + свежая) — берём свежайший
+    return max(hits, key=lambda f: f.stat().st_mtime)
 
 
 def from_forms_folder() -> tuple[int, str] | None:
@@ -337,21 +356,26 @@ def from_forms_folder() -> tuple[int, str] | None:
     f = find_in_forms()
     if f is None:
         return None
-    try:
-        return load_file(f)
-    except Exception:
-        return None
+    n = sync_from_forms(force=True)
+    return (n, str(f)) if n else None
 
 
-def sync_from_forms() -> int:
+def sync_from_forms(force: bool = False) -> int:
     """Подхватить каталог из «Форм», если он новее загруженного.
 
     Вызывается при запуске: пользователь кладёт свежую выгрузку ФККО в папку
     с бланками, и она должна применяться сама, без кнопок. Возвращает число
-    загруженных кодов (0 — если перечитывать нечего."""
+    загруженных кодов (0 — если перечитывать нечего).
+
+    Каталог, загруженный пользователем вручную (кнопкой или из сети), сама
+    не трогает — иначе свежий справочник затирался бы старым файлом из
+    «Форм» при каждом запуске. Кнопка «Обновить каталог» зовёт с force=True."""
     f = find_in_forms()
     if f is None:
         return 0
+    cat = catalog()
+    if not force and cat.get("codes") and cat.get("origin", "forms") != "forms":
+        return 0                       # ручной каталог автоматом не заменяем
     try:
         st = f.stat()
         # в отпечатке и размер: подменённый в ту же секунду файл тоже должен
@@ -359,7 +383,7 @@ def sync_from_forms() -> int:
         stamp = f"{f.name}@{int(st.st_mtime)}@{st.st_size}"
     except OSError:
         return 0
-    if catalog().get("stamp") == stamp:
+    if not force and cat.get("stamp") == stamp:
         return 0                       # тот же файл — уже загружен
     try:
         records = parse_table(f) if f.suffix.lower() in (".xls", ".xlsx", ".xlsm") \
@@ -368,7 +392,8 @@ def sync_from_forms() -> int:
         return 0
     if not records:
         return 0
-    save(records, source=f.name, partial=len(records) < 1000, stamp=stamp)
+    save(records, source=f.name, partial=len(records) < 1000, stamp=stamp,
+         origin="forms")
     return len(records)
 
 

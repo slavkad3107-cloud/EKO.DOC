@@ -43,6 +43,19 @@ def test_rows_grouped_and_volume_from_density(ctx):
     assert office["note"] == "делаем паспорт"
 
 
+def test_volume_taken_from_acts_when_no_density(ctx):
+    """В актах часто пишут т и м³ без плотности — объём не должен теряться
+    (как не теряется в «Сводной по отходам» из тех же справок)."""
+    ctx.waste_acts.append(WasteAct(fkko_code="73310001724", name="Мусор офисный",
+                                   mass=Decimal("6.39"),
+                                   volume_m3=Decimal("42.08"),
+                                   operation="размещение", date="01.04.2025"))
+    rows = waste_table.rows(ctx)
+    office = next(r for r in rows if r["fkko"] == "73310001724")
+    assert office["density"] == pytest.approx(6.39 / 42.08, rel=1e-6)
+    assert office["volume"] == pytest.approx(42.08, rel=1e-6)
+
+
 def test_xlsx_layout_matches_user_blank(ctx, tmp_path):
     grid = _cells(waste_table.build_xlsx(ctx, tmp_path / "т.xlsx"))
     flat = [str(v) for row in grid for v in row if v is not None]

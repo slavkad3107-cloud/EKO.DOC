@@ -410,6 +410,11 @@ def api_reference(params, body):
     return {"substances": substances(), "wastes": common_wastes()}
 
 
+def _year_suffix(ctx) -> str:
+    """«_2025» или пусто — чтобы в имени файла не болтался хвост «_»."""
+    return f"_{ctx.period.year}" if ctx.period.year else ""
+
+
 def api_devdoc(params, body):
     """Сгенерировать документ разработки (.docx): НМУ или программа ПЭК."""
     ctx = workspace.load_context(body["org"], body["site"])
@@ -424,15 +429,15 @@ def api_devdoc(params, body):
     elif kind == "waste-inventory":
         from ecodoc.development import waste_inventory
         path = waste_inventory.generate(
-            ctx, out_dir / f"инвентаризация_отходов_{ctx.period.year or ''}.xlsx")
+            ctx, out_dir / f"инвентаризация_отходов{_year_suffix(ctx)}.xlsx")
     elif kind == "air-inventory":
         from ecodoc.development import air_inventory
         path = air_inventory.generate(
-            ctx, out_dir / f"инвентаризация_выбросов_{ctx.period.year or ''}.xlsx")
+            ctx, out_dir / f"инвентаризация_выбросов{_year_suffix(ctx)}.xlsx")
     elif kind == "pnoolr":
         from ecodoc.development import pnoolr
         path = pnoolr.generate(
-            ctx, out_dir / f"ПНООЛР_расчётная_часть_{ctx.period.year or ''}.xlsx")
+            ctx, out_dir / f"ПНООЛР_расчётная_часть{_year_suffix(ctx)}.xlsx")
     elif kind == "tu-waste":
         from ecodoc.development import tu_waste
         path = tu_waste.generate(ctx, out_dir / "запрос_ТУ.docx",
@@ -440,7 +445,7 @@ def api_devdoc(params, body):
                                  purpose=body.get("purpose", ""))
     elif kind == "oos":
         from ecodoc.development import oos
-        path = oos.generate(ctx, out_dir / f"раздел_ООС_{ctx.period.year or ''}.docx",
+        path = oos.generate(ctx, out_dir / f"раздел_ООС{_year_suffix(ctx)}.docx",
                             stage=body.get("stage", "эксплуатация"))
         return {"path": str(path), "gaps": oos.gaps(ctx)}
     elif kind == "waste-passport":
@@ -524,7 +529,7 @@ def api_volume(params, body):
         names = {"ndv": "НДВ", "nds": "НДС", "szz": "СЗЗ"}
         path = vb.build(vtype, ctx, src,
                         out_dir / f"том_{names.get(vtype, vtype)}"
-                                  f"_{ctx.period.year or ''}.docx")
+                                  f"{_year_suffix(ctx)}.docx")
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     if not src.dispersion_table:
@@ -534,7 +539,7 @@ def api_volume(params, body):
 
 
 def api_soil_class(params, body):
-    """Грунт: категория почвы по СанПиН + класс отхода по № 536."""
+    """Грунт: категория почвы по СанПиН + класс отхода (пр. № 158)."""
     from ecodoc.development.soil_class import (SOIL_NORMS, SoilComponent,
                                                assess, generate)
     comps = [SoilComponent(name=c.get("name", ""),
@@ -762,7 +767,15 @@ def api_forms_registry(params, body):
     if str((body or {}).get("search", "")).lower() in ("1", "true", "yes"):
         out["found"] = fr.find_missing(slots)
     if str((body or {}).get("check_new", "")).lower() in ("1", "true", "yes"):
-        out["changes"] = fr.check_new()
+        ch = fr.check_new()
+        # разницу с прошлого раза могла уже «съесть» проверка при запуске —
+        # доливаем её сюда, иначе кнопка покажет пустоту вместо новых бланков
+        eaten = STARTUP_NOTES.get("forms_changes") or {}
+        for key in ("added", "removed"):
+            for title, files in (eaten.get(key) or {}).items():
+                have = ch.setdefault(key, {}).setdefault(title, [])
+                have += [f for f in files if f not in have]
+        out["changes"] = ch
     return out
 
 
@@ -788,7 +801,10 @@ def api_fkko_update(params, body):
         if path:
             n, src = fkko.load_file(path)
         else:
-            n, src = fkko.update()
+            # сначала папка «Формы» — там каталог обычно и лежит; открытого
+            # машиночитаемого ФККО в сети нет, сеть остаётся запасным путём
+            found = fkko.from_forms_folder()
+            n, src = found if found else fkko.update()
         return {"ok": True, "codes": n, "source": src,
                 "partial": bool(fkko.catalog().get("partial"))}
     except Exception as e:
@@ -1216,6 +1232,10 @@ def _startup_forms_check():
             STARTUP_NOTES["fkko"] = f"каталог ФККО обновлён из «Форм»: {n} кодов"
             print(STARTUP_NOTES["fkko"])
         ch = forms_registry.check_new()
+        # разницу «съедает» эта проверка: сохраняем её, чтобы кнопка реестра
+        # бланков показала то же самое, а не пустоту
+        if ch.get("added") or ch.get("removed"):
+            STARTUP_NOTES["forms_changes"] = ch
         notes = []
         if not ch.get("first_run"):
             for title, files in (ch.get("added") or {}).items():

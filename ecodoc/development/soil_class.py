@@ -3,7 +3,8 @@
 Требование ТЗ (ИЭИ): «класс грунта по МПР и по СанПиН». Это два разных
 норматива, и они дают разные ответы на разные вопросы:
 
-  1. Как отход — класс опасности I–V по приказу МПР № 536 (K = Σ Ci/Wi).
+  1. Как отход — класс опасности I–V по критериям Минприроды (действует
+     приказ № 158 от 31.03.2025, заменил № 536): K = Σ Ci/Wi.
      Нужен для передачи грунта на размещение/утилизацию (ФККО 8 11 100 01 49 5
      и близкие). Считает ecodoc.development.hazard_class.
 
@@ -60,7 +61,7 @@ class SoilComponent:
     ci: float                 # измеренная концентрация, мг/кг
     norm: float = 0.0         # ПДК/ОДК, мг/кг (0 — взять из справочника)
     background: float = 0.0   # фоновая концентрация Cф, мг/кг (для Zc)
-    wi: float = 0.0           # Wi по приказу № 536 (для класса отхода)
+    wi: float = 0.0           # Wi по Критериям (пр. № 158) — для класса отхода
 
 
 @dataclass
@@ -68,7 +69,7 @@ class SoilResult:
     category: str = ""            # категория загрязнения почвы (СанПиН)
     zc: float | None = None       # суммарный показатель загрязнения
     exceedances: list = field(default_factory=list)   # [(имя, крат. ПДК)]
-    hazard_class: int = 0         # класс отхода по № 536 (0 — не считался)
+    hazard_class: int = 0         # класс отхода по Критериям (0 — не считался)
     k_total: float = 0.0
     use: str = ""                 # что можно делать с таким грунтом
     warnings: list = field(default_factory=list)
@@ -81,7 +82,7 @@ def _norm_for(c: SoilComponent) -> float:
 
 
 def assess(components: list[SoilComponent]) -> SoilResult:
-    """Категория почвы по СанПиН + (если заданы Wi) класс отхода по № 536."""
+    """Категория почвы по СанПиН + (если заданы Wi) класс отхода (пр. № 158)."""
     res = SoilResult()
 
     # ── кратности превышения ПДК/ОДК ─────────────────────────────────
@@ -125,7 +126,7 @@ def assess(components: list[SoilComponent]) -> SoilResult:
         res.category = "допустимая"       # без фона «чистую» не присваиваем
     res.use = USE_BY_CATEGORY.get(res.category, "")
 
-    # ── класс отхода по № 536 (если есть Wi) ─────────────────────────
+    # ── класс отхода по Критериям № 158 (если есть Wi) ───────────────
     with_wi = [c for c in components if c.wi > 0]
     if with_wi:
         from ecodoc.development.hazard_class import Component, calculate
@@ -167,7 +168,7 @@ def generate(components: list[SoilComponent], out_path: str | Path,
     t.alignment = AL.CENTER
     run = t.add_run("ОЦЕНКА загрязнённости грунта\n"
                     "(СанПиН 1.2.3685-21, МУ 2.1.7.730-99; "
-                    "приказ Минприроды России № 536)")
+                    "приказ Минприроды России № 158 от 31.03.2025)")
     run.bold = True
     run.font.size = Pt(14)
     if site_label:
@@ -200,7 +201,7 @@ def generate(components: list[SoilComponent], out_path: str | Path,
     p.add_run(f"   КАТЕГОРИЯ ЗАГРЯЗНЕНИЯ: {r.category}").bold = True
     doc.add_paragraph(f"   Использование: {r.use}")
 
-    doc.add_paragraph("2. Оценка как отхода (приказ № 536):")
+    doc.add_paragraph("2. Оценка как отхода (приказ № 158):")
     if r.hazard_class:
         doc.add_paragraph(f"   K = Σ(Ci/Wi) = {r.k_total:.4g}")
         p = doc.add_paragraph()
@@ -211,7 +212,7 @@ def generate(components: list[SoilComponent], out_path: str | Path,
     else:
         doc.add_paragraph("   Wi компонентов не заданы — класс отхода не "
                           "рассчитан. Для расчёта заполните Wi по приложению "
-                          "к приказу № 536 или банку данных БДО.")
+                          "к приказу № 158 или банку данных БДО.")
     for w in r.warnings:
         doc.add_paragraph(f"⚠ {w}")
 

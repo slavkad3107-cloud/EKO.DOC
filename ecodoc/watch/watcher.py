@@ -60,8 +60,11 @@ def _snap_path(source_id: str) -> Path:
     return SNAP_DIR / f"{source_id}.json"
 
 
-def check_source(src: dict) -> dict:
-    """Вернуть {'id', 'status': new|same|changed|error, 'detail'}."""
+def check_source(src: dict, save: bool = True) -> dict:
+    """Вернуть {'id', 'status': new|same|changed|error, 'detail'}.
+
+    save=False — только сравнить, снимок не трогать: так сверка бланков по
+    НПА не «съедает» изменение, которое должен показать штатный `watch check`."""
     out = {"id": src["id"], "name": src["name"], "status": "same", "detail": ""}
     try:
         text = _fetch_text(src["url"],
@@ -78,6 +81,8 @@ def check_source(src: dict) -> dict:
     elif prev["sha256"] != digest:
         out["status"] = "changed"
         out["detail"] = f"снимок от {prev['date']} отличается"
+    if not save:
+        return out
     SNAP_DIR.mkdir(parents=True, exist_ok=True)
     snap_file.write_text(json.dumps(
         {"sha256": digest, "date": date.today().isoformat(),

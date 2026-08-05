@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -135,6 +136,21 @@ def _blank_text(path: Path, limit: int = 20000) -> str:
                 for row in t.rows:
                     parts += [c.text for c in row.cells]
             return " ".join(parts)[:limit]
+        if suffix in (".html", ".htm"):
+            # бланки, сохранённые из ЛКПП, приходят страницей: снимаем теги
+            # сами — text_extract html не разбирает и вернул бы пустоту
+            raw = path.read_bytes()
+            for enc in ("utf-8", "cp1251"):
+                try:
+                    text = raw.decode(enc)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                text = raw.decode("utf-8", "replace")
+            text = re.sub(r"(?is)<(script|style).*?</\1>", " ", text)
+            text = re.sub(r"(?s)<[^>]+>", " ", text)
+            return re.sub(r"\s+", " ", text).strip()[:limit]
         from ecodoc.parsers.text_extract import extract
         return (extract(path, ocr=False).text or "")[:limit]
     except Exception:
@@ -153,8 +169,11 @@ def check_blank(code: str, path: Path) -> Verdict:
         return v
 
     text = _blank_text(path).lower().replace("ё", "е")
-    if not text:
-        v.notes.append("не удалось прочитать бланк для проверки признаков")
+    # у сканов PyMuPDF отдаёт «текст» из одних переносов строк: проверять
+    # признаки формы не по чему, и объявлять бланк неверным нельзя
+    if not re.search(r"[a-zа-я]", text):
+        v.notes.append("в бланке нет текстового слоя (скан) — признаки формы "
+                       "не проверить; смотрите глазами или прогоните OCR")
         v.level = "warn"
     else:
         missing = [m for m in norm.get("marks", []) if m not in text]
@@ -211,7 +230,9 @@ def check_all(online: bool = False) -> dict:
         from ecodoc.watch import watcher
         for src in _watch_sources_for(codes):
             try:
-                res = watcher.check_source(src)
+                # save=False: снимок не переписываем — «изменилось» должен
+                # увидеть и штатный сторож форм (ecodoc watch check)
+                res = watcher.check_source(src, save=False)
             except Exception as e:
                 online_errors.append(f"{src.get('id')}: {e}")
                 continue

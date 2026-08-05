@@ -453,7 +453,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
         результатов на этом компьютере и в базу не попадают.</div>
     </div>
     <div class="card">
-      <h2>Калькулятор класса опасности отхода (Приказ МПР № 536)</h2>
+      <h2>Калькулятор класса опасности отхода (пр. МПР № 158 от 31.03.2025)</h2>
       <div class="hint">Компонентный метод: K = Σ(Ci/Wi). Ci — концентрация компонента (мг/кг,
         сумма ≈ 1 000 000 = 100%), Wi — коэффициент степени опасности из аттестованного источника.</div>
       <div style="overflow-x:auto"><table class="dtbl" id="hztbl"><thead><tr>
@@ -477,7 +477,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <pre class="out" id="out-hz" style="display:none"></pre>
     </div>
     <div class="card">
-      <h2>Оценка грунта: почва (СанПиН 1.2.3685-21) + отход (пр. № 536)</h2>
+      <h2>Оценка грунта: почва (СанПиН 1.2.3685-21) + отход (пр. № 158)</h2>
       <div class="hint">Из протоколов КХА грунта. Ci — измеренная концентрация;
         ПДК/ОДК подставится из справочника (можно поправить); фон нужен для Zc;
         Wi — для класса отхода (необязательно). Категория почвы говорит, куда
@@ -1975,15 +1975,18 @@ async function doWasteTable(){
   needSite(); spin("sp-gen",1); spin("sp-waste",1);
   try{
     const j = await post("waste_table", {org:ORG, site:SITE}, 0);
-    if (j.error){ show("out-gen", "Табличка: " + j.error); alert(j.error); }
-    else {
-      let t = `Табличка по отходам (${j.rows} позиций): ` + j.path;
-      if (j.no_density) t += `\n⚠ У ${j.no_density} позиций нет плотности — графа м³ пустая. `+
-        "Плотность берётся из справок-актов (графа «Плотн., т/м³»).";
-      show("out-gen", t);
-      post("open", {path:j.path}).catch(()=>{});
-    }
-  }catch(e){ show("out-gen", "Ошибка: " + errText(e)); }
+    let t = `Табличка по отходам (${j.rows} позиций): ` + j.path;
+    if (j.no_density) t += `\n⚠ У ${j.no_density} позиций нет плотности — графа м³ пустая. `+
+      "Плотность берётся из справок-актов (графы «Плотн., т/м³» или т + м³).";
+    show("out-gen", t);
+    if ($("waste-msg")) $("waste-msg").textContent = `✓ табличка: ${j.rows} позиций — ` + j.path;
+    post("open", {path:j.path}).catch(()=>{});
+  }catch(e){
+    // кнопка есть и во вкладке ОТХОДЫ, где out-gen не виден — говорим всюду
+    show("out-gen", "Табличка: " + errText(e));
+    if ($("waste-msg")) $("waste-msg").textContent = "Табличка: " + errText(e);
+    else alert(errText(e));
+  }
   spin("sp-gen",0); spin("sp-waste",0);
 }
 async function doWasteSummary(){
@@ -2383,7 +2386,7 @@ async function doHazard(save){
   }catch(e){ show("out-hz", "Ошибка: " + e.message); } spin("sp-hz",0); }
 addHzRow({name:"Нефтепродукты", ci:"50000", wi:"100"});
 addHzRow({name:"Песок (диоксид кремния)", ci:"950000", wi:"1000000"});
-// калькулятор грунта: СанПиН + № 536
+// калькулятор грунта: СанПиН + критерии № 158
 const SOIL_NORMS_JS = {"свинец":130,"кадмий":2,"цинк":220,"медь":132,
   "никель":80,"мышьяк":10,"ртуть":2.1,"бенз(а)пирен":0.02,"нефтепродукты":1000};
 function addSoilRow(c){
@@ -2428,7 +2431,7 @@ async function doSoil(save){
     if (j.zc !== null && j.zc !== undefined) t += `, Zc = ${j.zc}`;
     for (const [n, r] of j.exceedances||[]) t += `\n   ${n}: превышение ПДК/ОДК в ${r} раза`;
     t += "\n   " + j.use;
-    t += "\n2) Отход (№ 536): " + (j.hazard_class
+    t += "\n2) Отход (№ 158): " + (j.hazard_class
       ? `КЛАСС ${j.hazard_class} (K = ${(+j.k_total).toPrecision(4)})`
       : "не считался — заполните Wi");
     if (j.warnings && j.warnings.length) t += "\n" + j.warnings.map(w=>"⚠ "+w).join("\n");
