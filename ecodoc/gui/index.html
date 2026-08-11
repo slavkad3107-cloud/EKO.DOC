@@ -240,6 +240,12 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
           title="т / м³ по классам опасности с итогами — по бланку «форма таблички по отходам»">📋 Табличка (т/м³)</button>
         <span class="spin" id="sp-waste">…</span><span class="hint" id="waste-msg"></span>
       </div>
+      <div class="row" style="margin-top:2px">
+        <button class="b sec" onclick="auditData()"
+          title="Найти в данных мусор: не-вещества, коды вне ФККО, дубли, ПДК вместо массы">🧹 Проверить данные на мусор</button>
+        <span class="spin" id="sp-audit">…</span>
+      </div>
+      <div id="auditbox"></div>
       <div id="fkkobox"></div>
       <div id="wasteform"></div>
     </div>
@@ -1289,6 +1295,67 @@ async function checkFormsNorms(online){
     $("formsbox").innerHTML = h;
   }catch(e){ $("formsbox").innerHTML = `<div class="issue error">${esc(errText(e))}</div>`; }
   spin("sp-forms", 0);
+}
+
+// ── чистка данных: мусор, дубли, ПДК вместо массы ────────────────────
+async function auditData(){
+  needSite(); spin("sp-audit",1);
+  try{
+    const j = await post("audit_data", {org:ORG, site:SITE}, 0);
+    const t = j.totals || {};
+    const bad = (rows) => rows.filter(r=>!r.ok);
+    const sus = (rows) => rows.filter(r=>r.ok && r.suspect);
+    const rowHtml = (r, isWaste) =>
+      `<tr><td>${r.ok ? (r.suspect?"?":"✓") : "✖"}</td>`+
+      `<td class="hint">${isWaste ? "отход" : (r.medium==="water"?"сброс":"выброс")}</td>`+
+      `<td>${esc((isWaste? r.fkko : r.code)||"—")}</td><td>${esc((r.name||"").slice(0,52))}</td>`+
+      `<td class="hint">${esc(r.mass||"")}</td><td>${esc(r.reason||"")}</td></tr>`;
+    const clean = !t.pollutants_bad && !t.wastes_bad && !t.duplicates;
+    let h = `<div class="dsec"><h4>Проверка данных</h4>`+
+      `<div class="hint">Вещества: ${t.pollutants||0} (мусор ${t.pollutants_bad||0}, `+
+      `спорных ${t.pollutants_suspect||0}) · Отходы: ${t.wastes||0} (мусор ${t.wastes_bad||0}, `+
+      `спорных ${t.wastes_suspect||0}) · Повторов: ${t.duplicates||0}</div>`;
+    if (clean){
+      h += '<div class="issue" style="color:var(--acc)">✓ Мусора и повторов не найдено.</div></div>';
+      $("auditbox").innerHTML = h; spin("sp-audit",0); return;
+    }
+    const rows = [...bad(j.wastes||[]).map(r=>rowHtml(r,1)), ...bad(j.pollutants||[]).map(r=>rowHtml(r,0)),
+                  ...sus(j.wastes||[]).map(r=>rowHtml(r,1)), ...sus(j.pollutants||[]).map(r=>rowHtml(r,0))];
+    h += '<div style="overflow-x:auto;max-height:340px;overflow-y:auto"><table class="dtbl"><thead><tr>'+
+      '<th></th><th>Раздел</th><th>Код</th><th>Наименование</th><th>Массы</th><th>Что не так</th>'+
+      '</tr></thead><tbody>'+rows.join("")+'</tbody></table></div>';
+    if ((j.duplicates||[]).length)
+      h += `<div class="issue warn">Повторы одного и того же (${j.duplicates.length}): `+
+        esc(j.duplicates.slice(0,6).map(d=>d.label).join(" · ")) +
+        (j.duplicates.length>6 ? " …" : "") + "</div>";
+    h += '<div class="row" style="margin-top:8px">'+
+      '<label><input type="checkbox" id="cl-bad" checked> убрать мусор (✖)</label>'+
+      '<label><input type="checkbox" id="cl-dup" checked> склеить повторы</label>'+
+      '<label><input type="checkbox" id="cl-empty"> убрать позиции без масс</label>'+
+      '<button class="b" onclick="cleanData()">Очистить данные</button>'+
+      '<span class="spin" id="sp-clean2">…</span></div>'+
+      '<div class="hint">Перед очисткой рядом с базой сохраняется копия '+
+      '(context.до-очистки-….json) — откатить можно всегда.</div></div>';
+    $("auditbox").innerHTML = h;
+  }catch(e){ $("auditbox").innerHTML = `<div class="issue error">${esc(errText(e))}</div>`; }
+  spin("sp-audit",0);
+}
+async function cleanData(){
+  needSite(); spin("sp-clean2",1);
+  try{
+    const j = await post("clean_data", {org:ORG, site:SITE,
+      drop_bad: $("cl-bad").checked, drop_dupes: $("cl-dup").checked,
+      drop_empty: $("cl-empty").checked}, 0);
+    const rp = (j.removed_pollutants||[]).length, rw = (j.removed_wastes||[]).length;
+    let t = `✓ Убрано: отходов ${rw}, веществ ${rp}` +
+      ((j.fixed_codes||[]).length ? `, кодов нормализовано ${j.fixed_codes.length}` : "") +
+      `\nОсталось: отходов ${j.left.wastes}, веществ ${j.left.pollutants}`;
+    if (j.backup) t += `\nКопия до очистки: ${j.backup}`;
+    alert(t);
+    await loadCtx();
+    auditData().catch(()=>{});
+  }catch(e){ alert("Ошибка: " + errText(e)); }
+  spin("sp-clean2",0);
 }
 
 // ── проверка кодов отходов по действующему каталогу ФККО ─────────────

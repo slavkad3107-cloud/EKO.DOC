@@ -350,6 +350,40 @@ def api_waste_summary(params, body):
     return {"path": str(path), "acts": len(ctx.waste_acts)}
 
 
+def api_audit_data(params, body):
+    """Разбор данных площадки: что мусор, что спорно, где дубли (не меняет)."""
+    from ecodoc.core import sanitize
+    src = body if (body or {}).get("org") else params
+    ctx = workspace.load_context(src["org"], src["site"])
+    return sanitize.audit_context(ctx)
+
+
+def api_clean_data(params, body):
+    """Убрать мусор из данных площадки. Перед правкой — резервная копия."""
+    import shutil
+    from datetime import datetime
+
+    from ecodoc.core import sanitize
+    org, site = body["org"], body["site"]
+    ctx = workspace.load_context(org, site)
+    path = workspace.site_dir(org, site) / "context.json"
+    backup = ""
+    if path.exists():                       # данные эколога — сначала копия
+        stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        bak = path.with_name(f"context.до-очистки-{stamp}.json")
+        shutil.copy2(path, bak)
+        backup = str(bak)
+    rep = sanitize.clean_context(
+        ctx,
+        drop_bad=body.get("drop_bad", True),
+        drop_dupes=body.get("drop_dupes", True),
+        drop_empty=bool(body.get("drop_empty")))
+    workspace.save_context(org, site, ctx)
+    rep["backup"] = backup
+    rep["left"] = {"pollutants": len(ctx.pollutants), "wastes": len(ctx.wastes)}
+    return rep
+
+
 def api_waste_table(params, body):
     """«Табличка по отходам» (т/м³ по классам) — по бланку пользователя."""
     from ecodoc.core.waste_table import build_xlsx, rows
@@ -1099,6 +1133,7 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "devdoc": api_devdoc, "submit": api_submit, "open": api_open,
                "waste_summary": api_waste_summary, "missing": api_missing,
                "waste_table": api_waste_table,
+               "audit_data": api_audit_data, "clean_data": api_clean_data,
                "settings": api_settings, "cleanup": api_cleanup,
                "storage": api_storage,
                "ai_health": api_ai_health, "ai_task": api_ai_task,

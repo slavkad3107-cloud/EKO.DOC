@@ -74,9 +74,24 @@ class Conflict:
 
 
 @dataclass
+class Rejected:
+    """Значение, не принятое в базу (мусор), либо принятое с оговоркой.
+
+    Пользователь должен видеть, что программа отбросила и почему — молча
+    выкидывать данные из документов нельзя."""
+    field: str
+    value: str
+    reason: str
+    src: str = ""
+
+
+@dataclass
 class ExtractionReport:
     accepted: list[Accepted] = field(default_factory=list)
     conflicts: list[Conflict] = field(default_factory=list)
+    # не пущено в базу (не вещество, кода нет в ФККО) и принято с оговоркой
+    rejected: list = field(default_factory=list)
+    doubts: list = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     used_model: str = ""
     # файлы, которые ИИ НЕ проанализировал (провайдер упал/не настроен) —
@@ -110,6 +125,24 @@ class ExtractionReport:
                 where = f"в {len(srcs)} документах ({sample})"
             lines.append(f"  ⚠ КОНФЛИКТ {fld}: в контексте «{cur}», "
                          f"{where} — «{prop}» (не применено)")
+        # не пущенное в базу — показываем всегда: пользователь должен видеть,
+        # что программа отбросила и почему (а не гадать, куда делись строки)
+        if self.rejected:
+            rgroups: dict[str, list[str]] = {}
+            for r in self.rejected:
+                rgroups.setdefault(r.reason, []).append(f"{r.field}: {r.value}")
+            lines.append(f"── Не принято в базу: {len(self.rejected)} "
+                         f"позиц. (мусор в исходных документах) ──")
+            for reason, items in rgroups.items():
+                shown = "; ".join(items[:4]) + ("; …" if len(items) > 4 else "")
+                lines.append(f"  ✖ {reason}")
+                lines.append(f"     {len(items)}: {shown}")
+        if self.doubts:
+            lines.append(f"── Принято, но проверьте: {len(self.doubts)} ──")
+            for d in self.doubts[:12]:
+                lines.append(f"  ? {d.field}: {d.value} — {d.reason}")
+            if len(self.doubts) > 12:
+                lines.append(f"  … ещё {len(self.doubts) - 12}")
         # одинаковые ошибки (напр. «все провайдеры недоступны» на каждый файл)
         # сворачиваем в одну строку со счётчиком — не спамим отчёт
         groups: dict[str, list[str]] = {}
@@ -318,10 +351,23 @@ def _merge_wastes(ctx: ReportContext, data: dict, quotes: dict, src: str,
     # в ctx.waste_acts отдельно (_merge_acts) и потом сворачиваются apply_acts
     items = [(w, f"wastes[{j}]")
              for j, w in enumerate(data.get("wastes") or [])]
+    from ecodoc.core import sanitize
     for w, qkey in items:
         fkko = re.sub(r"\D", "", str(w.get("fkko") or ""))
         if len(fkko) != 11:
             continue
+        # код сверяется с каталогом ФККО ДО записи: выдуманные коды и
+        # групповые заголовки в перечень отходов объекта не идут
+        chk = sanitize.check_waste(fkko, w.get("name"), w.get("hazard_class"))
+        if not chk.ok:
+            rep.rejected.append(Rejected(
+                "отход", f"{fkko} {str(w.get('name') or '')[:40]}".strip(),
+                chk.reason, src))
+            continue
+        if chk.suspect and chk.reason:
+            rep.doubts.append(Rejected(
+                "отход", f"{fkko} {str(w.get('name') or '')[:40]}".strip(),
+                chk.reason, src))
         flow = next((x for x in ctx.wastes if x.fkko_code == fkko), None)
         if flow is None:
             hz = w.get("hazard_class")
@@ -355,27 +401,54 @@ def _merge_wastes(ctx: ReportContext, data: dict, quotes: dict, src: str,
 def _merge_pollutants(ctx: ReportContext, data: dict, medium, src: str,
                       rep: ExtractionReport):
     """Вещества (выбросы/сбросы) из ООС/НДВ/НДС — только для своей среды.
+
+    Каждая позиция проходит проверку (core/sanitize): названия работ и виды
+    сточных вод в перечень веществ не пускаются, код приводится к четырём
+    знакам — иначе «301» и «0301» двоят одно вещество. Отклонённое не
+    теряется: причина попадает в отчёт приёма, а сама позиция остаётся в
+    кандидатах, где пользователь решает сам.
     Существующие непустые массы не перезаписываются (конфликт — на решение)."""
+    from ecodoc.core import sanitize
     from ecodoc.core.models import Medium, Pollutant
     key = "pollutants_air" if medium == Medium.AIR else "pollutants_water"
+    what = "воздух" if medium == Medium.AIR else "вода"
     for it in data.get(key) or []:
         code = str(it.get("code") or "").strip()
         name = str(it.get("name") or "").strip()
         if not code and not name:
             continue
+        v = sanitize.check_substance(code, name, "air" if medium == Medium.AIR
+                                     else "water")
+        if not v.ok:
+            rep.rejected.append(Rejected(f"вещество ({what})",
+                                         f"{code} {name}".strip(), v.reason, src))
+            continue
+        code = v.code                      # нормализованный (или пустой)
+        if v.suspect and v.reason:
+            rep.doubts.append(Rejected(f"вещество ({what})",
+                                       f"{code or ''} {name}".strip(),
+                                       v.reason, src))
+        nm_key = sanitize.norm_name(name)
         p = next((x for x in ctx.pollutants if x.medium == medium and
-                  ((code and x.code == code) or (not code and x.name == name))), None)
+                  ((code and sanitize.norm_code(x.code) == code)
+                   or (not code and sanitize.norm_name(x.name) == nm_key))), None)
         if p is None:
             p = Pollutant(name=name, code=code, medium=medium)
             ctx.pollutants.append(p)
             rep.accepted.append(Accepted(
-                f"вещество ({'воздух' if medium == Medium.AIR else 'вода'})",
-                f"{code} {name}".strip(), src))
+                f"вещество ({what})", f"{code} {name}".strip(), src))
         if name and not p.name:
             p.name = name
+        if code and not p.code:
+            p.code = code
         for attr in ("mass_norm", "mass_limit"):
             val = _dec(it.get(attr))
             if val is None or val == 0:
+                continue
+            doubt = sanitize.pdk_conflict(code, val)
+            if doubt:                       # в графу массы попало ПДК
+                rep.doubts.append(Rejected(
+                    f"вещество {code or name}.{attr}", str(val), doubt, src))
                 continue
             cur = getattr(p, attr)
             if cur and cur != val:
