@@ -46,11 +46,20 @@ def data_file() -> Path:
     u = user_file()
     return u if u.exists() else BUILTIN_FILE
 
-# официальные источники каталога (проверяются по порядку)
-SOURCES = [
-    "https://rpn.gov.ru/upload/iblock/fkko.json",
-    "https://rpn.gov.ru/fkko/",
-]
+# Каталог берём с сайта Росприроднадзора: открытых данных (xlsx/csv/json) он не
+# публикует, но каталог отдаётся постранично — это единственный машиночитаемый
+# путь получить действующую редакцию целиком.
+RPN_PAGE = "https://rpn.gov.ru/fkko/"
+RPN_MORE = "https://rpn.gov.ru/fkko/nav-more-fkko/page-{n}/"
+SOURCES = [RPN_PAGE]
+
+# Действующая редакция — для реквизитов в документах и проверки свежести файла.
+CURRENT_EDITION = ("приказ Росприроднадзора от 22.05.2017 № 242 "
+                   "(в ред. приказа от 08.06.2026 № 341)")
+# Коды, введённые последними приказами: если их нет — каталог устарел.
+FRESH_MARKERS = ("31211471201",   # приказ № 723 от 20.12.2024
+                 "22241112205",   # приказ № 341 от 08.06.2026
+                 "31313411313")   # приказ № 341 от 08.06.2026
 
 _CACHE: dict = {}
 
@@ -143,6 +152,39 @@ def check(code, name: str = "") -> Check:
         if ours and theirs and ours[:40] != theirs[:40]:
             chk.name_mismatch = chk.name
     return chk
+
+
+def _words(text: str) -> set:
+    s = str(text or "").lower().replace("ё", "е")
+    s = re.sub(r"\([^)]*\)", " ", s)
+    return {w for w in re.findall(r"[а-яa-z0-9]+", s) if len(w) > 3}
+
+
+def suggest_by_name(name: str, limit: int = 3) -> list[dict]:
+    """Подобрать код ФККО по наименованию отхода.
+
+    Когда код из документа не найден в каталоге, чаще всего наименование
+    написано верно — по нему и ищем. Возвращаем несколько вариантов с мерой
+    совпадения: выбирает всё равно пользователь, программа не подставляет
+    код молча."""
+    target = _words(name)
+    if not target:
+        return []
+    out = []
+    for code, rec in codes().items():
+        if code[-1] == "0":                 # групповые заголовки не предлагаем
+            continue
+        cand = _words(rec.get("name", ""))
+        if not cand:
+            continue
+        common = target & cand
+        if not common:
+            continue
+        score = len(common) / max(len(target | cand), 1)
+        out.append({"code": code, "name": rec.get("name", ""),
+                    "class": rec.get("class", 0), "score": round(score, 3)})
+    out.sort(key=lambda x: -x["score"])
+    return out[:limit]
 
 
 def check_context(ctx) -> list[dict]:
@@ -423,25 +465,118 @@ def seed_builtin() -> int:
     return len(records)
 
 
-def update(timeout: int = 60) -> tuple[int, str]:
-    """Скачать и сохранить действующий каталог. Возвращает (сколько кодов, откуда)."""
+def is_stale(cat: dict | None = None) -> str:
+    """Признаки того, что каталог — старая редакция. Пустая строка = свежий.
+
+    Каталог из файла пользователя может быть снимком отменённой редакции:
+    дата файла свежая, а содержимое — многолетней давности. Смотрим на суть:
+    объём, маркеры последних приказов и строки «Исключен» (так помечали
+    позиции в ФККО, отменённом приказом № 242)."""
+    cat = catalog() if cat is None else cat
+    rec = cat.get("codes") or {}
+    if not rec:
+        return "каталог не загружен"
+    if cat.get("partial"):
+        return ""                       # частичный — про свежесть не судим
+    missing = [c for c in FRESH_MARKERS if c not in rec]
+    excluded = sum(1 for v in rec.values()
+                   if "исключен" in str(v.get("name", "")).lower()[:12])
+    if excluded:
+        return (f"это снимок ОТМЕНЁННОГО каталога: в нём {excluded} позиций "
+                f"помечены «Исключен. — Приказ …». Действующий — "
+                f"{CURRENT_EDITION}")
+    if len(rec) < 9000:
+        return (f"в каталоге {len(rec)} кодов, а в действующем ФККО их около "
+                f"9150 — похоже на устаревшую или неполную выгрузку")
+    if missing:
+        return (f"нет кодов из последних приказов ({', '.join(missing)}) — "
+                f"каталог старее редакции {CURRENT_EDITION}")
+    return ""
+
+
+def fetch_rpn(timeout: int = 30, progress=None) -> dict:
+    """Выкачать действующий каталог с сайта Росприроднадзора.
+
+    Каталог отдаётся постранично по 20 позиций (~460 страниц). Открытых
+    данных РПН не публикует, поэтому это единственный способ получить
+    действующую редакцию машиной."""
+    import urllib.parse
     import urllib.request
-    last = ""
-    for url in SOURCES:
+
+    hdr = {"User-Agent": "Mozilla/5.0 (compatible; EcoDoc)",
+           "X-Requested-With": "XMLHttpRequest",
+           "Content-Type": "application/x-www-form-urlencoded"}
+
+    def get(url: str, post: bool = False) -> str:
+        data = urllib.parse.urlencode({"AJAX": "Y"}).encode() if post else None
+        req = urllib.request.Request(url, data=data, headers=hdr)
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.read().decode("utf-8", "replace")
+
+    first = get(RPN_PAGE)
+    total = 0
+    m = re.search(r"Показано\s*\d+\s*-\s*\d+\s*из\s*(\d+)", first)
+    if m:
+        total = int(m.group(1))
+    records: dict = {}
+
+    # на первой странице каталог отдан готовым JSON-списком в инициализаторе
+    for code, name in re.findall(
+            r"'CODE'\s*:\s*'(\d{11})'\s*,\s*'NAME'\s*:\s*'((?:[^'\\]|\\.)*)'",
+            first):
+        records[code] = _rec(code, name.replace("\\'", "'"))
+
+    pages = (total + 19) // 20 if total else 500
+    row = re.compile(r'href="/fkko/(\d{11})/"[^>]*>(.*?)</a>', re.S)
+    empty = 0
+    for n in range(1, pages + 1):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "EcoDoc/1.0"})
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                raw = resp.read()
-            text = raw.decode("utf-8", "replace")
-            records = parse(text)
-            if len(records) >= 100:            # похоже на настоящий каталог
-                save(records, source=url)
-                return len(records), url
-            last = f"{url}: разобрано всего {len(records)} кодов"
-        except Exception as e:
-            last = f"{url}: {str(e)[:120]}"
-    raise RuntimeError(
-        "Не удалось получить каталог ФККО из открытых источников. "
-        f"Последняя попытка — {last}. Каталог можно положить вручную: "
-        f"{user_file()} в виде {{\"codes\": {{\"47110101521\": "
-        f"{{\"name\": \"…\", \"class\": 1}}}}}}.")
+            html = get(RPN_MORE.format(n=n), post=True)
+        except Exception:
+            empty += 1
+            if empty >= 3:
+                break
+            continue
+        found = row.findall(html)
+        if not found:
+            empty += 1
+            if empty >= 3:               # три пустые подряд — каталог кончился
+                break
+            continue
+        empty = 0
+        for code, name in found:
+            name = re.sub(r"<[^>]+>", " ", name)
+            records[code] = _rec(code, name)
+        if progress and n % 25 == 0:
+            progress(len(records), total)
+    return records
+
+
+def _rec(code: str, name: str) -> dict:
+    """Запись каталога: наименование чистим от разметки, класс — из кода."""
+    name = re.sub(r"&[a-z]+;", " ", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    rec = {"name": name,
+           "class": int(code[-1]) if code[-1] in "12345" else 0}
+    if code[-1] == "0":
+        rec["group"] = True
+    return rec
+
+
+def update(timeout: int = 30, progress=None) -> tuple[int, str]:
+    """Скачать действующий каталог с сайта РПН и сохранить."""
+    try:
+        records = fetch_rpn(timeout=timeout, progress=progress)
+    except Exception as e:
+        raise RuntimeError(
+            f"Не удалось скачать каталог ФККО с сайта Росприроднадзора "
+            f"({RPN_PAGE}): {str(e)[:160]}. Проверьте интернет или положите "
+            f"выгрузку ФККО в папку «Формы» — программа подхватит её сама.")
+    if len(records) < 1000:
+        raise RuntimeError(
+            f"С сайта Росприроднадзора получено всего {len(records)} кодов — "
+            f"похоже, изменилась разметка страницы каталога. Загрузите "
+            f"каталог файлом или сообщите разработчику.")
+    save(records, source=f"rpn.gov.ru ({CURRENT_EDITION})",
+         partial=False, stamp=f"rpn@{date.today().isoformat()}")
+    return len(records), RPN_PAGE

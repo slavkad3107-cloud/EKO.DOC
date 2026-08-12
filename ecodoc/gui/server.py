@@ -122,10 +122,19 @@ def api_org_del(params, body):
     return {"ok": True, "trash": str(dest)}
 
 
+def _ctx_version(p: Path) -> str:
+    """Отпечаток файла данных: по нему ловим правку из другого окна/компьютера."""
+    try:
+        st = p.stat()
+        return f"{int(st.st_mtime_ns)}-{st.st_size}"
+    except OSError:
+        return ""
+
+
 def api_context_get(params, body):
     p = _ctx_path(params["org"], params["site"])
     return {"context": json.loads(p.read_text(encoding="utf-8-sig")),
-            "path": str(p)}
+            "path": str(p), "version": _ctx_version(p)}
 
 
 def api_context_save(params, body):
@@ -135,6 +144,16 @@ def api_context_save(params, body):
                          "окончания анализа и повторите сохранение (иначе "
                          "правки перезапишут друг друга)."}
     p = _ctx_path(body["org"], body["site"])
+    # база лежит в общей папке OneDrive и открывается с нескольких компьютеров:
+    # если файл изменился с момента чтения, молча затирать чужие правки нельзя
+    want = str(body.get("version") or "")
+    have = _ctx_version(p)
+    if want and have and want != have:
+        return {"error": "Данные этой площадки изменились в другом окне или на "
+                         "другом компьютере после того, как вы их открыли. "
+                         "Чтобы не затереть чужие правки, нажмите «Перечитать», "
+                         "сверьте и внесите своё заново.",
+                "conflict": True, "version": have}
     # прогон через модель: битый JSON/типы отловятся до записи
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(body["context"], ensure_ascii=False, indent=2),
@@ -144,7 +163,7 @@ def api_context_save(params, body):
     # save_context также пишет реквизиты организации в org.json (иначе
     # правки блока organization во вкладке «Данные» терялись бы)
     workspace.save_context(body["org"], body["site"], ctx)
-    return {"ok": True}
+    return {"ok": True, "version": _ctx_version(p)}
 
 
 def _decode_to_tmp(files: list[dict], tmpdir: Path) -> list[str]:
@@ -164,11 +183,19 @@ def _decode_to_tmp(files: list[dict], tmpdir: Path) -> list[str]:
 
 
 def _save_report(org: str, site: str, report: str) -> None:
+    """Отчёт приёма на диск.
+
+    Большая папка грузится частями, и все отчёты за сеанс дописываются в ОДИН
+    файл: при метке времени до минуты части затирали друг друга, и список
+    непрочитанных файлов терялся."""
     from datetime import datetime
     rep_dir = workspace.site_dir(org, site) / "attachments"
     rep_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-    (rep_dir / f"приём_{stamp}.txt").write_text(report, encoding="utf-8")
+    now = datetime.now()
+    path = rep_dir / f"приём_{now:%Y-%m-%d}.txt"
+    head = f"\n\n{'=' * 60}\n[{now:%H:%M:%S}] партия\n{'=' * 60}\n"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(head + report)
 
 
 def api_intake(params, body):
@@ -245,6 +272,38 @@ def api_validate_all(params, body):
     return {"results": out}
 
 
+def _inside(target: Path, root: Path) -> bool:
+    try:
+        target.relative_to(root)      # строго внутри (префикс-трюки не проходят)
+        return True
+    except ValueError:
+        return False
+
+
+def _keep_previous(out_dir: Path, stem: str, out: dict) -> None:
+    """Отложить прежнюю версию документа вместо молчаливой перезаписи.
+
+    Готовую форму часто дорабатывают руками в Excel; повторная генерация
+    затирала её без следа. Прежний файл переименовывается с меткой времени."""
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    saved = []
+    for ext in (".xlsx", ".xml", ".pdf"):
+        old = out_dir / f"{stem}{ext}"
+        if not old.exists():
+            continue
+        try:
+            keep = out_dir / f"{stem}_до-{stamp}{ext}"
+            old.replace(keep)
+            saved.append(keep.name)
+        except OSError:
+            # файл открыт в Excel — скажем об этом человеческим языком
+            out["busy"] = (f"Файл {old.name} открыт в другой программе — "
+                           f"закройте его и повторите генерацию.")
+    if saved:
+        out["kept"] = saved
+
+
 def api_generate(params, body):
     cls = _get_form(body["form"])
     ctx = workspace.load_context(body["org"], body["site"])
@@ -263,7 +322,15 @@ def api_generate(params, body):
         out["error"] = "Есть ошибки — исправьте данные или включите «принудительно»."
         return out
     out_dir = workspace.results_dir(body["org"], body["site"])
-    stem = f"{body['form']}_{ctx.period.year or 'XXXX'}"
+    # без отчётного года документ сдать нельзя: помечаем его черновиком, а не
+    # выпускаем молча с «XXXX» в имени и нулевым годом внутри
+    year = ctx.period.year
+    stem = (f"{body['form']}_{year}" if year
+            else f"ЧЕРНОВИК_{body['form']}_год-не-указан")
+    if not year:
+        out["draft"] = ("Отчётный год не указан — выпущен ЧЕРНОВИК. Заполните "
+                        "год во вкладке ДАННЫЕ и сгенерируйте заново.")
+    _keep_previous(out_dir, stem, out)
     if getattr(report, "has_xml", True):
         out["xml"] = str(report.render_xml(out_dir / f"{stem}.xml"))
     else:
@@ -291,7 +358,7 @@ def api_submit(params, body):
     if not getattr(report, "implemented", True):
         return {"error": f"Форма «{report.title}» — каркас, подача недоступна."}
     out_dir = workspace.results_dir(body["org"], body["site"])
-    res = build_package(report, out_dir)
+    res = build_package(report, out_dir, force=bool(body.get("force")))
     return {
         "dir": str(res["dir"]),
         "files": {k: str(v) for k, v in res["files"].items()},
@@ -299,6 +366,8 @@ def api_submit(params, body):
         "issues": [{"level": i.level, "field": i.field, "message": i.message}
                    for i in res["issues"]],
         "errors": len(res["errors"]),
+        "blocked": bool(res.get("blocked")),
+        "note": res.get("note", ""),
     }
 
 
@@ -384,6 +453,42 @@ def api_clean_data(params, body):
     return rep
 
 
+def api_disk_usage(params, body):
+    """Сколько места занимает база и что именно в ней лежит."""
+    root = workspace.root()
+    if not root.exists():
+        return {"total_mb": 0, "rows": []}
+
+    def size_of(p: Path) -> int:
+        if p.is_file():
+            return p.stat().st_size
+        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+
+    rows, total = [], 0
+    for org_d in sorted(root.iterdir()):
+        if not org_d.is_dir() or org_d.name.startswith("."):
+            continue
+        for site_d in sorted(org_d.iterdir()):
+            if not site_d.is_dir() or not (site_d / "context.json").exists():
+                continue
+            att = site_d / "attachments"
+            pages = site_d / "pages"
+            src = size_of(att) if att.is_dir() else 0
+            pg = size_of(pages) if pages.is_dir() else 0
+            data = size_of(site_d) - src - pg
+            files = sum(1 for f in att.rglob("*") if f.is_file()) if att.is_dir() else 0
+            total += src + pg + data
+            rows.append({"org": org_d.name, "site": site_d.name,
+                         "sources_mb": round(src / 1048576, 1),
+                         "sources_files": files,
+                         "pages_mb": round(pg / 1048576, 1),
+                         "data_mb": round(data / 1048576, 1)})
+    trash = root / ".корзина"
+    trash_mb = round(size_of(trash) / 1048576, 1) if trash.is_dir() else 0
+    return {"total_mb": round(total / 1048576, 1), "rows": rows,
+            "trash_mb": trash_mb, "root": str(root)}
+
+
 def api_waste_table(params, body):
     """«Табличка по отходам» (т/м³ по классам) — по бланку пользователя."""
     from ecodoc.core.waste_table import build_xlsx, rows
@@ -425,10 +530,16 @@ def api_calendar(params, body):
     rows = []
     for e in periodic:
         days = (e.due - today).days
-        status = ("overdue" if days < 0 else "soon" if days <= 30 else "ok")
-        rows.append({"date": e.due.strftime("%d.%m.%Y"), "title": e.title,
-                     "where": e.where, "coverage": e.coverage,
-                     "days": days, "status": status})
+        if e.done:
+            status = "done"
+        else:
+            status = ("overdue" if days < 0 else "soon" if days <= 30 else "ok")
+        row = {"date": e.due.strftime("%d.%m.%Y"), "title": e.title,
+               "where": e.where, "coverage": e.coverage, "code": e.code,
+               "days": days, "status": status, "done": e.done}
+        if e.due_norm and e.due_norm != e.due:
+            row["moved_from"] = e.due_norm.strftime("%d.%m")
+        rows.append(row)
     docs = [{"title": e.title, "where": e.where, "basis": e.basis}
             for e in possession]
     out = {"rows": rows, "docs": docs, "year": year,
@@ -436,6 +547,24 @@ def api_calendar(params, body):
     if params.get("ics"):
         out["ics"] = engine.export_ics_text(ctx, year)
     return out
+
+
+def api_mark_submitted(params, body):
+    """Отметить обязанность как сданную (или снять отметку)."""
+    org, site = body["org"], body["site"]
+    ctx = workspace.load_context(org, site)
+    code, year = str(body.get("code") or ""), int(body.get("year") or 0)
+    if not code or not year:
+        return {"error": "не указаны форма и год"}
+    marks = (ctx.extra or {}).setdefault("submitted", {})
+    key = f"{code}:{year}"
+    note = str(body.get("note") or "").strip()
+    if note:
+        marks[key] = note
+    else:
+        marks.pop(key, None)
+    workspace.save_context(org, site, ctx)
+    return {"ok": True, "marks": marks}
 
 
 def api_reference(params, body):
@@ -890,10 +1019,33 @@ def api_candidate_decide(params, body):
             crosscheck.decide(ctx, store, key, "", accept=False)
             continue
         ok = crosscheck.decide(ctx, store, key, str(d.get("value", "")))
-        (applied if ok else failed).append(key)
+        if ok:
+            applied.append(key)
+        else:
+            # без причины кнопка «Взять» выглядела сломанной: молча ничего
+            failed.append({"key": key, "reason": _why_not_written(
+                key, str(d.get("value", "")))})
     if applied:
         workspace.save_context(org, site, ctx)
     return {"applied": applied, "failed": failed}
+
+
+def _why_not_written(key: str, value: str) -> str:
+    """Понятная причина, почему значение не попало в базу."""
+    from ecodoc.intake import candidates
+    try:
+        coll, sel, attr = candidates.parse_key(key)
+    except Exception:
+        return f"не разобран адрес поля «{key}»"
+    if attr in candidates._DEC_ATTRS or attr in candidates._INT_ATTRS:
+        if candidates._number(value) is None:
+            return f"«{value}» — не число, а поле «{attr}» числовое"
+    if coll in ("wastes", "waste_acts") and not sel.get("fkko"):
+        return "не указан код ФККО — непонятно, к какому отходу относится"
+    if coll == "pollutants" and not (sel.get("code") or sel.get("name")):
+        return "не указаны ни код, ни наименование вещества"
+    return (f"поле «{attr}» не найдено в разделе «{coll}» — возможно, позиция "
+            f"была удалена; впишите значение вручную")
 
 
 def api_candidate_manual(params, body):
@@ -950,6 +1102,14 @@ def api_intake_url(params, body):
         return {"error": "Укажите ссылку, начинающуюся с http:// или https://"}
     tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_url_"))
     try:
+        # в ссылках на документы часто кириллица («…/Отчёт 2025.pdf») —
+        # без процентного кодирования urllib падал на любой такой ссылке
+        parts = urllib.parse.urlsplit(url)
+        url = urllib.parse.urlunsplit((
+            parts.scheme, parts.netloc,
+            urllib.parse.quote(parts.path, safe="/%"),
+            urllib.parse.quote(parts.query, safe="=&%?+"),
+            parts.fragment))
         req = urllib.request.Request(url, headers={"User-Agent": "EcoDoc/1.0"})
         with urllib.request.urlopen(req, timeout=120) as resp:
             head = resp.headers
@@ -1090,13 +1250,19 @@ def api_oktmo(params, body):
 
 
 def api_open(params, body):
-    """Открыть папку/файл в проводнике — только внутри workspace."""
+    """Открыть папку/файл в проводнике.
+
+    Разрешены два корня: база данных и папка результатов. Раньше проверялся
+    только первый, а готовые документы кладутся во второй — поэтому кнопка
+    «открыть» после генерации не срабатывала никогда."""
     target = Path(body["path"]).resolve()
-    root = workspace.root().resolve()
+    roots = [workspace.root().resolve()]
     try:
-        target.relative_to(root)  # строго внутри (префикс-трюки не проходят)
-    except ValueError:
-        return {"error": "Путь вне рабочего пространства."}
+        roots.append(workspace.results_root().resolve())
+    except Exception:
+        pass
+    if not any(_inside(target, r) for r in roots):
+        return {"error": f"Путь вне рабочих папок программы: {target}"}
     if not target.exists():
         return {"error": "Не существует."}
     if not hasattr(os, "startfile"):  # не-Windows
@@ -1132,7 +1298,8 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "volume": api_volume,
                "devdoc": api_devdoc, "submit": api_submit, "open": api_open,
                "waste_summary": api_waste_summary, "missing": api_missing,
-               "waste_table": api_waste_table,
+               "waste_table": api_waste_table, "disk_usage": api_disk_usage,
+               "mark_submitted": api_mark_submitted,
                "audit_data": api_audit_data, "clean_data": api_clean_data,
                "settings": api_settings, "cleanup": api_cleanup,
                "storage": api_storage,

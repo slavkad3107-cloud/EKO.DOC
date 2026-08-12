@@ -1,4 +1,4 @@
-"""Новые документы: инвентаризации, ПНООЛР, 4-ООС, ТУ."""
+"""Новые документы: инвентаризации, ПНООЛР, 4-ОС, ТУ."""
 from decimal import Decimal
 
 import openpyxl
@@ -112,7 +112,7 @@ def test_pnoolr_norms_and_limits(ctx, tmp_path):
     assert "пишется экологом" in gaps_text                # честно про разделы
 
 
-# ── 4-ООС ────────────────────────────────────────────────────────────────
+# ── 4-ОС ────────────────────────────────────────────────────────────────
 
 def test_oos4_registered_and_validates(ctx):
     from ecodoc.core import registry
@@ -122,19 +122,26 @@ def test_oos4_registered_and_validates(ctx):
     assert "не заданы текущие затраты" in msgs            # extra.oos4 пуст
 
 
-def test_oos4_print_uses_costs_and_payment(ctx, tmp_path):
+def test_oos4_print_matches_blank(ctx, tmp_path):
+    """Форма № 4-ОС: одна таблица, строки 01–10, платы за НВОС в ней нет."""
     from ecodoc.core import registry
     registry.load_all()
-    ctx.extra["oos4"] = {"costs": {"air": "120.5", "waste": "340", "water": 0},
-                         "payment": "15000", "payment_waste": "9000"}
+    ctx.extra["oos4"] = {"costs": {"air": "120.5", "waste": "340", "water": 0}}
     rep = registry.get("4-oos")(ctx)
+    assert rep.title.startswith("4-ОС")            # официальный индекс формы
     out = rep.render_print(tmp_path / "4oos.xlsx")
-    r1 = [[c for c in row if c is not None] for row in _cells(out, "Раздел 1")]
-    flat = [str(v) for row in r1 for v in row]
-    assert "101" in flat and "120.5" in flat and "340" in flat
-    assert "ИТОГО (строка 100)" in flat
-    r2 = " ".join(str(v) for row in _cells(out, "Раздел 2") for v in row if v)
-    assert "Плата за негативное воздействие" in r2
+    rows = _cells(out, "Форма")
+    flat = [str(v) for row in rows for v in row if v is not None]
+    # строки бланка, а не выдуманные 101-106
+    assert "01" in flat and "02" in flat and "10" in flat
+    assert not any(v in ("101", "106") for v in flat)
+    assert "120.5" in flat and "340" in flat
+    # строка 01 — контрольная сумма 02-10
+    assert "460.5" in flat
+    # раздела о плате за НВОС в действующей форме нет
+    assert not any("Плата за негативное" in v for v in flat)
+    titul = " ".join(str(v) for row in _cells(out, "Титул") for v in row if v)
+    assert "4-ОС" in titul and "0609030" in titul
 
 
 # ── ТУ ───────────────────────────────────────────────────────────────────

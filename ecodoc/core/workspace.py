@@ -306,11 +306,36 @@ def cleanup_base(days: int = 7) -> dict:
                                                 indent=1), encoding="utf-8")
                 except (OSError, json.JSONDecodeError):
                     pass
+    # .корзину не трогаем: туда складываются удалённые площадки и организации,
+    # и интерфейс обещает, что оттуда их можно вернуть. Чистка места не должна
+    # уничтожать единственную резервную копию — для корзины есть своя команда.
     trash = rt / ".корзина"
-    if trash.is_dir():
-        freed += _size(trash)
-        shutil.rmtree(trash, ignore_errors=True)
-    return {"freed": freed, "files": files}
+    trash_mb = round(_size(trash) / (1024 * 1024), 1) if trash.is_dir() else 0
+    return {"freed": freed, "files": files, "trash_mb": trash_mb}
+
+
+def empty_trash(days: int = 0) -> dict:
+    """Очистить корзину (по умолчанию — всю; days>0 — только старше N дней).
+
+    Отдельная команда: пользователь должен решать это осознанно."""
+    import time
+    rt = root()
+    trash = rt / ".корзина"
+    if not trash.is_dir():
+        return {"freed": 0, "items": 0}
+    freed = items = 0
+    edge = time.time() - days * 86400
+    for item in list(trash.iterdir()):
+        try:
+            if days and item.stat().st_mtime > edge:
+                continue
+            size = _size(item) if item.is_dir() else item.stat().st_size
+            shutil.rmtree(item, ignore_errors=True) if item.is_dir() else item.unlink()
+            freed += size
+            items += 1
+        except OSError:
+            continue
+    return {"freed": freed, "items": items}
 
 
 def slug(name: str) -> str:
@@ -319,11 +344,18 @@ def slug(name: str) -> str:
     Длину каталога ограничиваем (~64 симв.): площадки называются полным
     адресом, а длинные пути ломают Word/Excel и упираются в лимит Windows.
     Полный адрес хранится в context.json (extra.site_address).
+
+    Если имя пришлось обрезать, в конец добавляется короткий отпечаток полного
+    имени: у соседних участков адреса совпадают первые 64 символа, и без
+    отпечатка две РАЗНЫЕ площадки получали одну папку — данные первой молча
+    затирались данными второй.
     """
     s = re.sub(r"[\\/:*?\"<>|]+", "", name).strip()
     s = re.sub(r"\s+", "_", s).strip(". ")  # «..» и трейлинг-точки — не имя
     if len(s) > 64:
-        s = s[:64].rstrip("_. ")
+        import hashlib
+        tail = hashlib.sha1(s.encode("utf-8")).hexdigest()[:6]
+        s = s[:57].rstrip("_. ") + "~" + tail
     return s or "org"
 
 
@@ -381,18 +413,37 @@ def load_context(org: str, site: str) -> ReportContext:
     ctx = serialize.from_json(ctx_path)
     org_json = org_dir(org) / "org.json"
     if org_json.exists():
-        data = json.loads(org_json.read_text(encoding="utf-8-sig"))
-        known = Organization.__dataclass_fields__
-        ctx.organization = Organization(**{k: v for k, v in data.items() if k in known})
+        try:
+            data = json.loads(org_json.read_text(encoding="utf-8-sig"))
+            known = Organization.__dataclass_fields__
+            ctx.organization = Organization(
+                **{k: v for k, v in data.items() if k in known})
+        except (OSError, json.JSONDecodeError, TypeError) as e:
+            # битый org.json не должен закрывать доступ ко ВСЕМ площадкам:
+            # реквизиты продублированы в context.json, работаем по ним
+            broken = org_json.with_suffix(".json.битый")
+            try:
+                org_json.replace(broken)
+            except OSError:
+                pass
+            ctx.extra.setdefault("_warnings", []).append(
+                f"Файл реквизитов организации повреждён ({e}); отложен в "
+                f"{broken.name}, реквизиты взяты из данных площадки — "
+                f"проверьте их во вкладке ОРГАНИЗАЦИЯ и сохраните.")
     return ctx
 
 
 def save_org(org: str, organization: Organization) -> Path:
-    """Сохранить реквизиты организации в org.json (канонический источник)."""
+    """Сохранить реквизиты организации в org.json (канонический источник).
+
+    Пишем атомарно (tmp + replace), как context.json: обрыв записи на этом
+    файле оставлял битый JSON, а он закрывает доступ ко всем площадкам."""
     path = org_dir(org) / "org.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(organization), ensure_ascii=False, indent=2),
-                    encoding="utf-8")
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(asdict(organization), ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    tmp.replace(path)
     return path
 
 

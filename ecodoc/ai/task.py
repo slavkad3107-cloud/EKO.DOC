@@ -156,8 +156,45 @@ def run_task(ctx: ReportContext, scope: str, task: str,
            "data": out.get("data"), "applied": []}
     if apply_changes and isinstance(out.get("data"), dict):
         from ecodoc.core import workspace
+        before = {"объекты": len(ctx.objects), "отходы": len(ctx.wastes),
+                  "справки-акты": len(ctx.waste_acts),
+                  "вещества": len(ctx.pollutants)}
+        backup = ""
+        if org and site:
+            # ответ модели ЗАМЕНЯЕТ раздел целиком: усечённый ответ вычистит
+            # позиции, поэтому перед применением откладываем копию данных
+            backup = _backup_context(org, site)
         changes = apply_data(ctx, out["data"])
+        after = {"объекты": len(ctx.objects), "отходы": len(ctx.wastes),
+                 "справки-акты": len(ctx.waste_acts),
+                 "вещества": len(ctx.pollutants)}
+        lost = {k: (before[k], after[k]) for k in before if after[k] < before[k]}
+        if lost:
+            res["warnings"] = list(res.get("warnings") or []) + [
+                "Записей стало МЕНЬШЕ: " + ", ".join(
+                    f"{k} {b}→{a}" for k, (b, a) in lost.items())
+                + (f". Копия прежних данных: {backup}" if backup else "")]
+        res["lost"] = {k: {"было": b, "стало": a} for k, (b, a) in lost.items()}
+        res["backup"] = backup
         if changes and org and site:
             workspace.save_context(org, site, ctx)
         res["applied"] = changes
     return res
+
+
+def _backup_context(org: str, site: str) -> str:
+    """Копия context.json перед применением ответа модели."""
+    import shutil
+    from datetime import datetime
+
+    from ecodoc.core import workspace
+    src = workspace.site_dir(org, site) / "context.json"
+    if not src.exists():
+        return ""
+    stamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    dst = src.with_name(f"context.до-задания-ИИ-{stamp}.json")
+    try:
+        shutil.copy2(src, dst)
+        return str(dst)
+    except OSError:
+        return ""

@@ -249,15 +249,20 @@ def audit_context(ctx) -> dict:
         else:
             seen[key] = i
 
+    from ecodoc.core import fkko as _cat
     wseen: dict[str, int] = {}
     for i, w in enumerate(ctx.wastes):
         v = check_waste(w.fkko_code, w.name, w.hazard_class)
         mass = sum([w.generated, w.transferred, w.placed_norm, w.placed_over,
                     w.accumulated_end, w.used, w.neutralized])
-        out["wastes"].append(
-            {"index": i, "fkko": w.fkko_code, "name": w.name,
-             "hazard": w.hazard_class, "ok": v.ok, "suspect": v.suspect,
-             "reason": v.reason, "norm_code": v.code, "mass": str(mass)})
+        row = {"index": i, "fkko": w.fkko_code, "name": w.name,
+               "hazard": w.hazard_class, "ok": v.ok, "suspect": v.suspect,
+               "reason": v.reason, "norm_code": v.code, "mass": str(mass)}
+        if not v.ok and w.name:
+            # код неверный, но наименование обычно верное — предлагаем замену
+            row["suggest"] = [s for s in _cat.suggest_by_name(w.name, 2)
+                              if s["score"] >= 0.5]
+        out["wastes"].append(row)
         key = v.code or norm_name(w.name)
         if key in wseen:
             out["duplicates"].append(

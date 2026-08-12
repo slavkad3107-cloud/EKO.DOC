@@ -188,8 +188,8 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
         <button class="b sec" onclick="openWs()">Открыть папку площадки</button>
         <span class="spin" id="sp-data">…</span><span id="data-msg" class="hint"></span>
       </div>
-      <div id="candbox"></div>
       <div id="dataform"></div>
+      <div id="candbox"></div>
       <details style="margin-top:12px">
         <summary style="cursor:pointer;color:var(--mut)">Расширенно: все поля в формате JSON (для опытных)</summary>
         <div class="hint">Правьте, только если знаете формат. После правки нажмите «Применить JSON».</div>
@@ -290,6 +290,7 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       </div>
       <div class="mod" id="mod-rc">
         <div id="up-rc"></div>
+        <div id="commonfields"></div>
         <h3 style="margin:8px 0 6px;color:var(--acc)">Плата и ПЭК (все среды)</h3>
         <div class="grid" id="forms-common"></div>
         <div id="miss-rc"></div>
@@ -454,9 +455,16 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
         <span class="spin" id="sp-forms">поиск…</span>
       </div>
       <div id="formsbox"></div>
-      <div class="hint">База хранит только данные (context.json, отчёты приёма).
-        Исходники удаляются после анализа; готовые формы сохраняются в папку
-        результатов на этом компьютере и в базу не попадают.</div>
+      <div class="hint">База хранит данные (context.json, отчёты приёма) и снимки
+        листов-источников. Разобранные исходники удаляются после анализа, но
+        нечитаемые и непроанализированные остаются в приёме — их видно в кнопке
+        «Сколько занимает база» ниже. Готовые формы лежат в папке результатов
+        на этом компьютере и в базу не попадают.</div>
+      <div class="row" style="margin-top:6px">
+        <button class="b sec" onclick="doDiskUsage()">Сколько занимает база</button>
+        <span class="spin" id="sp-du">…</span>
+      </div>
+      <pre class="out" id="out-du" style="display:none"></pre>
     </div>
     <div class="card">
       <h2>Калькулятор класса опасности отхода (пр. МПР № 158 от 31.03.2025)</h2>
@@ -1059,8 +1067,9 @@ async function loadSources(){
     `<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>Файл</th>`+
     `<th>Разбор</th><th>Найдено</th><th>Лист-источник</th></tr></thead><tbody>`+
     rows + `</tbody></table></div>`+
-    `<div class="hint">Исходные файлы не хранятся — сохранены только листы, `+
-    `на которых нашлись данные. «📄 N» открывает скан листа в новой вкладке.</div></details>`;
+    `<div class="hint">Разобранные исходники удалены, сохранены снимки листов, `+
+    `на которых нашлись данные. Нечитаемые и непроанализированные файлы остались `+
+    `в приёме. «📄 N» открывает скан листа в новой вкладке.</div></details>`;
 }
 
 // ── с кем работаем сейчас: видно всегда, смена — только с подтверждением ──
@@ -1305,11 +1314,16 @@ async function auditData(){
     const t = j.totals || {};
     const bad = (rows) => rows.filter(r=>!r.ok);
     const sus = (rows) => rows.filter(r=>r.ok && r.suspect);
-    const rowHtml = (r, isWaste) =>
-      `<tr><td>${r.ok ? (r.suspect?"?":"✓") : "✖"}</td>`+
+    const rowHtml = (r, isWaste) => {
+      let why = esc(r.reason||"");
+      for (const s of r.suggest||[])       // подобранный по наименованию код
+        why += `<br><span style="color:var(--acc)">возможно, это ${esc(s.code)} `+
+               `(кл. ${esc(s.class)}) — ${esc((s.name||"").slice(0,58))}</span>`;
+      return `<tr><td>${r.ok ? (r.suspect?"?":"✓") : "✖"}</td>`+
       `<td class="hint">${isWaste ? "отход" : (r.medium==="water"?"сброс":"выброс")}</td>`+
       `<td>${esc((isWaste? r.fkko : r.code)||"—")}</td><td>${esc((r.name||"").slice(0,52))}</td>`+
-      `<td class="hint">${esc(r.mass||"")}</td><td>${esc(r.reason||"")}</td></tr>`;
+      `<td class="hint">${esc(r.mass||"")}</td><td>${why}</td></tr>`;
+    };
     const clean = !t.pollutants_bad && !t.wastes_bad && !t.duplicates;
     let h = `<div class="dsec"><h4>Проверка данных</h4>`+
       `<div class="hint">Вещества: ${t.pollutants||0} (мусор ${t.pollutants_bad||0}, `+
@@ -1440,7 +1454,7 @@ async function loadCandidates(){
           `<td><b>${esc(v.value)}</b><div class="hint">${v.docs.length} док.</div></td>`+
           `<td>${(v.pages||[]).map(srcLink).join("<br>") ||
                 '<span class="hint">' + esc(v.docs.join(", ")) + "</span>"}</td>`+
-          `<td><button class="b" onclick="decideCand('${esc(g.key)}', ${JSON.stringify(v.value).replace(/"/g,"&quot;")})">Взять</button></td></tr>`;
+          `<td><button class="b" onclick="decideCand('${esc(g.key)}', ${JSON.stringify(v.value).replace(/"/g,"&quot;")}, this)">Взять</button></td></tr>`;
       });
       h += `<tr><td colspan="3" class="hint">ничего не подходит — введите своё значение</td>`+
         `<td><button class="b sec" onclick="manualCand('${esc(g.key)}','${esc(g.label)}')">Ввести</button></td></tr>`;
@@ -1475,13 +1489,23 @@ async function loadCandidates(){
   h += "</details>";
   box.innerHTML = h;
 }
-async function decideCand(key, value){
+async function decideCand(key, value, btn){
+  // решение занимает секунды: показываем работу и не даём нажать дважды
+  const prev = btn ? btn.textContent : "";
+  if (btn){ btn.disabled = true; btn.textContent = "…"; }
   try{
     const j = await post("candidate_decide", {org:ORG, site:SITE,
       decisions:[{key, value: String(value), action:"accept"}]}, 0);
-    if (j.error) alert(j.error);
+    if (j.error){ alert(j.error); }
+    else if ((j.failed||[]).length){
+      // раньше это молчало: значение не записывалось, а кнопка «срабатывала»
+      const f = j.failed[0];
+      alert("Значение не записано: " + (f.reason || f) +
+            "\nВпишите его вручную в нужной вкладке.");
+    }
     else { await loadCtx(); await loadCandidates(); }
   }catch(e){ alert(errText(e)); }
+  finally{ if (btn){ btn.disabled = false; btn.textContent = prev; } }
 }
 async function manualCand(key, label){
   const v = prompt("Введите значение для «" + label + "»:");
@@ -1532,10 +1556,12 @@ function foldPollutants(){
   const water = (CTX._pwater||[]).map(x => ({...x, medium: "water"}));
   CTX.pollutants = [...air, ...water];
 }
+let CTX_VERSION = "";     // отпечаток файла на момент чтения (защита от гонок)
 async function loadCtx(){
   needSite();
   const j = await get("context", {org:ORG, site:SITE});
   CTX = j.context;
+  CTX_VERSION = j.version || "";
   $("data-msg").textContent = j.path;
   SITE_ADDR = (CTX.extra || {}).site_address || "";
   $("ctx").value = JSON.stringify(CTX, null, 2);   // чистый JSON без служебных ключей
@@ -1554,9 +1580,31 @@ function renderDataForm(){
   // поля разнесены по вкладкам: ОРГАНИЗАЦИЯ, ОБЪЕКТ, ОТХОДЫ, ВЫБРОСЫ, СБРОСЫ.
   // здесь остаётся общее — отчётный год и подсказки, куда идти дальше
   renderOrgTab(); renderObjTab(); renderWasteTab(); renderAirTab(); renderWaterTab();
-  let h = '<div class="dsec"><h4>Отчётный год</h4><div class="fgrid">'+
+  renderCommonFields();
+  const noYear = !per.year;
+  let h = '<div class="dsec"'+(noYear?' style="border-color:var(--err)"':'')+
+    '><h4>Отчётный год'+(noYear?' — не заполнен, без него не выпустить ни одну форму':'')+
+    '</h4><div class="fgrid">'+
     `<div class="fld"><label>Год (обязателен для всех форм)</label>${tinput(per.year||'','period.year','напр. 2025',true)}</div>`+
-    `</div></div>`;
+    `</div>`+(noYear?'<div class="issue error">✖ Заполните год и нажмите «Сохранить» — '+
+      'иначе формы выпускаются черновиками.</div>':'')+`</div>`;
+  // профиль: то, что нельзя вывести из данных, но от чего зависят обязанности
+  const prof = (CTX.extra||{}).profile || {};
+  h += '<div class="dsec"><h4>Признаки организации (влияют на календарь и состав отчётности)</h4>'+
+    '<label style="display:block;margin:3px 0"><input type="checkbox" id="pf-msp"'+
+    (prof.is_msp?' checked':'')+' onchange="setProfileFlag(\'is_msp\',this.checked)"> '+
+    'субъект МСП <span class="hint">— авансовые платежи не вносятся, 2-ТП (отходы) не сдаётся</span></label>'+
+    '<label style="display:block;margin:3px 0"><input type="checkbox" id="pf-wb"'+
+    (prof.discharges_to_water_body?' checked':'')+' onchange="setProfileFlag(\'discharges_to_water_body\',this.checked)"> '+
+    'сброс в водный объект <span class="hint">— не в городскую канализацию; включает 2-ТП (водхоз) и проект НДС</span></label>'+
+    '<label style="display:block;margin:3px 0"><input type="checkbox" id="pf-szz"'+
+    (prof.needs_szz?' checked':'')+' onchange="setProfileFlag(\'needs_szz\',this.checked)"> '+
+    'требуется санитарно-защитная зона <span class="hint">— по СанПиН 2.2.1/2.1.1.1200-03</span></label>'+
+    '<label style="display:block;margin:3px 0"><input type="checkbox" id="pf-rop"'+
+    (prof.is_rop?' checked':'')+' onchange="setProfileFlag(\'is_rop\',this.checked)"> '+
+    'производитель / импортёр товаров и упаковки (РОП) <span class="hint">— декларация о товарах, '+
+    'отчёт о нормативах утилизации, экологический сбор (15 апреля)</span></label>'+
+    '</div>';
   h += '<div class="hint">Реквизиты — вкладка «ОРГАНИЗАЦИЯ», объект НВОС — «ОБЪЕКТ», '+
     'перечень отходов — «ОТХОДЫ», источники и вещества — «ВЫБРОСЫ» и «СБРОСЫ».</div>';
   const badObjs = (CTX.objects||[]).filter(o=>!isGoodObjCode(o.code)).length;
@@ -1565,6 +1613,61 @@ function renderDataForm(){
   $("dataform").innerHTML = h;
 }
 
+// поля, которых требует валидация форм, но которым не было места в интерфейсе:
+// программа ПЭК (для отчёта ПЭК) и затраты по направлениям (для 4-ОС)
+const OOS4_LINES = [["air","101 Охрана атмосферного воздуха"],
+  ["water","102 Сбор и очистка сточных вод"], ["waste","103 Обращение с отходами"],
+  ["land","104 Защита и реабилитация земель и вод"],
+  ["bio","105 Сохранение биоразнообразия"], ["other","106 Прочие направления"]];
+function renderCommonFields(){
+  const box = $("commonfields");
+  if (!box) return;
+  if (!CTX){ box.innerHTML = ""; return; }
+  const pek = ((CTX.extra||{}).pek) || {}, oos4 = ((CTX.extra||{}).oos4) || {};
+  const costs = oos4.costs || {};
+  let h = '<details class="dsec"><summary style="cursor:pointer;color:var(--acc)">'+
+    'Программа ПЭК и затраты на ООС (нужны для отчёта ПЭК и формы 4-ОС)</summary>'+
+    '<div class="fgrid" style="margin-top:6px">'+
+    `<div class="fld"><label>Программа ПЭК: номер</label>`+
+    `<input value="${esc(pek.program_number||"")}" data-x="pek.program_number"></div>`+
+    `<div class="fld"><label>Программа ПЭК: дата утверждения</label>`+
+    `<input value="${esc(pek.program_date||"")}" data-x="pek.program_date" placeholder="ДД.ММ.ГГГГ"></div>`+
+    '</div><div class="hint" style="margin:4px 0">Текущие затраты на охрану '+
+    'окружающей среды за год, руб. — из данных бухгалтерии (форма 4-ОС):</div>'+
+    '<div class="fgrid">';
+  for (const [k,label] of OOS4_LINES)
+    h += `<div class="fld"><label>${label}</label>`+
+      `<input value="${esc(costs[k]||"")}" data-x="oos4.costs.${k}" inputmode="decimal"></div>`;
+  h += '</div><button class="b sec" style="margin-top:6px" onclick="saveCommonFields()">'+
+    'Сохранить эти поля</button> <span class="hint" id="cf-msg"></span></details>';
+  box.innerHTML = h;
+}
+async function saveCommonFields(){
+  needSite();
+  CTX.extra = CTX.extra || {};
+  document.querySelectorAll("#commonfields [data-x]").forEach(el=>{
+    const parts = el.dataset.x.split(".");
+    let node = CTX.extra;
+    for (const p of parts.slice(0,-1)){ node[p] = node[p] || {}; node = node[p]; }
+    const v = el.value.trim();
+    if (v) node[parts.at(-1)] = v; else delete node[parts.at(-1)];
+  });
+  try{
+    const r = await post("context_save",
+      {org:ORG, site:SITE, context:CTX, version:CTX_VERSION}, 0);
+    if (r && r.conflict){ alert(r.error); return; }
+    await loadCtx();
+    $("cf-msg").textContent = "сохранено ✓";
+  }catch(e){ $("cf-msg").textContent = "Ошибка: " + errText(e); }
+}
+function setProfileFlag(key, val){
+  collectDataForm();
+  CTX.extra = CTX.extra || {};
+  CTX.extra.profile = CTX.extra.profile || {};
+  CTX.extra.profile[key] = !!val;
+  markDirty();
+  $("data-msg").textContent = "признак изменён — не забудьте «Сохранить»";
+}
 function renderWasteTab(){
   if (!$("wasteform") || !CTX) return;
   let h = "";
@@ -1847,9 +1950,11 @@ function delRow(btn){
   CTX[key].splice(idx,1); renderDataForm();
 }
 function collectDataForm(){
-  // поля разнесены по вкладкам: ДАННЫЕ (периоды, среды), ОРГАНИЗАЦИЯ, ОБЪЕКТ —
-  // собираем из всех трёх, иначе «Сохранить» потеряет часть правок
-  const boxes = ["dataform", "orgform", "objform"].map($).filter(Boolean);
+  // поля разнесены по вкладкам: ДАННЫЕ, ОРГАНИЗАЦИЯ, ОБЪЕКТ, ОТХОДЫ, ВЫБРОСЫ,
+  // СБРОСЫ. Собираем из ВСЕХ контейнеров разом: раньше три вкладки не попадали
+  // в этот список, и правки в них молча пропадали при «Сохранить».
+  const boxes = ["dataform", "orgform", "objform",
+                 "wasteform", "airform", "waterform"].map($).filter(Boolean);
   boxes.forEach(box => box.querySelectorAll("[data-path]").forEach(el=>{
     const p = el.dataset.path;
     const m = p.match(/^(\w+)\[(\d+)\]\.(\w+)$/);
@@ -1883,7 +1988,14 @@ async function saveCtx(){
     foldWater();
     foldPollutants();
     if (CTX.period) CTX.period.quarter = null;   // формы годовые; квартал убран из UI
-    await post("context_save", {org:ORG, site:SITE, context:CTX});
+    const r = await post("context_save",
+      {org:ORG, site:SITE, context:CTX, version:CTX_VERSION});
+    if (r && r.conflict){
+      $("data-msg").textContent = "⚠ " + r.error;
+      alert(r.error);
+      spin("sp-data",0);
+      return;                       // свои правки в форме сохраняем на экране
+    }
     // перечитать: сервер пересчитал движение из справок-актов
     await loadCtx();
     $("data-msg").textContent = "Сохранено ✓ (движение пересчитано из актов)";
@@ -2029,14 +2141,42 @@ async function loadMissing(mod){
   if (!box || !forms || !ORG) return;
   const j = await post("missing", {org:ORG, site:SITE});
   let h = "";
+  const titleOf = code => {
+    const m = (META && META.forms || []).find(x => x.code === code);
+    return m ? m.title : code;
+  };
   for (const f of forms){
     const info = (j.forms||{})[f];
     if (!info) continue;
-    h += info.missing && info.missing.length
-      ? `<div class="issue warn">○ ${f}: не хватает — ${info.missing.join(", ")}</div>`
-      : `<div class="issue" style="color:var(--acc)">✓ ${f}: данных достаточно</div>`;
+    const name = `${esc(titleOf(f))} <span class="hint">(${f})</span>`;
+    if (info.missing && info.missing.length){
+      h += `<div class="issue warn">○ ${name}: не хватает — ${esc(info.missing.join(", "))}`;
+      // сервер считает и список документов, которые надо принести, — раньше
+      // интерфейс его просто выбрасывал
+      if ((info.docs||[]).length)
+        h += `<details style="margin-top:4px"><summary style="cursor:pointer">`+
+             `что подготовить (${info.docs.length})</summary>`+
+             `<div class="hint">${info.docs.map(d=>"• "+esc(d)).join("<br>")}</div></details>`;
+      h += `</div>`;
+    } else {
+      h += `<div class="issue" style="color:var(--acc)">✓ ${name}: данных достаточно</div>`;
+    }
   }
   box.innerHTML = h ? `<h3 style="margin:12px 0 6px;color:var(--acc)">Чего не хватает</h3>${h}` : "";
+}
+async function doDiskUsage(){
+  spin("sp-du",1);
+  try{
+    const j = await post("disk_usage", {}, 0);
+    let t = `База: ${j.root}\nВсего: ${j.total_mb} МБ`;
+    if (j.trash_mb) t += `  ·  корзина: ${j.trash_mb} МБ (удаляется отдельной кнопкой)`;
+    t += "\n\n";
+    for (const r of j.rows||[])
+      t += `${r.org} / ${r.site}\n   данные ${r.data_mb} МБ · снимки листов ${r.pages_mb} МБ`+
+           ` · исходники в приёме ${r.sources_mb} МБ (${r.sources_files} файл.)\n`;
+    show("out-du", t);
+  }catch(e){ show("out-du", "Ошибка: " + errText(e)); }
+  spin("sp-du",0);
 }
 async function doWasteTable(){
   needSite(); spin("sp-gen",1); spin("sp-waste",1);
@@ -2095,10 +2235,17 @@ async function doDevDoc(kind){
 async function doSubmit(code){
   needSite(); spin("sp-gen",1);
   try{
-    const j = await post("submit", {org:ORG, site:SITE, form:code}, 0);
+    const j = await post("submit", {org:ORG, site:SITE, form:code,
+                                    force:$("genforce").checked}, 0);
     if (j.error){ show("out-gen", "Ошибка: " + j.error); spin("sp-gen",0); return; }
     renderIssues(code, j.issues);
-    let t = "Пакет к подаче в ЛКПП: " + j.dir + "\n";
+    if (j.blocked){
+      show("out-gen", "⛔ " + j.note + "\nЧек-лист с перечнем ошибок: " +
+           j.checklist + "\n(чтобы всё равно выпустить файлы — включите «принудительно»)");
+      post("open", {path:j.dir}).catch(()=>{});
+      spin("sp-gen",0); return;
+    }
+    let t = "Пакет к подаче: " + j.dir + "\n";
     for (const [k,v] of Object.entries(j.files||{})) t += "  " + k + ": " + v.split(/[\\/]/).pop() + "\n";
     t += "  чек-лист: ЧЕКЛИСТ.md\n";
     t += j.errors ? ("\n⚠ " + j.errors + " ошибок preflight — см. ЧЕКЛИСТ.md") : "\n✅ preflight без ошибок — можно загружать в ЛКПП и подписывать.";
@@ -2112,6 +2259,30 @@ async function validateAll(){
   try{
     const j = await post("validate_all", {org:ORG, site:SITE}, 0);
     for (const [code, issues] of Object.entries(j.results)) renderIssues(code, issues);
+    // замечания рисуются внутри модулей, а открыт всегда один — без сводки
+    // пользователь не видит, что в остальных вкладках что-то найдено
+    const byMod = {}; let errN = 0, warnN = 0;
+    for (const [code, issues] of Object.entries(j.results)){
+      const mod = FORM_MEDIUM[code] || "common";
+      byMod[mod] = byMod[mod] || {err:0, warn:0};
+      for (const i of issues||[]){
+        if (i.level === "error"){ byMod[mod].err++; errN++; } else { byMod[mod].warn++; warnN++; }
+      }
+    }
+    const NAMES = {common:"Общая", waste:"Отходы", air:"Воздух", water:"Вода"};
+    let t = errN ? `Найдено ошибок: ${errN}, предупреждений: ${warnN}\n`
+                 : `Ошибок нет. Предупреждений: ${warnN}\n`;
+    for (const [mod, c] of Object.entries(byMod))
+      if (c.err || c.warn)
+        t += `  • ${NAMES[mod]||mod}: ${c.err} ошибок, ${c.warn} предупреждений\n`;
+    t += "\nОткройте вкладку модуля, чтобы увидеть замечания по каждой форме.";
+    show("out-gen", t);
+    // значок с числом ошибок на кнопке модуля — видно, не открывая
+    for (const [mod, c] of Object.entries(byMod)){
+      const btn = $("mt-r" + mod[0]);
+      if (btn) btn.textContent = btn.textContent.replace(/\s*[·•].*$/, "") +
+        (c.err ? ` • ${c.err}` : "");
+    }
   }catch(e){ alert(e.message); }
   spin("sp-gen",0);
 }
@@ -2140,6 +2311,19 @@ async function doGenerate(code){
 // ── календарь (таблица со статусами) ──
 const CAL_CLR = {overdue:"#d32f2f", soon:"#b07d10", ok:"#1a6d42"};
 const CAL_LBL = {overdue:"просрочено", soon:"скоро", ok:"в срок"};
+async function markDone(code, year, preset){
+  let note = preset;
+  if (note === undefined){
+    const today = new Date().toLocaleDateString("ru-RU");
+    note = prompt("Отметка о сдаче (дата, номер квитанции/входящего):",
+                  "сдано " + today);
+    if (note === null) return;
+  }
+  try{
+    await post("mark_submitted", {org:ORG, site:SITE, code, year, note}, 0);
+    await doCal();
+  }catch(e){ alert(errText(e)); }
+}
 async function doCal(){
   needSite(); spin("sp-cal",1);
   try{
@@ -2149,12 +2333,22 @@ async function doCal(){
     if(!j.rows.length){ box.textContent = "Нет периодических обязанностей — проверьте категорию объекта и виды воздействия во вкладке «Данные»."; }
     else{
       let h = '<table class="dtbl"><thead><tr><th>Срок</th><th>Документ</th>'+
-        '<th>Куда</th><th>Статус</th></tr></thead><tbody>';
+        '<th>Куда</th><th>Статус</th><th>Сдано</th></tr></thead><tbody>';
       for(const r of j.rows){
-        const lbl = r.status==="overdue" ? `просрочено на ${-r.days} дн.` :
+        const lbl = r.status==="done" ? "сдано" :
+          r.status==="overdue" ? `просрочено на ${-r.days} дн.` :
           r.status==="soon" ? `осталось ${r.days} дн.` : CAL_LBL[r.status];
-        h += `<tr><td style="white-space:nowrap"><b>${r.date}</b></td><td>${r.title}</td>`+
-          `<td>${r.where||""}</td><td style="color:${CAL_CLR[r.status]};font-weight:600;white-space:nowrap">●&nbsp;${lbl}</td></tr>`;
+        const clr = r.status==="done" ? "var(--acc)" : CAL_CLR[r.status];
+        const moved = r.moved_from ? `<span class="hint"> (перенос с ${r.moved_from})</span>` : "";
+        h += `<tr><td style="white-space:nowrap"><b>${r.date}</b>${moved}</td><td>${esc(r.title)}</td>`+
+          `<td>${esc(r.where||"")}</td>`+
+          `<td style="color:${clr};font-weight:600;white-space:nowrap">●&nbsp;${lbl}</td>`+
+          `<td style="white-space:nowrap">`+
+          (r.done ? `<span class="hint">${esc(r.done)}</span> `+
+                    `<button class="delrow" title="снять отметку" `+
+                    `onclick="markDone('${esc(r.code)}',${j.year},'')">✕</button>`
+                  : `<button class="b sec" onclick="markDone('${esc(r.code)}',${j.year})">отметить</button>`)+
+          `</td></tr>`;
       }
       h += '</tbody></table>';
       if(j.docs && j.docs.length){

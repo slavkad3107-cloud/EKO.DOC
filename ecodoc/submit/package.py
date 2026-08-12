@@ -24,12 +24,15 @@ _LKPP_OPER = "https://lk.rpn.gov.ru/operators-page"
 _POWER_REPORT = "RPNDZ_REPORT"
 
 
-def build_package(report, out_root, year=None) -> dict:
-    """Собрать папку пакета к подаче. Возвращает {dir, files, issues, errors, checklist}."""
+def build_package(report, out_root, year=None, force: bool = False) -> dict:
+    """Собрать папку пакета к подаче. Возвращает {dir, files, issues, errors, checklist}.
+
+    При ошибках preflight файлы НЕ выпускаются без force: пакет с ошибками
+    выглядит готовым к подаче, а его завернут в приёмке."""
     ctx = report.ctx
     o = ctx.organization
-    year = year or ctx.period.year or "XXXX"
-    stem = f"{report.code}_{year}"
+    year = year or ctx.period.year
+    stem = f"{report.code}_{year}" if year else f"ЧЕРНОВИК_{report.code}"
     pkg = Path(out_root) / f"{(o.inn or 'org')}_{stem}"
     pkg.mkdir(parents=True, exist_ok=True)
 
@@ -37,6 +40,14 @@ def build_package(report, out_root, year=None) -> dict:
     errors = [i for i in issues if i.level == "error"]
 
     files: dict[str, Path] = {}
+    if errors and not force:
+        checklist = _write_checklist(pkg, report, issues, files, {})
+        return {"dir": pkg, "files": files, "issues": issues, "errors": errors,
+                "checklist": checklist, "mchd": {}, "blocked": True,
+                "note": (f"Файлы не выпущены: {len(errors)} ошибок preflight. "
+                         f"Исправьте данные (см. ЧЕКЛИСТ.md) или соберите "
+                         f"пакет принудительно.")}
+
     if getattr(report, "has_xml", True):
         try:
             files["xml"] = report.render_xml(pkg / f"{stem}.xml")
@@ -50,7 +61,69 @@ def build_package(report, out_root, year=None) -> dict:
     mchd = _copy_mchd(ctx, pkg)
     checklist = _write_checklist(pkg, report, issues, files, mchd)
     return {"dir": pkg, "files": files, "issues": issues, "errors": errors,
-            "checklist": checklist, "mchd": mchd}
+            "checklist": checklist, "mchd": mchd, "blocked": False}
+
+
+_LKPP_STEPS = [
+    f"1. Войдите в ЛКПП ({_LKPP_INSTR.rsplit('/', 1)[0]}) через ЕСИА/Госуслуги.",
+    "2. **Мои отчёты → «Новый отчёт»** → выберите форму → **«Импорт XML»/"
+    "«Загрузить из файла»** и укажите XML из этого пакета.",
+    "3. Проверьте подтянувшиеся данные, при необходимости дозаполните в интерфейсе.",
+    "4. Подпишите отчёт **УКЭП** и отправьте. Статус — в «Мои отчёты» (цель «Принято»).",
+    f"5. Требования к формату XML — {_LKPP_OPER} и {_LKPP_INSTR}.",
+]
+
+
+def _destination(code: str) -> dict:
+    """Куда и как подаётся конкретная форма.
+
+    Раньше чек-лист всем предлагал «Импорт XML в ЛКПП» — включая кадастр СПб
+    (подсистема правительства города) и статистические формы Росстата."""
+    lk_xml = "XML для загрузки в ЛКПП (конверт Модуля природопользователя)"
+    inner = ("внутренний XML программы — для ЛКПП не годится, "
+             "подавайте печатную форму")
+    if code in ("declaration-nvos", "pek", "2tp-waste", "waste-report-iii"):
+        return {"where": "Личный кабинет природопользователя (ЛКПП РПН)",
+                "xml_label": lk_xml, "steps": _LKPP_STEPS}
+    if code == "cadastre-spb":
+        return {
+            "where": "подсистема «Ведение регионального кадастра отходов» ГИС СПб "
+                     "(или kadastr@kpoos.gov.spb.ru)",
+            "xml_label": inner,
+            "steps": [
+                "1. Войдите в подсистему кадастра отходов на портале Правительства СПб "
+                "(вход по УКЭП организации).",
+                "2. Заполните формы 1–5 по данным печатной формы из этого пакета.",
+                "3. Подпишите УКЭП и отправьте; при недоступности подсистемы — "
+                "подписанный .xlsx на kadastr@kpoos.gov.spb.ru.",
+                "4. Для ЛО и других регионов действует свой порядок — сверьте с "
+                "региональным НПА.",
+            ]}
+    if code in ("2tp-air", "2tp-water", "4-oos"):
+        org = ("Бассейновое водное управление Росводресурсов"
+               if code == "2tp-water" else "территориальный орган Росстата")
+        return {
+            "where": f"{org} (форма статистического наблюдения)",
+            "xml_label": inner,
+            "steps": [
+                f"1. Форма сдаётся в {org}, а не в ЛКПП.",
+                "2. Используйте систему сбора отчётности респондента "
+                "(Модуль респондента Росстата / ГИС ЦП «Вода») или личный кабинет "
+                "респондента websbor.rosstat.gov.ru.",
+                "3. Перенесите данные из печатной формы пакета, подпишите УКЭП, отправьте.",
+            ]}
+    return {"where": "уточните адресата по основанию формы",
+            "xml_label": inner,
+            "steps": ["1. Способ подачи для этой формы в программе не описан — "
+                      "сверьте с НПА из раздела «основание»."]}
+
+
+def _deadline(code: str, year) -> str:
+    try:
+        from ecodoc.calendar.engine import deadline_note
+        return deadline_note(code, year or 0)
+    except Exception:
+        return ""
 
 
 def _copy_mchd(ctx, pkg: Path) -> dict:
@@ -76,10 +149,15 @@ def _write_checklist(pkg: Path, report, issues, files, mchd) -> Path:
     errors = [i for i in issues if i.level == "error"]
     warns = [i for i in issues if i.level == "warning"]
     is_rep = bool(mchd)
+    dest = _destination(report.code)
     lines = []
-    lines.append(f"# Чек-лист подачи в ЛКПП РПН — {report.title}\n")
+    lines.append(f"# Чек-лист подачи — {report.title}\n")
     lines.append(f"Организация: **{o.name}** (ИНН {o.inn})  ·  отчётный год: "
-                 f"{report.ctx.period.year or '—'}\n")
+                 f"{report.ctx.period.year or '— НЕ УКАЗАН'}\n")
+    lines.append(f"**Куда подавать:** {dest['where']}\n")
+    note = _deadline(report.code, report.ctx.period.year)
+    if note:
+        lines.append(f"**Срок:** {note}\n")
 
     lines.append("## 1. Проверка перед подачей (preflight)\n")
     if errors:
@@ -96,22 +174,19 @@ def _write_checklist(pkg: Path, report, issues, files, mchd) -> Path:
         lines.append("✅ Ошибок и предупреждений нет.\n")
 
     lines.append("## 2. Файлы пакета\n")
+    if not files:
+        lines.append("- (файлы не выпущены: сначала исправьте ошибки из раздела 1)")
     for kind, p in files.items():
-        label = {"xml": "XML для загрузки в ЛКПП (формат Модуля природопользователя)",
+        label = {"xml": dest["xml_label"],
                  "print": "Печатная форма (проверка глазами, не для подачи)"}.get(kind, kind)
         lines.append(f"- `{Path(p).name}` — {label}")
-    if not any(k == "xml" for k in files):
-        lines.append("- (XML не формируется — эта форма в ЛКПП не загружается)")
+    if not any(k == "xml" for k in files) and files:
+        lines.append("- (XML не формируется — эта форма загрузкой файла не подаётся)")
     lines.append("")
 
-    lines.append("## 3. Как загрузить в ЛК Природопользователя\n")
-    lines.append(f"1. Войдите в ЛКПП ({_LKPP_INSTR.rsplit('/',1)[0]}) через ЕСИА/Госуслуги.")
-    lines.append("2. **Мои отчёты → «Новый отчёт»** → выберите форму → **«Импорт XML»/"
-                 "«Загрузить из файла»** и укажите XML из этого пакета.")
-    lines.append("3. Проверьте подтянувшиеся данные, при необходимости дозаполните в интерфейсе.")
-    lines.append("4. Подпишите отчёт **УКЭП** и отправьте. Статус смотрите в «Мои отчёты» "
-                 "(цель — «Принято»).")
-    lines.append(f"5. Требования к формату/структуре XML — {_LKPP_OPER} и {_LKPP_INSTR}.")
+    lines.append(f"## 3. Как подать: {dest['where']}\n")
+    for step in dest["steps"]:
+        lines.append(step)
     lines.append("")
 
     if is_rep:

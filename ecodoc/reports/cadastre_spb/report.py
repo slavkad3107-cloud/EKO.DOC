@@ -28,7 +28,7 @@ from ecodoc.core.registry import register
 from ecodoc.render import xlsx
 from ecodoc.reports.base import Report
 
-_REGIONS = {"78", "47", "40", "41", "46"}  # СПб (78/40) и ЛО (47/41/46)
+from ecodoc.calendar.obligations import CADASTRE_REGIONS as _REGIONS  # один список
 
 
 def _num(v) -> float:

@@ -197,12 +197,18 @@ def _merge_flows(existing: list[WasteFlow], computed: list[WasteFlow]) -> list[W
         else:
             out.append(c)
         seen.add(k)
-    # ручные позиции, по которым актов нет, оставляем ТОЛЬКО если в них есть
-    # данные (остатки/размещение/массы). Полностью нулевые строки — мусор
-    # старого авто-добавления ФККО, вычищаются.
+    # Ручные позиции, по которым актов нет, сохраняем, если в них есть либо
+    # массы, либо осмысленное описание (код ФККО с классом, наименование).
+    # Раньше выбрасывалась любая строка без масс — вместе с только что
+    # заведённой вручную позицией, которую пользователь ещё не заполнил.
     out.extend(w for w in existing
-               if _flow_key(w) not in seen and _has_data(w))
+               if _flow_key(w) not in seen and (_has_data(w) or _described(w)))
     return out
+
+
+def _described(w: WasteFlow) -> bool:
+    """У позиции есть содержательное описание, а не пустая строка-заготовка."""
+    return bool(norm_fkko(w.fkko_code) or (w.name or "").strip())
 
 
 _DATA_FIELDS = ("accumulated_start", "accumulated_start_nakopl", "generated",

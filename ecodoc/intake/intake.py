@@ -442,9 +442,14 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
         # чанками по 40, и чистка всего каталога стёрла бы ещё не
         # проанализированные файлы следующих чанков.
         if not keep_sources:
-            # файлы, которые ИИ не проанализировал (провайдер упал), НЕ удаляем —
-            # они остаются в приёме, анализ можно повторить когда ИИ поднимется
-            analyzed = [p.name for p in stored if p.name not in ai_failed]
+            # Удаляем только то, что РЕАЛЬНО обработано. В приёме остаются:
+            #   • файлы, которые ИИ не проанализировал (провайдер упал);
+            #   • файлы, которые вообще не удалось прочитать (нет OCR, битые,
+            #     неизвестный формат) — иначе единственный экземпляр документа
+            #     исчезал, а из него ничего не извлекли.
+            unread_names = {n for names in unread.values() for n in names}
+            skip = set(ai_failed) | unread_names
+            analyzed = [p.name for p in stored if p.name not in skip]
             n = _purge_sources(workspace.site_dir(org, site) / "attachments",
                                analyzed)
             if n:
@@ -456,6 +461,12 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
                 lines.append(f"⚠ Оставлены в приёме {len(kept)} файл(ов), которые ИИ "
                              f"не проанализировал ({sample}) — когда ИИ станет доступен, "
                              "нажмите «Анализ» ещё раз.")
+            if unread_names:
+                kept = sorted(unread_names)
+                sample = ", ".join(kept[:3]) + (" …" if len(kept) > 3 else "")
+                lines.append(f"⚠ Оставлены в приёме {len(kept)} нечитаемых файл(ов) "
+                             f"({sample}) — из них ничего не извлечено, файлы "
+                             "сохранены, чтобы не потерять единственный экземпляр.")
     return "\n".join(lines)
 
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from ecodoc.core import sanitize
 from ecodoc.core.models import Medium, ReportContext
 from ecodoc.core.money import D, money
 from ecodoc.core.refdata import coefficients, rates_nvos
@@ -82,11 +83,26 @@ def calculate(ctx: ReportContext) -> PaymentResult:
     rates = rates_nvos()
     coef = coefficients()
     res = PaymentResult()
+    year = ctx.period.year
+
+    # С 2026 года ставки установлены НАПРЯМУЮ на каждый год (Распоряжение
+    # Правительства РФ № 2409-р в ред. № 4110-р) — прежняя схема «ставки 2018 ×
+    # коэффициент индексации» к ним не применяется. Для более ранних лет
+    # остаётся старая схема.
+    direct = (rates.get("rates_by_year") or {}).get(str(year)) if year else None
+    if direct:
+        rates = {**rates, **direct}
 
     # коэффициент индексации: сначала по отчётному году, иначе общий
     by_year = rates.get("indexation_by_year") or {}
-    year = ctx.period.year
-    if year and str(year) in by_year:
+    if direct:
+        k_ind = Decimal("1")            # ставки года — уже итоговые
+        res.warnings.append(
+            f"Ставки {year} года применены напрямую по действующему акту "
+            f"(индексация к ним не применяется). По отходам I–V классов "
+            f"Правительство может установить дополнительный коэффициент "
+            f"индексации — проверьте перед сдачей.")
+    elif year and str(year) in by_year:
         val = by_year[str(year)]
         if val is None:
             res.warnings.append(
@@ -102,7 +118,8 @@ def calculate(ctx: ReportContext) -> PaymentResult:
 
     # дополнительный повышающий коэффициент по году (напр. 1,045 за 2025 —
     # ПП РФ №1034 от 10.07.2025). Умножается на основную индексацию.
-    extra_by_year = rates.get("indexation_extra_by_year") or {}
+    # К прямым ставкам года не применяется — они уже итоговые.
+    extra_by_year = {} if direct else (rates.get("indexation_extra_by_year") or {})
     if year and str(year) in extra_by_year and extra_by_year[str(year)]:
         k_extra_year = D(extra_by_year[str(year)])
         k_ind = k_ind * k_extra_year
@@ -113,10 +130,16 @@ def calculate(ctx: ReportContext) -> PaymentResult:
 
     by_section = {k: Decimal("0") for k in SECTIONS}
 
+    if not year:
+        res.warnings.append(
+            "Отчётный год не указан — применён общий коэффициент индексации "
+            f"{k_ind}. Заполните год во вкладке ДАННЫЕ: от него зависят ставки "
+            "и коэффициенты, иначе сумма платы неверна.")
+
     # --- выбросы / сбросы ---
     for p in ctx.pollutants:
         table = rates["air"] if p.medium == Medium.AIR else rates["water"]
-        entry = table.get(p.code)
+        entry, key = _find_rate(table, p.code, p.name)
         rate = D(entry["rate"]) if entry else Decimal("0")
         k_ot = D(p.k_ot) if p.k_ot is not None else D(coef.get("k_ot_default", 1))
         if k_ot < 1:
@@ -131,17 +154,24 @@ def calculate(ctx: ReportContext) -> PaymentResult:
                 continue
             k_band = D(coef["band"][band])
             amount = money(mass * rate * k_ind * k_band * k_ot)
-            warn = "" if entry else f"нет ставки для кода {p.code} в справочнике"
+            # ставка 0 — это тоже «нет ставки»: раньше нулевая строка
+            # справочника считалась найденной и плата обнулялась молча
+            warn = ("" if (entry and rate > 0) else
+                    f"нет ставки для кода {key or p.code} в справочнике — "
+                    f"плата по веществу не начислена")
             if p.medium == Medium.AIR:
                 sect = ("Р3" if band == "over" else "Р2") if is_flare else "Р1"
             else:
                 sect = "Р4"
-            line = PayLine(p.medium.value, p.code, p.name, band, mass, rate,
-                           k_ind, k_band, k_ot, amount, sect, warn)
+            line = PayLine(p.medium.value, key or p.code, p.name, band, mass,
+                           rate, k_ind, k_band, k_ot, amount, sect, warn)
             res.lines.append(line)
             by_section[sect] += amount
             if warn:
-                res.warnings.append(f"{p.name} ({p.code}): {warn}")
+                # одно вещество — одно предупреждение (а не по разу на корзину)
+                text = f"{p.name} ({key or p.code}): {warn}"
+                if text not in res.warnings:
+                    res.warnings.append(text)
             if sect == "Р1":
                 res.total_air += amount       # только стационарные (без ПНГ)
             elif sect == "Р4":
@@ -151,8 +181,8 @@ def calculate(ctx: ReportContext) -> PaymentResult:
     wclass = rates["waste_by_class"]
     wband = coef["waste_band"]
     for w in ctx.wastes:
-        rate = _waste_rate(w, wclass)
         sect = _waste_section(w)
+        rate = _waste_rate(w, wclass, sect)
         # стимулирующий коэффициент Кст (ст. 16.3 ФЗ-7): 0.3 / 0 / 1 (по умолч.)
         k_st = D(w.k_st) if getattr(w, "k_st", None) is not None else Decimal("1")
         if k_st < 0 or k_st > 1:
@@ -179,8 +209,41 @@ def calculate(ctx: ReportContext) -> PaymentResult:
     return res
 
 
-def _waste_rate(w, wclass: dict) -> Decimal:
+def _find_rate(table: dict, code, name) -> tuple[dict | None, str]:
+    """Ставка вещества по коду, а если код не совпал — по наименованию.
+
+    Код ищем нормализованным: в перечнях ЗВ он четырёхзначный с ведущим нулём
+    («0301»), а из документов и от ИИ приходит как «301» — без нормализации
+    ставка не находилась и плата молча обнулялась.
+
+    Поиск по наименованию нужен для сбросов: коды ЗВ для водных объектов и для
+    воздуха — разные перечни, и в документах у одного и того же вещества
+    («аммоний-ион») код может стоять из чужого перечня. Наименование в такой
+    ситуации надёжнее кода."""
+    key = sanitize.norm_code(code) or str(code or "").strip()
+    entry = table.get(key) or table.get(str(code or "").strip())
+    if entry:
+        return entry, key
+    nm = sanitize.norm_name(name)
+    if not nm:
+        return None, key
+    for k, row in table.items():
+        if not isinstance(row, dict):
+            continue                    # служебные ключи вроде "_note"
+        if sanitize.norm_name(row.get("name")) == nm:
+            return row, k
+    return None, key
+
+
+def _waste_rate(w, wclass: dict, section: str = "") -> Decimal:
+    """Ставка за размещение тонны отхода.
+
+    У ТКО IV класса своя ставка (ПП РФ № 913 и последующие акты) — она в разы
+    ниже общей ставки IV класса, поэтому раздел Р6 считается по ключу
+    «4_tko», а не по классу."""
     cls = str(w.hazard_class)
+    if section == "Р6" and cls == "4" and wclass.get("4_tko") is not None:
+        return D(wclass["4_tko"])
     if cls == "5":
         key = "5_mining" if w.is_mining else "5_other"
         return D(wclass.get(key, 0))

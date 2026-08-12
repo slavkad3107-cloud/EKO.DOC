@@ -185,6 +185,23 @@ _DEC_ATTRS = {"generated", "transferred", "used", "neutralized", "placed_norm",
 _INT_ATTRS = {"year", "quarter", "hazard_class"}
 
 
+def _number(value):
+    """Число из значения документа: «1,5», «1 234,5», «12,3 т/год», «≈0,8».
+
+    В документах число почти всегда идёт с единицей измерения или пояснением;
+    раньше такие значения молча не записывались — кнопка «Взять» будто не
+    срабатывала. Берём первое число, остальное отбрасываем."""
+    import re
+    s = str(value or "").replace(",", ".").replace(" ", " ")
+    m = re.search(r"-?\d+(?:\s\d{3})*(?:\.\d+)?", s)
+    if not m:
+        return None
+    try:
+        return Decimal(m.group(0).replace(" ", ""))
+    except InvalidOperation:
+        return None
+
+
 def write(ctx, key: str, value) -> bool:
     """Записать принятое значение в контекст с правильным типом.
 
@@ -232,15 +249,14 @@ def write(ctx, key: str, value) -> bool:
     if obj is None or not hasattr(obj, attr):
         return False
     if attr in _DEC_ATTRS:
-        try:
-            value = Decimal(str(value).replace(",", ".").replace(" ", ""))
-        except (InvalidOperation, ValueError):
+        value = _number(value)
+        if value is None:
             return False
     elif attr in _INT_ATTRS:
-        try:
-            value = int(float(str(value).replace(",", ".")))
-        except (TypeError, ValueError):
+        num = _number(value)
+        if num is None:
             return False
+        value = int(num)
     else:
         value = str(value)
     setattr(obj, attr, value)

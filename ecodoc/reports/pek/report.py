@@ -62,8 +62,12 @@ class PEKReport(Report):
             issues.append(Issue("error", "период", "не указан отчётный год"))
         if not self.ctx.objects:
             issues.append(Issue("error", "объекты", "ПЭК сдаётся по объектам I–III категории — добавьте объект НВОС"))
-        cats = {str(ob.category).strip().upper() for ob in self.ctx.objects}
-        if cats and cats <= {"IV", "4"}:
+        # категорию пишут как «III», «3», «III категория» — сравнение сырых
+        # строк не срабатывало, и предупреждение не показывалось никогда
+        from ecodoc.calendar.engine import category_of
+        cats = {category_of(ob) for ob in self.ctx.objects}
+        cats.discard("")
+        if cats and cats == {"IV"}:
             issues.append(Issue("warning", "категория", "для объектов только IV категории отчёт ПЭК не требуется"))
         pek = self._pek()
         if not pek.get("program_number") and not pek.get("program_date"):

@@ -83,6 +83,16 @@ class DeclarationNVOS(Report):
             issues.append(Issue("error", "период", "не указан отчётный год"))
         if not self.ctx.objects:
             issues.append(Issue("warning", "объекты", "не указан ни один объект НВОС"))
+        else:
+            from ecodoc.calendar.engine import category_of
+            cats = {category_of(o) for o in self.ctx.objects}
+            cats.discard("")
+            if cats and cats == {"IV"}:
+                issues.append(Issue(
+                    "error", "категория",
+                    "все объекты — IV категории: такие объекты плату за НВОС "
+                    "не вносят и декларацию не подают (п. 1 ст. 16.1 ФЗ-7). "
+                    "Проверьте категорию во вкладке ОБЪЕКТ."))
         if not (self.ctx.pollutants or self.ctx.wastes):
             issues.append(Issue("error", "данные", "нет ни выбросов/сбросов, ни отходов — нечего декларировать"))
         for w in self.calc.warnings:
