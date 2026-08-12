@@ -75,7 +75,7 @@ class TP2Air(Report):
         # Раздел 2 — специфические вещества
         r2 = el(root, "Раздел2")
         for p in self._air():
-            x = el(r2, "Вещество", код=p.code or "8888")
+            x = el(r2, "Вещество", код=_code(p.code) or "8888")
             el(x, "Наименование", p.name)
             el(x, "Выброшено", _f(_tot(p)))
         write_tree(root, out_path)
@@ -171,7 +171,7 @@ class TP2Air(Report):
         xlsx.header_row(ws, 3, ["Код ЗВ", "Загрязняющее вещество", "Выброшено за год, т"])
         r = 4
         for p in self._air():
-            xlsx.data_row(ws, r, [p.code or "8888", p.name, float(_tot(p))])
+            xlsx.data_row(ws, r, [_code(p.code) or "8888", p.name, float(_tot(p))])
             r += 1
 
     def _sect3(self, wb):
@@ -194,6 +194,12 @@ class TP2Air(Report):
 
 def _f(v) -> str:
     return f"{float(v):.3f}"
+
+
+def _code(value) -> str:
+    """Код ЗВ в официальном виде: четыре цифры с ведущим нулём."""
+    from ecodoc.core import sanitize
+    return sanitize.norm_code(value) or str(value or "")
 
 
 def _tot(p) -> Decimal:

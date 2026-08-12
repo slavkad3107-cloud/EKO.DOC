@@ -6,12 +6,12 @@
 природопользователя) — Приказ Минприроды России от 18.02.2022 № 109.
 Прежняя форма (Приказ № 261 от 14.06.2018) утратила силу с 01.09.2024.
 
-ВНИМАНИЕ: текущий генератор строит упрощённую структуру (выбросы/сбросы/
-отходы/результаты) и НЕ соответствует табличной структуре Приказа № 173 —
-в частности, отсутствуют Раздел 5 (побочные продукты производства) и Раздел 6
-(искусственные грунты из органической части ТКО, с отчёта за 2025 г.). XML
-самоописательный, для официальной подачи через ЛК РПН не годится. Требуется
-переработка под разделы и таблицы № 173.
+Печатная форма собирается по разделам и таблицам приказа: раздел 2 — таблицы
+2.1 (перечень контролируемых веществ), 2.2 (контроль стационарных источников,
+по источникам, с граф г/с и т/год) и 2.3 (наблюдения в СЗЗ); раздел 3 —
+таблицы 3.1 (объёмы забора и сброса) и 3.2 (качество сточных вод); далее
+разделы 4–6. XML самоописательный: официальной XSD у формы нет, отчёт
+подаётся через ЛК РПН заполнением или прикреплением печатной формы.
 
 Полностью автоматическая сборка из ReportContext:
   * общие сведения        — organization + objects;
@@ -110,12 +110,12 @@ class PEKReport(Report):
 
         air = el(root, "Выбросы")
         for p in (x for x in self.ctx.pollutants if x.medium == Medium.AIR):
-            x = el(air, "Вещество", код=p.code)
+            x = el(air, "Вещество", код=_code(p.code))
             el(x, "Наименование", p.name)
             el(x, "МассаВсего", _tot(p))
         water = el(root, "Сбросы")
         for p in (x for x in self.ctx.pollutants if x.medium == Medium.WATER):
-            x = el(water, "Вещество", код=p.code)
+            x = el(water, "Вещество", код=_code(p.code))
             el(x, "Наименование", p.name)
             el(x, "МассаВсего", _tot(p))
 
@@ -174,23 +174,35 @@ class PEKReport(Report):
         ws = wb.create_sheet("Титул")
         ws.column_dimensions["A"].width = 40
         ws.column_dimensions["B"].width = 56
+        # титул бланка: гриф приложения, утверждающая подпись руководителя,
+        # затем наименование отчёта и период. Сведения о программе ПЭК и
+        # лаборатории — это раздел 1 формы, на титуле их нет.
+        obj = ", ".join(x.code for x in self.ctx.objects) or "—"
         rows = [
-            ("ОТЧЁТ ОБ ОРГАНИЗАЦИИ И О РЕЗУЛЬТАТАХ ОСУЩЕСТВЛЕНИЯ ПЭК", ""),
-            ("(форма — Приказ Минприроды России от 15.03.2024 № 173, ред. № 262)", ""),
-            ("Отчётный год", self.ctx.period.year),
-            ("Организация", o.name),
-            ("ИНН / КПП", f"{o.inn} / {o.kpp}"),
-            ("Адрес", o.address),
-            ("Программа ПЭК", f"№{pek.get('program_number','—')} от {pek.get('program_date','—')}"),
-            ("Лаборатория (аттестат аккредитации)", pek.get("lab", "—")),
-            ("Объекты НВОС", ", ".join(f"{x.code} ({x.category})" for x in self.ctx.objects)),
-            ("Срок представления", "до 25 марта года, следующего за отчётным, "
-                                   "электронно с УКЭП через ЛК природопользователя"),
+            ("Приложение к приказу Минприроды России от 15.03.2024 № 173", ""),
+            ("(в действующей редакции)", ""),
+            ("Экз. №", pek.get("copy_no", "1")),
+            ("", ""),
+            ("УТВЕРЖДАЮ", ""),
+            (f"{o.director_position or 'Руководитель'} "
+             f"{o.short_name or o.name}", ""),
+            ("_______________ / " + (o.director_name or "___________________"), ""),
+            ("«____» __________ 20___ г.                                М.П.", ""),
+            ("", ""),
+            ("ОТЧЁТ", ""),
+            ("об организации и о результатах осуществления производственного "
+             "экологического контроля", ""),
+            (f"объект НВОС: {obj}", ""),
+            (f"за {self.ctx.period.year or '____'} год", ""),
+            ("", ""),
+            ("Наименование юридического лица / ИП", o.name),
+            ("Место нахождения", o.address),
+            ("Телефон / e-mail", f"{o.phone or '—'} / {o.email or '—'}"),
         ]
         for i, (k, v) in enumerate(rows, 1):
             a = ws.cell(row=i, column=1, value=k)
             ws.cell(row=i, column=2, value=v)
-            if i == 1:
+            if k in ("ОТЧЁТ", "УТВЕРЖДАЮ") or i == 11:
                 a.font = xlsx.BOLD
 
     def _sect1(self, wb):
@@ -219,37 +231,133 @@ class PEKReport(Report):
         xlsx.cell(ws, f"B{r+1}", pek.get("lab", "—"), border=False, align="left")
 
     def _sect2_air(self, wb):
+        """Раздел 2 формы: таблицы 2.1 (перечень ЗВ) и 2.2 (контроль источников).
+
+        Таблица 2.2 в бланке — по ИСТОЧНИКАМ, с граф «г/с» и «т/год» и
+        нормативом на источнике. Данные для неё уже есть в базе
+        (extra.emission_sources), раньше форма их не использовала и печатала
+        только сводный перечень веществ."""
         ws = wb.create_sheet("Раздел 2 (воздух)")
         pek = self._pek()
-        xlsx.widths(ws, {"A": 10, "B": 40, "C": 18, "D": 18})
-        xlsx.merge(ws, "A1:D1", "Раздел 2. ПЭК в области охраны атмосферного воздуха "
-                   "(контроль источников выбросов и наблюдения)", bold=True, border=False)
-        xlsx.header_row(ws, 3, ["Код ЗВ", "Загрязняющее вещество",
-                                "Масса выброса за год, т", "Норматив (ПДВ/ВСВ), т"])
-        r = 4
-        for p in (x for x in self.ctx.pollutants if x.medium == Medium.AIR):
-            xlsx.data_row(ws, r, [p.code, p.name, float(_tot(p)),
-                                  float(D(p.mass_norm) + D(p.mass_limit))])
+        xlsx.widths(ws, {"A": 8, "B": 26, "C": 10, "D": 26, "E": 10, "F": 30,
+                         "G": 12, "H": 12, "I": 12, "J": 12, "K": 14, "L": 22})
+        xlsx.merge(ws, "A1:L1", "Раздел 2. Сведения о ПЭК в области охраны "
+                   "атмосферного воздуха", bold=True, border=False)
+
+        # ── 2.1 перечень контролируемых веществ ──────────────────────
+        xlsx.merge(ws, "A3:F3", "Таблица 2.1. Перечень загрязняющих веществ, "
+                   "подлежащих контролю", bold=True, border=False)
+        xlsx.header_row(ws, 4, ["№", "Код ЗВ", "Загрязняющее вещество",
+                                "Норматив (ПДВ/ВСВ), т/год",
+                                "Фактический выброс, т/год", "Периодичность"])
+        r = 5
+        period = pek.get("air_period") or "по программе ПЭК"
+        for n, p in enumerate((x for x in self.ctx.pollutants
+                               if x.medium == Medium.AIR), 1):
+            xlsx.data_row(ws, r, [n, _code(p.code), p.name,
+                                  float(D(p.mass_norm) + D(p.mass_limit)),
+                                  float(_tot(p)), period])
             r += 1
+        if r == 5:
+            xlsx.cell(ws, f"A{r}", "— выбросы отсутствуют", border=False,
+                      italic=True, align="left")
+            r += 1
+
+        # ── 2.2 результаты контроля стационарных источников ──────────
         r += 1
-        xlsx.cell(ws, f"A{r}", "Результаты контроля (замеры на источниках / "
-                  "на границе СЗЗ):", border=False, bold=True, align="left")
+        xlsx.merge(ws, f"A{r}:L{r}", "Таблица 2.2. Результаты контроля "
+                   "стационарных источников выбросов", bold=True, border=False)
+        r += 1
+        xlsx.header_row(ws, r, [
+            "№ п/п", "Структурное подразделение (площадка, цех)",
+            "Номер источника", "Наименование источника", "Код ЗВ",
+            "Наименование ЗВ", "Норматив, г/с", "Факт, г/с",
+            "Норматив, т/год", "Факт, т/год", "Дата отбора",
+            "Протокол / лаборатория"])
+        r += 1
+        n = 0
+        for src in (self.ctx.extra or {}).get("emission_sources", []) or []:
+            if not isinstance(src, dict):
+                continue
+            for sub in src.get("pollutants") or []:
+                n += 1
+                xlsx.data_row(ws, r, [
+                    n, src.get("workshop", ""), src.get("number", ""),
+                    src.get("name", ""), _code(sub.get("code")),
+                    sub.get("name", ""), sub.get("g_s_norm", ""),
+                    sub.get("g_s", ""), sub.get("t_year_norm", ""),
+                    sub.get("t_year", ""), sub.get("date", ""),
+                    sub.get("protocol", pek.get("lab", ""))])
+                r += 1
+        if n == 0:
+            xlsx.cell(ws, f"A{r}", "— источники выбросов не заведены: "
+                      "загрузите инвентаризацию выбросов во вкладке ВЫБРОСЫ",
+                      border=False, italic=True, align="left")
+            r += 1
+
+        # ── 2.3 наблюдения на границе СЗЗ / в жилой зоне ─────────────
+        r += 1
+        xlsx.merge(ws, f"A{r}:L{r}", "Таблица 2.3. Результаты наблюдений за "
+                   "загрязнением атмосферного воздуха (СЗЗ, жилая зона)",
+                   bold=True, border=False)
         r += 1
         self._results_table(ws, r, pek.get("results", []))
 
     def _sect3_water(self, wb):
+        """Раздел 3 формы: 3.1 объёмы забора/сброса, 3.2 качество сточных вод."""
         ws = wb.create_sheet("Раздел 3 (вода)")
         pek = self._pek()
-        xlsx.widths(ws, {"A": 10, "B": 40, "C": 18, "D": 18})
-        xlsx.merge(ws, "A1:D1", "Раздел 3. ПЭК в области охраны водных объектов "
-                   "(забор/сброс воды, качество вод)", bold=True, border=False)
-        xlsx.header_row(ws, 3, ["Код ЗВ", "Загрязняющее вещество",
-                                "Масса сброса за год, т", "Норматив (НДС/ВСС), т"])
-        r = 4
-        for p in (x for x in self.ctx.pollutants if x.medium == Medium.WATER):
-            xlsx.data_row(ws, r, [p.code, p.name, float(_tot(p)),
-                                  float(D(p.mass_norm) + D(p.mass_limit))])
+        water = (self.ctx.extra or {}).get("water") or {}
+        xlsx.widths(ws, {"A": 8, "B": 34, "C": 22, "D": 18, "E": 18, "F": 18,
+                         "G": 18, "H": 22})
+        xlsx.merge(ws, "A1:H1", "Раздел 3. Сведения о ПЭК в области охраны и "
+                   "использования водных объектов", bold=True, border=False)
+
+        # ── 3.1 учёт объёмов забора и сброса ─────────────────────────
+        xlsx.merge(ws, "A3:H3", "Таблица 3.1. Результаты учёта объёма забора "
+                   "(изъятия) водных ресурсов и объёма сброса сточных вод",
+                   bold=True, border=False)
+        xlsx.header_row(ws, 4, ["№", "Водный объект / приёмник",
+                                "Вид (забор / сброс)", "Номер выпуска",
+                                "Объём за год, тыс. м³", "Средство измерения",
+                                "Периодичность учёта", "Примечание"])
+        r, n = 5, 0
+        for kind, key in (("забор", "intake"), ("сброс", "discharge")):
+            for item in water.get(key) or []:
+                if not isinstance(item, dict):
+                    continue
+                n += 1
+                xlsx.data_row(ws, r, [
+                    n, item.get("name") or item.get("receiver", ""), kind,
+                    item.get("outlet", ""), item.get("volume", ""),
+                    item.get("meter", ""), item.get("period", ""),
+                    item.get("quality", "")])
+                r += 1
+        if n == 0:
+            xlsx.cell(ws, f"A{r}", "— водопользование не заведено (вкладка СБРОСЫ)",
+                      border=False, italic=True, align="left")
             r += 1
+
+        # ── 3.2 качество сточных вод по веществам ────────────────────
+        r += 1
+        xlsx.merge(ws, f"A{r}:H{r}", "Таблица 3.2. Результаты контроля качества "
+                   "сточных вод", bold=True, border=False)
+        r += 1
+        xlsx.header_row(ws, r, ["№", "Код ЗВ", "Загрязняющее вещество",
+                                "Норматив (НДС/ВСС), т/год", "Факт, т/год",
+                                "Концентрация, мг/дм³", "Дата отбора",
+                                "Протокол / лаборатория"])
+        r += 1
+        n = 0
+        for p in (x for x in self.ctx.pollutants if x.medium == Medium.WATER):
+            n += 1
+            xlsx.data_row(ws, r, [n, _code(p.code), p.name,
+                                  float(D(p.mass_norm) + D(p.mass_limit)),
+                                  float(_tot(p)), "", "", pek.get("lab", "")])
+            r += 1
+        if n == 0:
+            xlsx.cell(ws, f"A{r}", "— сбросы загрязняющих веществ не заведены",
+                      border=False, italic=True, align="left")
 
     def _sect4_waste(self, wb):
         ws = wb.create_sheet("Раздел 4 (отходы)")
@@ -332,6 +440,12 @@ class PEKReport(Report):
                                   rr.get("plan", ""), rr.get("fact", ""),
                                   "да" if rr.get("exceed") else "нет"])
             r += 1
+
+
+def _code(value) -> str:
+    """Код ЗВ в официальном виде: четыре цифры с ведущим нулём."""
+    from ecodoc.core import sanitize
+    return sanitize.norm_code(value) or str(value or "")
 
 
 def _tot(p) -> Decimal:

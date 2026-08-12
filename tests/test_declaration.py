@@ -65,12 +65,18 @@ def test_print_official_sheets(tmp_path):
     wb = openpyxl.load_workbook(rep.render_print(tmp_path / "d.xlsx"))
     assert wb.sheetnames[:2] == ["стр.1", "стр.2"]
     s2 = wb["стр.2"]
-    # официальные коды строк 010–120 по столбцу A (сверено с бланком)
-    codes = {s2["A" + str(r)].value for r in range(4, 30)}
+    # официальные коды строк бланка по столбцу A (сверено с принятой декларацией)
+    codes = {c.value for c in s2["A"]}
     for want in ("010", "020", "021", "023", "024", "025", "100", "120"):
         assert want in codes, want
+    # после каждого КБК — своя строка ОКТМО
+    for want in ("031", "051", "071", "091", "111"):
+        assert want in codes, want
+    # итоговая часть: вычет, авансы, доплата/возврат
+    for want in ("130", "140", "150", "160", "170"):
+        assert want in codes, want
     # КБК ТКО присутствует (строка 110)
-    kbk = {s2["C" + str(r)].value for r in range(4, 30)}
+    kbk = {c.value for c in s2["C"]}
     assert "048 1 12 01042 01 6000 120" in kbk
 
 
