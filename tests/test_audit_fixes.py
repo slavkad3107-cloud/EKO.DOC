@@ -37,8 +37,8 @@ def test_zero_rate_is_reported_not_silent():
     """Ставка 0 в справочнике — это «нет ставки», а не «плата = 0»."""
     from ecodoc.reports.declaration_nvos.calc import calculate
     c = ReportContext()
-    c.period.year = 2024          # год со старой таблицей, где есть нулевая ставка
-    p = Pollutant(code="1503", name="Сухой остаток", mass_norm=Decimal("5"))
+    c.period.year = 2024
+    p = Pollutant(code="9998", name="Вещества без ставки", mass_norm=Decimal("5"))
     p.medium = Medium.WATER
     c.pollutants = [p]
     res = calculate(c)
@@ -82,8 +82,23 @@ def test_tko_rate_separate_from_class_four():
     from ecodoc.reports.declaration_nvos.calc import _waste_rate
     wclass = rates_nvos()["rates_by_year"]["2026"]["waste_by_class"]
     tko = WasteFlow(fkko_code="73310001724", hazard_class=4)
-    assert _waste_rate(tko, wclass, "Р6") == Decimal("190")
-    assert _waste_rate(tko, wclass, "Р5") == Decimal("1088.3")
+    assert _waste_rate(tko, wclass, "Р6") == Decimal("190")      # ТКО
+    assert _waste_rate(tko, wclass, "Р5") == Decimal("1088.3")   # обычный IV
+    assert _waste_rate(tko, wclass, "Р6") < _waste_rate(tko, wclass, "Р5")
+
+
+def test_fifth_class_processing_rate_reachable():
+    """У V класса три ставки: добыча / переработка / прочие."""
+    from ecodoc.core.refdata import rates_nvos
+    from ecodoc.reports.declaration_nvos.calc import _waste_rate
+    wclass = rates_nvos()["rates_by_year"]["2025"]["waste_by_class"]
+    mining = WasteFlow(fkko_code="20000000000", hazard_class=5, is_mining=True)
+    proc = WasteFlow(fkko_code="30000000000", hazard_class=5,
+                     industry="перерабатывающая")
+    other = WasteFlow(fkko_code="40000000000", hazard_class=5)
+    assert _waste_rate(mining, wclass) == Decimal("1.66")
+    assert _waste_rate(proc, wclass) == Decimal("60.55")
+    assert _waste_rate(other, wclass) == Decimal("26.12")
 
 
 def test_direct_rates_for_2026_without_indexation():
@@ -135,10 +150,22 @@ def test_soot_has_own_rate_not_suspended_matter():
 
 
 def test_tko_rate_2025_from_separate_act():
-    """ТКО IV класса на 2025 — 99,30 ₽/т (ПП РФ № 595), а не 1001,43."""
-    from ecodoc.core.refdata import rates_nvos
-    w = rates_nvos()["rates_by_year"]["2025"]["waste_by_class"]
-    assert w["4_tko"] == 99.3 and w["4"] == 1001.43
+    """ТКО IV класса на 2025 — 99,30 ₽/т (ПП РФ № 595), а не 1001,43.
+
+    И к ней НЕ применяется дополнительный коэффициент 1,045: он установлен
+    для ставок Распоряжения № 1852-р, а ставка ТКО — из другого акта."""
+    from ecodoc.reports.declaration_nvos.calc import calculate
+    c = ReportContext()
+    c.period.year = 2025
+    c.wastes = [WasteFlow(fkko_code="73310001724", name="ТКО", hazard_class=4,
+                          placed_norm=Decimal("1")),
+                WasteFlow(fkko_code="40613001313", name="Отход IV",
+                          hazard_class=4, placed_norm=Decimal("1"))]
+    by_section = {ln.section: ln for ln in calculate(c).lines}
+    tko, other = by_section["Р6"], by_section["Р5"]
+    assert tko.rate == Decimal("99.3") and tko.k_ind == Decimal("1")
+    assert tko.amount == Decimal("99.30")
+    assert other.rate == Decimal("1001.43") and other.k_ind == Decimal("1.045")
 
 
 # ── календарь ───────────────────────────────────────────────────────────

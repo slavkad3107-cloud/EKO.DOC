@@ -188,7 +188,11 @@ def calculate(ctx: ReportContext) -> PaymentResult:
     wband = coef["waste_band"]
     for w in ctx.wastes:
         sect = _waste_section(w)
-        rate = _waste_rate(w, wclass, sect)
+        entry = _waste_entry(w, wclass, sect)
+        rate = D(entry.get("rate", 0))
+        # ТКО: ставка установлена отдельным актом, дополнительный коэффициент
+        # к ней не применяется (к остальным классам отходов — применяется)
+        k_w = Decimal("1") if entry.get("no_extra") else k_ind
         # стимулирующий коэффициент Кст (ст. 16.3 ФЗ-7): 0.3 / 0 / 1 (по умолч.)
         k_st = D(w.k_st) if getattr(w, "k_st", None) is not None else Decimal("1")
         if k_st < 0 or k_st > 1:
@@ -199,9 +203,9 @@ def calculate(ctx: ReportContext) -> PaymentResult:
             if mass <= 0:
                 continue
             k_band = D(wband[band])
-            amount = money(mass * rate * k_ind * k_band * k_st)
+            amount = money(mass * rate * k_w * k_band * k_st)
             line = PayLine("waste", w.fkko_code, w.name or w.fkko_code, band,
-                           mass, rate, k_ind, k_band, k_st, amount, sect)
+                           mass, rate, k_w, k_band, k_st, amount, sect)
             res.lines.append(line)
             by_section[sect] += amount
             res.total_waste += amount
@@ -241,16 +245,38 @@ def _find_rate(table: dict, code, name) -> tuple[dict | None, str]:
     return None, key
 
 
-def _waste_rate(w, wclass: dict, section: str = "") -> Decimal:
-    """Ставка за размещение тонны отхода.
+def _waste_entry(w, wclass: dict, section: str = "") -> dict:
+    """Строка справочника для отхода: ставка и её особенности.
 
-    У ТКО IV класса своя ставка (ПП РФ № 913 и последующие акты) — она в разы
-    ниже общей ставки IV класса, поэтому раздел Р6 считается по ключу
-    «4_tko», а не по классу."""
+    Ставка зависит не только от класса:
+      • у ТКО IV класса она своя и намного ниже общей ставки IV класса
+        (99,30 ₽/т против 1001,43 на 2025) — раздел Р6 берёт ключ «4_tko»;
+      • у V класса три разные ставки: добывающая промышленность,
+        перерабатывающая и прочие — раньше ключ «5_processing» не
+        использовался никогда, и такие отходы считались как «прочие»
+        (26,12 вместо 60,55 — вдвое дешевле).
+    """
     cls = str(w.hazard_class)
     if section == "Р6" and cls == "4" and wclass.get("4_tko") is not None:
-        return D(wclass["4_tko"])
-    if cls == "5":
-        key = "5_mining" if w.is_mining else "5_other"
-        return D(wclass.get(key, 0))
-    return D(wclass.get(cls, 0))
+        key = "4_tko"
+    elif cls == "5":
+        kind = (getattr(w, "industry", "") or "").strip().lower()
+        if w.is_mining or kind.startswith("добыв"):
+            key = "5_mining"
+        elif kind.startswith("перераб") or kind.startswith("обрабат"):
+            key = "5_processing"
+        else:
+            key = "5_other"
+        if key not in wclass:
+            key = "5_other"
+    else:
+        key = cls
+    row = wclass.get(key)
+    if isinstance(row, dict):
+        return row
+    return {"rate": row if row is not None else 0}
+
+
+def _waste_rate(w, wclass: dict, section: str = "") -> Decimal:
+    """Ставка за размещение тонны отхода (без коэффициентов)."""
+    return D(_waste_entry(w, wclass, section).get("rate", 0))
