@@ -42,9 +42,28 @@ def user_file() -> Path:
 
 
 def data_file() -> Path:
-    """Действующий файл каталога: пользовательский, если он есть."""
+    """Действующий файл каталога — более СВЕЖИЙ из двух.
+
+    Пользовательский каталог лежит в общей базе и живёт дольше программы;
+    встроенный обновляется с новой версией. Если в поставку пришёл каталог
+    новее того, что в базе, работать надо по нему — иначе обновление
+    программы не доносило бы до пользователя новые коды ФККО."""
     u = user_file()
-    return u if u.exists() else BUILTIN_FILE
+    if not u.exists():
+        return BUILTIN_FILE
+    if not BUILTIN_FILE.exists():
+        return u
+    return u if _stamp_of(u) >= _stamp_of(BUILTIN_FILE) else BUILTIN_FILE
+
+
+def _stamp_of(path: Path) -> str:
+    """Дата снимка каталога («updated») — по ней сравниваем свежесть."""
+    try:
+        head = path.read_text(encoding="utf-8-sig")[:200]
+        m = re.search(r'"updated"\s*:\s*"([^"]*)"', head)
+        return m.group(1) if m else ""
+    except OSError:
+        return ""
 
 # Каталог берём с сайта Росприроднадзора: открытых данных (xlsx/csv/json) он не
 # публикует, но каталог отдаётся постранично — это единственный машиночитаемый

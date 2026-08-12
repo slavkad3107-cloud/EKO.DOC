@@ -96,12 +96,16 @@ def calculate(ctx: ReportContext) -> PaymentResult:
     # коэффициент индексации: сначала по отчётному году, иначе общий
     by_year = rates.get("indexation_by_year") or {}
     if direct:
-        k_ind = Decimal("1")            # ставки года — уже итоговые
+        # Ставки года заданы актом напрямую. Единственный множитель — доп.
+        # коэффициент (для 2025 это 1,045 по ПП РФ № 1034), и он применяется
+        # не ко всем позициям: ставки, перенесённые из ПП РФ № 492, идут без
+        # него — такие помечены в справочнике флагом no_extra.
+        k_ind = D((rates.get("indexation_extra_by_year") or {}).get(str(year)) or 1)
         res.warnings.append(
-            f"Ставки {year} года применены напрямую по действующему акту "
-            f"(индексация к ним не применяется). По отходам I–V классов "
-            f"Правительство может установить дополнительный коэффициент "
-            f"индексации — проверьте перед сдачей.")
+            f"Ставки {year} года применены напрямую по действующему акту"
+            + (f" с дополнительным коэффициентом {k_ind} " if k_ind != 1 else " ")
+            + "(индексация к ставкам 2018 года не применяется). "
+              "Проверьте перед сдачей.")
     elif year and str(year) in by_year:
         val = by_year[str(year)]
         if val is None:
@@ -141,6 +145,8 @@ def calculate(ctx: ReportContext) -> PaymentResult:
         table = rates["air"] if p.medium == Medium.AIR else rates["water"]
         entry, key = _find_rate(table, p.code, p.name)
         rate = D(entry["rate"]) if entry else Decimal("0")
+        # часть ставок применяется без дополнительного коэффициента
+        k_here = Decimal("1") if (entry or {}).get("no_extra") else k_ind
         k_ot = D(p.k_ot) if p.k_ot is not None else D(coef.get("k_ot_default", 1))
         if k_ot < 1:
             res.warnings.append(
@@ -153,7 +159,7 @@ def calculate(ctx: ReportContext) -> PaymentResult:
             if mass <= 0:
                 continue
             k_band = D(coef["band"][band])
-            amount = money(mass * rate * k_ind * k_band * k_ot)
+            amount = money(mass * rate * k_here * k_band * k_ot)
             # ставка 0 — это тоже «нет ставки»: раньше нулевая строка
             # справочника считалась найденной и плата обнулялась молча
             warn = ("" if (entry and rate > 0) else
@@ -164,7 +170,7 @@ def calculate(ctx: ReportContext) -> PaymentResult:
             else:
                 sect = "Р4"
             line = PayLine(p.medium.value, key or p.code, p.name, band, mass,
-                           rate, k_ind, k_band, k_ot, amount, sect, warn)
+                           rate, k_here, k_band, k_ot, amount, sect, warn)
             res.lines.append(line)
             by_section[sect] += amount
             if warn:

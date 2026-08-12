@@ -22,17 +22,21 @@ def test_money_roundhalfup():
 
 
 def test_calc_matches_manual():
+    """2025 год: ставки взяты напрямую из Распоряжения № 1852-р.
+
+    Прежняя схема «ставка 2018 × коэффициент индексации» к ним не применяется;
+    единственный множитель — дополнительный коэффициент 1,045 (ПП РФ № 1034)."""
     ctx = _ctx()  # отчётный год 2025
     res = calculate(ctx)
-    # 2025: базовая индексация 1,32 × доп. коэффициент 1,045 (ПП №1034) = 1,3794
-    k2025 = D("1.32") * D("1.045")
-    # Азота диоксид: 1.2 т × 138.8 × 1.3794 × 1 (norm)
+    k2025 = D("1.045")
+    # Азота диоксид: 1.2 т × 209.59 (ставка 2025) × 1.045 (norm)
     no2 = next(l for l in res.lines if l.code == "0301")
     assert no2.k_ind == k2025
-    assert no2.amount == money(D("1.2") * D("138.8") * k2025)
-    # СО сверх лимита: 0.2 × 1.6 × 1.3794 × 100
+    assert no2.rate == D("209.59")
+    assert no2.amount == money(D("1.2") * D("209.59") * k2025)
+    # СО сверх лимита: 0.2 × 2.42 × 1.045 × 100
     co_over = next(l for l in res.lines if l.code == "0337" and l.band == "over")
-    assert co_over.amount == money(D("0.2") * D("1.6") * k2025 * D("100"))
+    assert co_over.amount == money(D("0.2") * co_over.rate * k2025 * D("100"))
     # формула согласована по всем строкам
     for ln in res.lines:
         assert ln.amount == money(ln.mass * ln.rate * ln.k_ind * ln.k_band * ln.k_extra)

@@ -37,7 +37,7 @@ def test_zero_rate_is_reported_not_silent():
     """Ставка 0 в справочнике — это «нет ставки», а не «плата = 0»."""
     from ecodoc.reports.declaration_nvos.calc import calculate
     c = ReportContext()
-    c.period.year = 2025
+    c.period.year = 2024          # год со старой таблицей, где есть нулевая ставка
     p = Pollutant(code="1503", name="Сухой остаток", mass_norm=Decimal("5"))
     p.medium = Medium.WATER
     c.pollutants = [p]
@@ -101,8 +101,44 @@ def test_direct_rates_for_2026_without_indexation():
 def test_rates_reference_covers_full_lists():
     """Справочник ставок — полные перечни, а не 8 веществ, как было."""
     from ecodoc.core.refdata import rates_nvos
-    y2026 = rates_nvos()["rates_by_year"]["2026"]
-    assert len(y2026["air"]) > 150 and len(y2026["water"]) > 150
+    by_year = rates_nvos()["rates_by_year"]
+    for year in ("2025", "2026"):
+        assert len(by_year[year]["air"]) > 150, year
+        assert len(by_year[year]["water"]) > 150, year
+
+
+def test_rates_2025_from_official_act():
+    """2025: ставки Распоряжения № 1852-р + доп. коэффициент 1,045."""
+    from ecodoc.reports.declaration_nvos.calc import calculate
+    c = _ctx_no2("0301")
+    c.period.year = 2025
+    line = calculate(c).lines[0]
+    assert line.rate == Decimal("209.59")      # 138,8 × 1,51 по акту
+    assert line.k_ind == Decimal("1.045")      # ПП РФ № 1034
+    assert line.amount == Decimal("219.02")
+
+
+def test_soot_has_own_rate_not_suspended_matter():
+    """У сажи своя ставка: раньше стояла ставка взвешенных веществ."""
+    from ecodoc.reports.declaration_nvos.calc import calculate
+    c = ReportContext()
+    c.period.year = 2025
+    for code, name in (("0328", "Углерод (сажа)"),
+                       ("2902", "Взвешенные вещества")):
+        p = Pollutant(code=code, name=name, mass_norm=Decimal("1"))
+        p.medium = Medium.AIR
+        c.pollutants.append(p)
+    rates = {ln.code: ln.rate for ln in calculate(c).lines}
+    assert rates["0328"] == Decimal("209.59")
+    assert rates["2902"] == Decimal("55.27")
+    assert rates["0328"] != rates["2902"]
+
+
+def test_tko_rate_2025_from_separate_act():
+    """ТКО IV класса на 2025 — 99,30 ₽/т (ПП РФ № 595), а не 1001,43."""
+    from ecodoc.core.refdata import rates_nvos
+    w = rates_nvos()["rates_by_year"]["2025"]["waste_by_class"]
+    assert w["4_tko"] == 99.3 and w["4"] == 1001.43
 
 
 # ── календарь ───────────────────────────────────────────────────────────

@@ -256,8 +256,11 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <h2>Выбросы — источники и вещества</h2>
       <div class="row">
         <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+        <button class="b sec" onclick="auditData()"
+          title="Найти мусор: работы и источники вместо веществ, группы суммации, дубли, ПДК вместо массы">🧹 Проверить данные на мусор</button>
         <span class="spin" id="sp-air">…</span><span class="hint" id="air-msg"></span>
       </div>
+      <div id="auditbox-air"></div>
       <div id="airform"></div>
     </div>
   </div>
@@ -267,8 +270,14 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
       <h2>Сбросы и водопользование</h2>
       <div class="row">
         <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+        <button class="b sec" onclick="auditData()"
+          title="Найти мусор: виды сточных вод вместо веществ, дубли, чужие коды">🧹 Проверить данные на мусор</button>
         <span class="spin" id="sp-water">…</span><span class="hint" id="water-msg"></span>
       </div>
+      <div class="hint">В этой таблице должны быть ВЕЩЕСТВА (взвешенные вещества,
+        БПК, нефтепродукты…). Виды стоков — «ливневые», «хоз-бытовые» — это потоки
+        водоотведения: им место в блоке объёмов ниже, а не в перечне веществ.</div>
+      <div id="auditbox-water"></div>
       <div id="waterform"></div>
     </div>
   </div>
@@ -1307,8 +1316,14 @@ async function checkFormsNorms(online){
 }
 
 // ── чистка данных: мусор, дубли, ПДК вместо массы ────────────────────
+function showAudit(html){
+  // кнопка «Проверить данные на мусор» есть на трёх вкладках —
+  // отчёт показываем в каждой, чтобы он был виден там, где нажали
+  for (const id of ["auditbox", "auditbox-air", "auditbox-water"])
+    if ($(id)) $(id).innerHTML = html;
+}
 async function auditData(){
-  needSite(); spin("sp-audit",1);
+  needSite(); spin("sp-audit",1); spin("sp-air",1); spin("sp-water",1);
   try{
     const j = await post("audit_data", {org:ORG, site:SITE}, 0);
     const t = j.totals || {};
@@ -1331,7 +1346,9 @@ async function auditData(){
       `спорных ${t.wastes_suspect||0}) · Повторов: ${t.duplicates||0}</div>`;
     if (clean){
       h += '<div class="issue" style="color:var(--acc)">✓ Мусора и повторов не найдено.</div></div>';
-      $("auditbox").innerHTML = h; spin("sp-audit",0); return;
+      showAudit(h);
+      spin("sp-audit",0); spin("sp-air",0); spin("sp-water",0);
+      return;
     }
     const rows = [...bad(j.wastes||[]).map(r=>rowHtml(r,1)), ...bad(j.pollutants||[]).map(r=>rowHtml(r,0)),
                   ...sus(j.wastes||[]).map(r=>rowHtml(r,1)), ...sus(j.pollutants||[]).map(r=>rowHtml(r,0))];
@@ -1350,9 +1367,9 @@ async function auditData(){
       '<span class="spin" id="sp-clean2">…</span></div>'+
       '<div class="hint">Перед очисткой рядом с базой сохраняется копия '+
       '(context.до-очистки-….json) — откатить можно всегда.</div></div>';
-    $("auditbox").innerHTML = h;
-  }catch(e){ $("auditbox").innerHTML = `<div class="issue error">${esc(errText(e))}</div>`; }
-  spin("sp-audit",0);
+    showAudit(h);
+  }catch(e){ showAudit(`<div class="issue error">${esc(errText(e))}</div>`); }
+  spin("sp-audit",0); spin("sp-air",0); spin("sp-water",0);
 }
 async function cleanData(){
   needSite(); spin("sp-clean2",1);
