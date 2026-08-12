@@ -22,8 +22,13 @@ def test_msp_general_and_movement(tmp_path):
     rep = registry.get("waste-report-iii")(_ctx())
     wb = openpyxl.load_workbook(rep.render_print(tmp_path / "msp.xlsx"))
     assert wb.sheetnames == ["Общие сведения", "Движение отходов", "Получатели"]
-    # объект НВОС в общих сведениях
-    assert "40-0178-001234-П" in str(wb["Общие сведения"]["B9"].value)
+    # объект НВОС в общих сведениях (строка ищется по колонке, а не по номеру:
+    # выше добавлена оговорка о правовом статусе документа)
+    general = [str(c.value) for c in wb["Общие сведения"]["B"] if c.value]
+    assert any("40-0178-001234-П" in v for v in general)
+    # документ честно говорит, что отдельной федеральной формы нет
+    left = " ".join(str(c.value) for c in wb["Общие сведения"]["A"] if c.value)
+    assert "приказ Минприроды № 30 отменён" in left and "№ 173" in left
     # полный баланс: наличие на начало и конец присутствуют
     heads = [wb["Движение отходов"][f"{c}1"].value for c in "ABCDEFGHIJK"]
     assert "Нач. года, т" in heads and "Кон. года, т" in heads

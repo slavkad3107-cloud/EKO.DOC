@@ -36,7 +36,19 @@ class TP2Air(Report):
     title = "2-ТП (воздух)"
 
     def _air(self):
-        return [p for p in self.ctx.pollutants if p.medium == Medium.AIR]
+        """Вещества воздуха БЕЗ групп суммации.
+
+        Коды 6xxx — это группы суммации («азота диоксид + серы диоксид»), а не
+        отдельные вещества: их массы уже учтены в составляющих, и включение
+        группы в отчёт даёт двойной счёт."""
+        from ecodoc.core import sanitize
+        return [p for p in self.ctx.pollutants
+                if p.medium == Medium.AIR and not sanitize.is_sum_group(p.code)]
+
+    def _sum_groups(self):
+        from ecodoc.core import sanitize
+        return [p for p in self.ctx.pollutants
+                if p.medium == Medium.AIR and sanitize.is_sum_group(p.code)]
 
     def validate(self) -> list[Issue]:
         issues: list[Issue] = []
@@ -49,6 +61,14 @@ class TP2Air(Report):
             issues.append(Issue("error", "период", "не указан отчётный год"))
         if not self._air():
             issues.append(Issue("error", "выбросы", "нет веществ с выбросами в воздух"))
+        groups = self._sum_groups()
+        if groups:
+            names = ", ".join(f"{p.code} {p.name}"[:40] for p in groups[:3])
+            issues.append(Issue(
+                "warning", "выбросы",
+                f"из отчёта исключены группы суммации ({len(groups)}): {names}"
+                f"{' …' if len(groups) > 3 else ''} — их массы уже учтены в "
+                f"веществах, входящих в группу"))
         return issues
 
     def render_xml(self, out_path: Path) -> Path:
@@ -206,17 +226,27 @@ def _tot(p) -> Decimal:
     return D(p.mass_norm) + D(p.mass_limit) + D(p.mass_over)
 
 
-# классификация кода ЗВ в строку 102-109 Раздела 1
+# Классификация кода ЗВ в строку 102-109 Раздела 1 (Указания к форме № 661).
+# Коды нормализуются до четырёх цифр, иначе «301» из документа не находился
+# и вещество молча уезжало в строку 109 «прочие».
 _AIR_ROW_BY_CODE = {
-    "0330": 104,                       # диоксид серы
+    "0330": 104, "0333": 104,          # диоксид серы, сероводород → сернистые
     "0337": 105,                       # оксид углерода
-    "0301": 106, "0304": 106, "0304 ": 106,  # оксиды азота
-    "2902": 102, "0328": 102, "2908": 102, "2907": 102,  # твёрдые
+    "0301": 106, "0304": 106,          # оксиды азота (в пересчёте на NO2)
+    # твёрдые: взвешенные вещества, сажа, пыли неорганические и абразивная
+    "2902": 102, "0328": 102, "2907": 102, "2908": 102, "2909": 102,
+    "2930": 102, "0123": 102, "0143": 102, "0203": 102, "0316": 102,
+    # углеводороды (без ЛОС): предельные C1-C5, C6-C10, C12-C19
+    "2704": 107, "2732": 107, "2754": 107, "0410": 107, "0415": 107,
+    "0416": 107, "0417": 107,
+    # летучие органические соединения
+    "1210": 108, "1325": 108, "0616": 108, "0621": 108, "1401": 108,
+    "1042": 108, "1052": 108, "1061": 108, "1119": 108, "1715": 108,
 }
 
 
 def _air_row(p) -> int:
-    code = str(getattr(p, "code", "")).strip()
+    code = _code(getattr(p, "code", ""))
     if code in _AIR_ROW_BY_CODE:
         return _AIR_ROW_BY_CODE[code]
     name = (getattr(p, "name", "") or "").lower()
