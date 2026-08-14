@@ -67,7 +67,15 @@ def test_print_official_sheets(tmp_path):
     import openpyxl
     rep = DeclarationNVOS(_ctx())
     wb = openpyxl.load_workbook(rep.render_print(tmp_path / "d.xlsx"))
-    assert wb.sheetnames[:2] == ["стр.1", "стр.2"]
+    # состав и порядок листов — как в печатной форме бланка
+    assert wb.sheetnames[0] == "стр.1"
+    for name in ("Информация о суммах платы", "стр.2", "Авансовые платежи",
+                 "Раздел 1 (выбросы)", "Раздел 4 (сбросы)",
+                 "Разделы 5-9 (отходы)"):
+        assert name in wb.sheetnames, name
+    # лист сумм идёт между титулом и расчётом (стр. 3–4 образца)
+    assert (wb.sheetnames.index("Информация о суммах платы")
+            < wb.sheetnames.index("стр.2"))
     s2 = wb["стр.2"]
     # официальные коды строк бланка по столбцу A (сверено с принятой декларацией)
     codes = {c.value for c in s2["A"]}
@@ -76,12 +84,148 @@ def test_print_official_sheets(tmp_path):
     # после каждого КБК — своя строка ОКТМО
     for want in ("031", "051", "071", "091", "111"):
         assert want in codes, want
-    # итоговая часть: вычет, авансы, доплата/возврат
-    for want in ("130", "140", "150", "160", "170"):
+    # детализация ПНГ и ТКО
+    for want in ("061", "062", "063", "121", "122", "123"):
+        assert want in codes, want
+    # итоговая часть по бланку: вычет (130), корректировка (140), к внесению
+    # (150), зачёт (160+166), авансы (170), итог (180), возврат (190)
+    for want in ("130", "135", "140", "145", "150", "155", "160", "166",
+                 "170", "175", "180", "185", "190", "195"):
         assert want in codes, want
     # КБК ТКО присутствует (строка 110)
     kbk = {c.value for c in s2["C"]}
     assert "048 1 12 01042 01 6000 120" in kbk
+
+
+def test_title_all_17_fields(tmp_path):
+    """Титул содержит поля 1–17 бланка; ОГРН и «сокращённого наименования»
+    в бланке нет (проверено по принятой декларации: 0 вхождений)."""
+    import openpyxl
+    rep = DeclarationNVOS(_ctx())
+    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "d.xlsx"))
+    s1 = wb["стр.1"]
+    nums = {str(c.value) for c in s1["A"]}
+    for want in [str(i) for i in range(1, 18)]:
+        assert want in nums, f"нет поля {want} титульного листа"
+    text = " ".join(str(c.value) for row in s1.iter_rows()
+                    for c in row if c.value)
+    assert "ОГРН" not in text
+    assert "Сокращённое" not in text and "Сокращенное" not in text
+    assert "страницах с приложением подтверждающих документов" in text
+
+
+def test_summary_sheet(tmp_path):
+    """Лист «Информация о суммах платы»: строка ИТОГО равна начисленной плате
+    (вычетов в образце данных нет), есть блок подписи исполнителя."""
+    import openpyxl
+    from ecodoc.core.money import fmt_money
+    rep = DeclarationNVOS(_ctx())
+    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "d.xlsx"))
+    ws = wb["Информация о суммах платы"]
+    pairs = [(a.value, b.value) for a, b in zip(ws["A"], ws["B"])]
+    itogo = [b for a, b in pairs if a == "ИТОГО"]
+    assert itogo and itogo[0] == fmt_money(rep.calc.total)
+    text = " ".join(str(a) for a, _ in pairs if a)
+    assert "Исполнитель" in text
+
+
+def test_advances_sheet(tmp_path):
+    """Лист «Информация об авансовых платежах»: строки 010–060, выбранный
+    способ исчисления отмечается знаком X из extra['declaration']."""
+    import openpyxl
+    ctx = _ctx()
+    extra = ctx.extra if isinstance(ctx.extra, dict) else {}
+    ctx.extra = {**extra, "declaration": {"advance_method": {"air": "pek"}}}
+    rep = DeclarationNVOS(ctx)
+    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "d.xlsx"))
+    ws = wb["Авансовые платежи"]
+    rows = list(ws.iter_rows(values_only=True))
+    codes = {r[1] for r in rows}
+    for want in ("010", "020", "030", "040", "050", "060"):
+        assert want in codes, want
+    x_rows = [r for r in rows if r[2] == "X"]
+    assert len(x_rows) == 1, "X должен стоять ровно у одного способа"
+    assert "производственного экологического контроля" in str(x_rows[0][0])
+
+
+def test_section1_blank_layout(tmp_path):
+    """Раздел 1: 18 нумерованных граф, одна строка на вещество (полосы
+    раскладываются в графы 6/7/8 и 15/16/17, а не плодят строки)."""
+    import openpyxl
+    from ecodoc.core.money import fmt_money, money
+    rep = DeclarationNVOS(_ctx())
+    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "d.xlsx"))
+    ws = wb["Раздел 1 (выбросы)"]
+    rows = list(ws.iter_rows(values_only=True))
+    num_row = next(r for r in rows if r[0] == "1" and r[17] == "18")
+    assert list(num_row[:18]) == [str(i) for i in range(1, 19)]
+    r1 = [ln for ln in rep.calc.lines if ln.section == "Р1"]
+    uniq = {(ln.code, ln.name) for ln in r1}
+    data_rows = [r for r in rows if isinstance(r[0], int)]
+    assert len(data_rows) == len(uniq)
+    # СО в образце данных имеет и «норматив», и «сверх»: обе полосы в одной
+    # строке, гр.18 = сумма платы по всем полосам вещества
+    co_lines = [ln for ln in r1 if ln.code == "0337"]
+    assert len(co_lines) > 1, "образец должен содержать СО в двух полосах"
+    co_row = next(r for r in data_rows if r[1] == co_lines[0].name)
+    assert co_row[17] == fmt_money(sum(ln.amount for ln in co_lines))
+    assert co_row[4] == float(sum(ln.mass for ln in co_lines))
+    # итог листа = сумма платы Раздела 1
+    total = money(sum(ln.amount for ln in r1))
+    itogo = [r for r in rows if r[0] == "Итого по стационарным источникам:"]
+    assert itogo and itogo[0][17] == fmt_money(total)
+
+
+def test_calc_tko_rows_match_blank(tmp_path):
+    """Строки 121–123 по бланку: 121 — плата за размещение ПРИНЯТЫХ ТКО
+    (регоператор; в расчёте не участвует, по умолчанию 0), 122 — в пределах
+    лимита, 123 — сверх лимита. Раньше суммы стояли со сдвигом на строку
+    (121=лимит, 122=сверх)."""
+    import openpyxl
+    from ecodoc.core.models import (Organization, ReportContext, ReportPeriod,
+                                    WasteFlow)
+    from ecodoc.core.money import fmt_money
+    ctx = ReportContext(
+        organization=Organization(name="Т", inn="7801234564", oktmo="40324000"),
+        period=ReportPeriod(year=2025),
+        wastes=[WasteFlow(fkko_code="73310001724", name="ТКО", hazard_class=4,
+                          placed_norm="3", placed_over="1")])
+    rep = DeclarationNVOS(ctx)
+    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "d.xlsx"))
+    ws = wb["стр.2"]
+    rows = {str(r[0].value): (str(r[1].value), r[3].value)
+            for r in ws.iter_rows(min_col=1, max_col=4)}
+    norm = sum(l.amount for l in rep.calc.lines
+               if l.section == "Р6" and l.band == "norm")
+    over = sum(l.amount for l in rep.calc.lines
+               if l.section == "Р6" and l.band == "over")
+    assert norm > 0 and over > 0
+    assert "принятых ТКО" in rows["121"][0]
+    assert rows["121"][1] == fmt_money(0)
+    assert "в пределах установленного лимита" in rows["122"][0]
+    assert rows["122"][1] == fmt_money(norm)
+    assert "сверх установленного лимита" in rows["123"][0]
+    assert rows["123"][1] == fmt_money(over)
+    # формула бланка 120 = 121 + 122 + 123
+    assert rows["120"][1] == fmt_money(norm + over)
+
+
+def test_calc_blank_labels(tmp_path):
+    """Заголовки итоговой части — по бланку (сверено с принятой декларацией):
+    020 «без учёта корректировки», 160 «в предыдущем отчётном периоде»,
+    190 «для возврата и/или зачёта»; подстроки кварталов 171–175 стоят
+    в графе кодов, как в бланке."""
+    import openpyxl
+    rep = DeclarationNVOS(_ctx())
+    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "d.xlsx"))
+    ws = wb["стр.2"]
+    label = {str(a.value): str(b.value) for a, b in zip(ws["A"], ws["B"])}
+    assert "без учёта корректировки" in label["020"]
+    assert "в предыдущем отчётном периоде" in label["160"]
+    assert "для возврата и/или зачёта" in label["190"]
+    assert "ПНГ в пределах НДВ, ТН" in label["061"]
+    codes = [str(c.value) for c in ws["A"]]
+    assert codes.count("1 квартал") == 5  # по одному под каждой из 171–175
 
 
 def test_k_st_applies_to_waste_placement():

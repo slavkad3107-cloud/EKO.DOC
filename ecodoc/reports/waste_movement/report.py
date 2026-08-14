@@ -3,7 +3,10 @@
 
 Печатная форма повторяет официальный бланк: Титул + Приложение 1 (состав
 образующихся отходов) + Приложение 2 (обобщённые данные движения за год) +
-Приложение 3 (переданные другим лицам) + Приложение 4 (полученные).
+Приложение 3 (переданные другим лицам, таблица 3) + лист «Приложение 4»
+(полученные от других лиц — по НПА это Таблица 4 в составе Приложения N 3;
+с 01.09.2024, ред. приказа № 825, в ней 13 граф — без графы «для накопления
+и последующей передачи…»).
 
 Журнал учёта — внутренний документ природопользователя (ведётся на объекте,
 предъявляется при проверке), в ЛКПП не выгружается, поэтому XML у формы нет.
@@ -11,6 +14,8 @@
 """
 from __future__ import annotations
 
+import logging
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from ecodoc.core.models import Issue, ReportContext
@@ -18,6 +23,8 @@ from ecodoc.core.money import D
 from ecodoc.core.registry import register
 from ecodoc.render import xlsx
 from ecodoc.reports.base import Report
+
+_log = logging.getLogger(__name__)
 
 # ссылка на приказ — печатается в правом верхнем углу каждого приложения.
 # Действует ред. приказа Минприроды № 825 от 13.12.2023 (с 01.09.2024); с
@@ -28,7 +35,10 @@ _REF = ("к Порядку учета в области обращения с о
 
 
 def _num(v) -> float:
-    return float(D(v))
+    """Тоннаж печатной формы: Порядок №1028 требует учитывать количество
+    отходов «в тоннах с точностью до трех знаков после запятой», поэтому
+    сырой float с двоичным хвостом (469.0220892119701) в журнал не идёт."""
+    return float(D(v).quantize(Decimal("0.001"), rounding=ROUND_HALF_UP))
 
 
 @register
@@ -61,6 +71,9 @@ class WasteMovement(Report):
     # --- печатная форма ---
     def render_print(self, out_path: Path) -> Path:
         out_path = self._ensure_dir(out_path)
+        # предупреждения, возникшие при самой генерации (validate() их знать
+        # не может — бланк пробуется только здесь); GUI/CLI читают после рендера
+        self.render_issues: list[Issue] = []
         # если у пользователя есть свой бланк журнала (папка «Формы») — заполняем
         # ЕГО: там формулы и привычная вёрстка. Нет бланка — рисуем лист сами.
         try:
@@ -68,8 +81,13 @@ class WasteMovement(Report):
             filled = fill(self.ctx, out_path)
             if filled is not None:
                 return filled
-        except Exception:
-            pass                     # бланк не подошёл — обычная генерация
+        except Exception as e:
+            # бланк не подошёл — обычная генерация. Но сбой НЕ глотаем молча:
+            # раньше `except: pass` скрывал, что бланк пользователя ни разу не
+            # применился (MergedCell), и выгрузка тихо подменялась листом кода
+            _log.warning("waste-movement: бланк из «Формы» не применён: %s", e)
+            self.render_issues.append(Issue(
+                "warning", "бланк", f"бланк из «Формы» не применён: {e}"))
         wb = xlsx.new_workbook()
         self._sheet_title(wb)
         self._sheet_app1(wb)
@@ -271,36 +289,40 @@ class WasteMovement(Report):
                 xlsx.cell(ws, f"{_col(i)}8", "-")
         xlsx.heights(ws, {1: 40, 5: 40})
 
-    # Приложение 4 — полученные отходы ---------------------------------
+    # Приложение 4 — полученные отходы (Таблица 4 Приложения N 3) ------
     def _sheet_app4(self, wb):
+        """Лист сохраняет привычную пользователю вёрстку («Приложение 4»),
+        но состав граф — по действующей редакции: приказ № 825 (с 01.09.2024)
+        исключил графу «для накопления и последующей передачи…» — учёт отходов,
+        принятых в целях накопления, больше не ведётся, в Таблице 4 осталось
+        13 граф (бланки пользователя в «Формах» — ещё редакции 2020 г.)."""
         ws = wb.create_sheet("Приложение 4 (год)")
         year = self.ctx.period.year or ""
-        xlsx.widths(ws, {"A": 6, "B": 30, "C": 15, "D": 8, **{c: 10 for c in "EFGHIJK"},
-                         "L": 26, "M": 18, "N": 16})
+        sup = self._suppliers_by_fkko()
+        xlsx.widths(ws, {"A": 6, "B": 30, "C": 15, "D": 8, **{c: 10 for c in "EFGHIJ"},
+                         "K": 26, "L": 18, "M": 16})
         xlsx.cell(ws, "M1", f"Приложение N 4\n{_REF}", border=False, align="left", size=9)
-        xlsx.merge(ws, "A2:N2", "Данные учета полученных от других лиц отходов за",
+        xlsx.merge(ws, "A2:M2", "Данные учета полученных от других лиц отходов за",
                    bold=True, border=False, align="left")
-        xlsx.merge(ws, "L3:M3", f"{year} год", border=False, bold=True)
+        xlsx.merge(ws, "K3:L3", f"{year} год", border=False, bold=True)
         xlsx.merge(ws, "A5:A7", "№ п/п", bold=True, fill=True)
         xlsx.merge(ws, "B5:B7", "Наименование отходов", bold=True, fill=True)
         xlsx.merge(ws, "C5:C7", "Код ФККО", bold=True, fill=True)
         xlsx.merge(ws, "D5:D7", "Класс опасности вида отхода", bold=True, fill=True)
-        xlsx.merge(ws, "E5:K5", "Количество полученных отходов за отчетный период, тонн",
+        xlsx.merge(ws, "E5:J5", "Количество полученных отходов за отчетный период, тонн",
                    bold=True, fill=True)
         xlsx.merge(ws, "E6:E7", "Всего", bold=True, fill=True, size=9)
-        xlsx.merge(ws, "F6:K6", "в том числе:", bold=True, fill=True, size=9)
-        subs = ["для накопления и последующей передачи другим индивидуальным "
-                "предпринимателям и юридическим лицам", "для обработки",
-                "для утилизации", "для обезвреживания", "для хранения",
-                "для захоронения"]
-        for col, lbl in zip("FGHIJK", subs):
+        xlsx.merge(ws, "F6:J6", "в том числе:", bold=True, fill=True, size=9)
+        subs = ["для обработки", "для утилизации", "для обезвреживания",
+                "для хранения", "для захоронения"]
+        for col, lbl in zip("FGHIJ", subs):
             xlsx.cell(ws, f"{col}7", lbl, bold=True, fill=True, size=8)
-        xlsx.merge(ws, "L5:L7", "Сведения о лицах, от которых получены отходы",
+        xlsx.merge(ws, "K5:K7", "Сведения о лицах, от которых получены отходы",
                    bold=True, fill=True)
-        xlsx.merge(ws, "M5:M7", "Дата и номер договора на передачу отходов",
+        xlsx.merge(ws, "L5:L7", "Дата и номер договора на передачу отходов",
                    bold=True, fill=True)
-        xlsx.merge(ws, "N5:N7", "Срок действия договора", bold=True, fill=True)
-        for i, n in enumerate(range(1, 15)):
+        xlsx.merge(ws, "M5:M7", "Срок действия договора", bold=True, fill=True)
+        for i, n in enumerate(range(1, 14)):
             xlsx.cell(ws, f"{_col(i)}8", n, italic=True, size=9)
         r = 9
         got = False
@@ -308,19 +330,22 @@ class WasteMovement(Report):
             if D(w.received) == 0:
                 continue
             got = True
+            info = sup.get(w.fkko_code, {})
             xlsx.cell(ws, f"A{r}", n)
             xlsx.cell(ws, f"B{r}", w.name, align="left")
             xlsx.cell(ws, f"C{r}", w.fkko_code)
             xlsx.cell(ws, f"D{r}", w.hazard_class)
             xlsx.cell(ws, f"E{r}", _num(w.received))
-            for col in "FGHIJK":
+            for col in "FGHIJ":
                 xlsx.cell(ws, f"{col}{r}", 0.0)
-            xlsx.cell(ws, f"L{r}", "", align="left")
-            xlsx.cell(ws, f"M{r}", "", align="left")
-            xlsx.cell(ws, f"N{r}", "", align="left")
+            # модель не хранит поставщиков — берём из ctx.extra["waste_suppliers"]
+            # (по образцу waste_receivers), нет данных — пустая графа
+            xlsx.cell(ws, f"K{r}", info.get("supplier", ""), align="left")
+            xlsx.cell(ws, f"L{r}", info.get("contract", ""), align="left")
+            xlsx.cell(ws, f"M{r}", info.get("contract_term", ""), align="left")
             r += 1
         if not got:
-            for i in range(14):
+            for i in range(13):
                 xlsx.cell(ws, f"{_col(i)}9", "-")
         xlsx.heights(ws, {1: 40, 5: 30, 7: 42})
 
@@ -338,6 +363,16 @@ class WasteMovement(Report):
         e = self.ctx.extra if isinstance(self.ctx.extra, dict) else {}
         out: dict[str, dict] = {}
         for r in e.get("waste_receivers", []):
+            if isinstance(r, dict) and r.get("fkko"):
+                out[str(r["fkko"])] = r
+        return out
+
+    def _suppliers_by_fkko(self) -> dict[str, dict]:
+        """От кого получены отходы (Таблица 4): ключи supplier/contract/
+        contract_term — в модели WasteFlow этих сведений нет."""
+        e = self.ctx.extra if isinstance(self.ctx.extra, dict) else {}
+        out: dict[str, dict] = {}
+        for r in e.get("waste_suppliers", []):
             if isinstance(r, dict) and r.get("fkko"):
                 out[str(r["fkko"])] = r
         return out

@@ -226,6 +226,11 @@ def write(ctx, key: str, value) -> bool:
         code = norm_fkko(sel.get("fkko", ""))
         obj = next((w for w in ctx.wastes if norm_fkko(w.fkko_code) == code), None)
         if obj is None and code:
+            # новая позиция создаётся только через санитар: раньше принятие
+            # кандидата возвращало в базу код, отбракованный при слиянии
+            from ecodoc.core import sanitize
+            if not sanitize.check_waste(code).ok:
+                return False
             obj = WasteFlow(fkko_code=code)
             ctx.wastes.append(obj)
     elif coll == "waste_acts":
@@ -233,17 +238,29 @@ def write(ctx, key: str, value) -> bool:
         obj = next((a for a in ctx.waste_acts
                     if act_key(a.fkko_code, a.date, a.receiver, a.mass) == want), None)
         if obj is None and sel.get("fkko"):
+            from ecodoc.core import sanitize
+            if not sanitize.check_waste(sel["fkko"]).ok:
+                return False
             obj = WasteAct(fkko_code=sel["fkko"], date=sel.get("d", ""),
                            receiver=sel.get("r", ""))
             ctx.waste_acts.append(obj)
     elif coll == "pollutants":
         want_medium = Medium.AIR if sel.get("medium", "air") == "air" else Medium.WATER
+        from ecodoc.core import sanitize
+        norm = sanitize.norm_code(sel.get("code", "")) or sel.get("code", "")
         obj = next((p for p in ctx.pollutants
                     if p.medium == want_medium
-                    and ((sel.get("code") and p.code == sel["code"])
+                    and ((sel.get("code")
+                          and (sanitize.norm_code(p.code) or p.code) == norm)
                          or (not sel.get("code") and p.name == sel.get("name")))), None)
         if obj is None and (sel.get("code") or sel.get("name")):
-            obj = Pollutant(code=sel.get("code", ""), name=sel.get("name", ""))
+            v = sanitize.check_substance(sel.get("code"), sel.get("name"),
+                                         "water" if want_medium == Medium.WATER
+                                         else "air")
+            if not v.ok:
+                return False           # поток стоков / работа / группа суммации
+            obj = Pollutant(code=v.code or sel.get("code", ""),
+                            name=sel.get("name", ""))
             obj.medium = want_medium
             ctx.pollutants.append(obj)
     if obj is None or not hasattr(obj, attr):

@@ -302,6 +302,104 @@ def test_concurrent_save_detected(tmp_path, monkeypatch):
     assert out.get("conflict") and "другом" in out["error"]
 
 
+def test_candidates_path_respects_sanitizer(tmp_path, monkeypatch):
+    """Дыра №1: кандидаты шли в базу мимо санитара.
+
+    Смоделированный ответ модели с кодом без нуля, потоком стоков и кодом
+    вида сточных вод не должен доехать до базы через auto_apply."""
+    from ecodoc.ai import analyzer
+    from ecodoc.intake import candidates as cd
+    from ecodoc.intake import crosscheck as cc
+
+    monkeypatch.setenv("ECODOC_WORKSPACE", str(tmp_path))
+    workspace.add_org("ОРГ")
+    workspace.add_site("ОРГ", "Пл")
+    site_dir = workspace.site_dir("ОРГ", "Пл")
+    ctx = workspace.load_context("ОРГ", "Пл")
+
+    sink = cd.Sink(site_dir)
+    data = {"pollutants_air": [{"code": "301", "name": "Азота диоксид",
+                                "mass_norm": "1.495"}],
+            "pollutants_water": [
+                {"code": "", "name": "Поверхностные стоки", "mass_norm": "11.9"},
+                {"code": "01.01.00.11.01", "name": "хоз.-бытовые сточные воды",
+                 "mass_norm": "0.024"}]}
+    analyzer._collect(sink, data, quotes={}, pages={}, docname="тест.pdf",
+                      model="тест", span=(1, 1))
+    groups = cc.group(sink.store.items, ctx)
+    cc.auto_apply(ctx, sink.store, groups)
+
+    names = [(p.code, p.name) for p in ctx.pollutants]
+    assert not any("сток" in (n or "").lower() for _c, n in names)
+    assert not any(c == "01.01.00.11.01" for c, _n in names)
+    # легитимное вещество прошло, и код нормализован
+    no2 = [p for p in ctx.pollutants if "диоксид" in (p.name or "").lower()]
+    if no2:                                # применилось автоматом
+        assert no2[0].code == "0301"
+
+
+def test_ai_task_apply_respects_sanitizer():
+    """Дыра №2: «Задание ИИ» заменяло раздел ответом модели без проверки."""
+    from ecodoc.ai.task import apply_data
+    ctx = ReportContext()
+    changes = apply_data(ctx, {
+        "pollutants_air": [{"code": "301", "name": "Азота диоксид",
+                            "mass_norm": "1.5"}],
+        "pollutants_water": [{"code": "", "name": "ливневые стоки",
+                              "mass_norm": "3"}],
+        "wastes": [{"fkko": "99911111115", "name": "выдуманный отход",
+                    "generated": "1"}]})
+    assert all("сток" not in (p.name or "").lower() for p in ctx.pollutants)
+    assert ctx.pollutants and ctx.pollutants[0].code == "0301"
+    # структура кода верна, но в действующем ФККО его нет — отбракован
+    assert not any(w.fkko_code == "99911111115" for w in ctx.wastes)
+    assert any("отбраковано санитаром" in c for c in changes)
+
+
+def test_acts_merge_ignores_name_case():
+    """Акты без кода: «лом…» и «Лом…» — один отход, а не два."""
+    from ecodoc.core.waste_agg import aggregate_acts
+    acts = [WasteAct(name="Лом бетонных изделий", mass=Decimal("1"),
+                     operation="размещение", date="01.02.2025"),
+            WasteAct(name="лом бетонных изделий", mass=Decimal("2"),
+                     operation="размещение", date="01.03.2025")]
+    flows, _receivers = aggregate_acts(acts)
+    assert len(flows) == 1
+    assert flows[0].generated == Decimal("3")
+
+
+def test_obsolete_fkko_file_does_not_override_newer_catalog(tmp_path, monkeypatch):
+    """Древний ФККО.xls в «Формах» не затирает свежий каталог программы."""
+    import os
+    import time as _t
+
+    import openpyxl
+
+    from ecodoc.core import fkko
+    monkeypatch.setenv("ECODOC_FKKO", str(tmp_path / "fkko.json"))
+    monkeypatch.setattr(fkko, "BUILTIN_FILE", tmp_path / "встроенный.json")
+    forms = tmp_path / "Формы"
+    forms.mkdir()
+    monkeypatch.setenv("ECODOC_FORMS", str(forms))
+    fkko._CACHE.clear()
+
+    # свежий полный каталог уже загружен
+    fkko.save({"47110101521": {"name": "лампы", "class": 1}},
+              source="актуальный", partial=False)
+    # в «Формах» лежит древний снимок (мтайм — год назад)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Код", "Наименование", "Класс опасности"])
+    ws.append([73310001724, "мусор", "IV"])
+    old_file = forms / "ФККО.xls.xlsx"
+    wb.save(old_file)
+    old = _t.time() - 365 * 86400
+    os.utime(old_file, (old, old))
+
+    assert fkko.sync_from_forms() == 0          # не затёрло
+    assert fkko.catalog().get("source") == "актуальный"
+
+
 def test_number_from_value_with_units():
     from ecodoc.intake.candidates import _number
     assert _number("12,3 т/год") == Decimal("12.3")

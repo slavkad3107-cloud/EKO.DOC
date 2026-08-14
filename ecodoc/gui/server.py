@@ -1433,6 +1433,22 @@ def _startup_forms_check():
         if n:
             STARTUP_NOTES["fkko"] = f"каталог ФККО обновлён из «Форм»: {n} кодов"
             print(STARTUP_NOTES["fkko"])
+        else:
+            # файл в «Формах» старше действующего каталога — скажем об этом:
+            # пользователь думает, что его выгрузка главная, а она устарела
+            try:
+                from datetime import date as _date
+                f = fkko.find_in_forms()
+                if f is not None:
+                    file_day = _date.fromtimestamp(f.stat().st_mtime).isoformat()
+                    cat_day = str(fkko.catalog().get("updated", ""))
+                    if cat_day and file_day < cat_day:
+                        STARTUP_NOTES["fkko"] = (
+                            f"файл «{f.name}» в папке форм устарел (от {file_day}) — "
+                            f"работаем по каталогу программы от {cat_day} "
+                            f"({len(fkko.codes())} кодов); старый файл можно удалить")
+            except OSError:
+                pass
         ch = forms_registry.check_new()
         # разницу «съедает» эта проверка: сохраняем её, чтобы кнопка реестра
         # бланков показала то же самое, а не пустоту

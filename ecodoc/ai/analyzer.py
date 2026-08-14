@@ -597,9 +597,15 @@ def _collect(sink, data: dict, quotes: dict, pages: dict, docname: str,
             if o.get("name"):
                 put(f"objects[code={code}].name", o["name"],
                     f"объект {code}: наименование", f"objects[{i}].name")
+    from ecodoc.core import sanitize
     for i, w in enumerate(data.get("wastes") or []):
         fkko = re.sub(r"\D", "", str(w.get("fkko") or ""))
         if len(fkko) != 11:
+            continue
+        # тот же санитар, что и на прямом слиянии: путь кандидатов раньше шёл
+        # мимо него, и отбракованный там мусор возвращался в базу отсюда
+        chk = sanitize.check_waste(fkko, w.get("name"), w.get("hazard_class"))
+        if not chk.ok:
             continue
         name = w.get("name") or fkko
         for attr in ("generated", "transferred", "used", "neutralized"):
@@ -607,7 +613,10 @@ def _collect(sink, data: dict, quotes: dict, pages: dict, docname: str,
                 f"отход {name}: {attr}", f"wastes[{i}].{attr}", unit="т")
     for medium, key in (("air", "pollutants_air"), ("water", "pollutants_water")):
         for i, p in enumerate(data.get(key) or []):
-            code = str(p.get("code") or "").strip()
+            v = sanitize.check_substance(p.get("code"), p.get("name"), medium)
+            if not v.ok:
+                continue               # работы, потоки стоков, группы суммации
+            code = v.code              # нормализованный: «301» → «0301»
             sel = f"code={code}" if code else f"name={p.get('name', '')}"
             for attr in ("mass_norm", "mass_limit", "mass_over"):
                 put(f"pollutants[{medium};{sel}].{attr}", p.get(attr),

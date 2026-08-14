@@ -110,6 +110,13 @@ def apply_data(ctx: ReportContext, data: dict) -> list[str]:
         return changes
     raw["period"] = _plain(ctx.period)
     parsed = serialize.from_dict(raw)
+    # ответ модели проходит тот же санитар, что и приём документов: serialize
+    # чинит только ТИПЫ, а сюда прилетали потоки стоков вместо веществ, коды
+    # без ведущего нуля и выдуманные ФККО
+    dropped = _sanitize_parsed(parsed)
+    if dropped:
+        changes.append("отбраковано санитаром: " + "; ".join(dropped[:5])
+                       + (" …" if len(dropped) > 5 else ""))
     if "organization" in raw:
         ctx.organization = parsed.organization
         changes.append("реквизиты организации")
@@ -131,6 +138,37 @@ def apply_data(ctx: ReportContext, data: dict) -> list[str]:
         ctx.pollutants = rest + parsed.pollutants
         changes.append(f"вещества ({len(parsed.pollutants)})")
     return changes
+
+
+def _sanitize_parsed(parsed) -> list[str]:
+    """Отбраковать мусор из разобранного ответа модели. Возвращает что убрано."""
+    from ecodoc.core import sanitize
+    dropped: list[str] = []
+
+    keep_p = []
+    for p in parsed.pollutants:
+        medium = "water" if p.medium == Medium.WATER else "air"
+        v = sanitize.check_substance(p.code, p.name, medium)
+        if not v.ok:
+            dropped.append(f"{p.code or p.name}: {v.reason[:60]}")
+            continue
+        if v.code:
+            p.code = v.code            # «301» → «0301»
+        keep_p.append(p)
+    parsed.pollutants = keep_p
+
+    for attr in ("wastes", "waste_acts"):
+        keep = []
+        for w in getattr(parsed, attr):
+            v = sanitize.check_waste(w.fkko_code, w.name, w.hazard_class)
+            if not v.ok:
+                dropped.append(f"{w.fkko_code or w.name}: {v.reason[:60]}")
+                continue
+            if v.code:
+                w.fkko_code = v.code
+            keep.append(w)
+        setattr(parsed, attr, keep)
+    return dropped
 
 
 def run_task(ctx: ReportContext, scope: str, task: str,

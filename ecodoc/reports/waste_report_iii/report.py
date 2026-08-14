@@ -10,10 +10,11 @@
 порядки (СПб/ЛО и др.) со своими сроками. Приказ № 1028 — это Порядок УЧЁТА
 (журнал), а не форма отчётности.
 
-Текущий генератор строит самостоятельный упрощённый отчёт (баланс без остатков
-на начало/конец и без разбивки передачи) — служит промежуточным/справочным
-документом; для официальной подачи ориентируйтесь на раздел отходов отчёта ПЭК
-либо на региональный формат.
+Текущий генератор строит самостоятельный упрощённый отчёт (полный баланс масс
+с остатками на начало — раздельно хранение/накопление, как в графах 5/6
+табл. 4.2 ПЭК — и на конец года, но без разбивки передачи по видам операций) —
+служит промежуточным/справочным документом; для официальной подачи
+ориентируйтесь на раздел отходов отчёта ПЭК либо на региональный формат.
 
 Данные — из ctx.wastes; получатели отходов — ctx.extra['waste_receivers']:
     [{"fkko": "40211001515", "receiver": "ООО ...", "inn": "...",
@@ -62,7 +63,11 @@ class WasteReportIII(Report):
                                 "не указан объект НВОС — отчётность привязывается к "
                                 "объекту (код, категория, ОКТМО)"))
         for w in self.ctx.wastes:
-            bal = (D(w.accumulated_start) + D(w.generated) + D(w.received)
+            # Приход по табл. 4.2 ПЭК = наличие на начало (гр.5 хранение +
+            # гр.6 накопление) + образовано + получено — без accumulated_start_nakopl
+            # баланс ложно «не сходился» на согласованных данных.
+            bal = (D(w.accumulated_start) + D(w.accumulated_start_nakopl)
+                   + D(w.generated) + D(w.received)
                    - D(w.used) - D(w.neutralized) - D(w.transferred)
                    - D(w.placed_norm) - D(w.placed_over))
             if abs(bal - D(w.accumulated_end)) > D("0.001"):
@@ -73,7 +78,7 @@ class WasteReportIII(Report):
     def render_xml(self, out_path: Path) -> Path:
         out_path = self._ensure_dir(out_path)
         o = self.ctx.organization
-        root = etree.Element("ОтчётностьОтходыIII", version="0.2")
+        root = etree.Element("ОтчётностьОтходыIII", version="0.3")
         org = el(root, "Организация")
         el(org, "Наименование", o.name)
         el(org, "ИНН", o.inn)
@@ -90,7 +95,10 @@ class WasteReportIII(Report):
         for w in self.ctx.wastes:
             x = el(items, "Отход", фкко=w.fkko_code, класс=w.hazard_class)
             el(x, "Наименование", w.name)
-            el(x, "НаличиеНачало", D(w.accumulated_start))
+            # наличие на начало года раздельно, как в графах 5/6 табл. 4.2 ПЭК:
+            # «хранение» и «накопление» — разные правовые режимы (ст. 1 ФЗ-89)
+            el(x, "НаличиеНачалоХранение", D(w.accumulated_start))
+            el(x, "НаличиеНачалоНакопление", D(w.accumulated_start_nakopl))
             el(x, "Образовано", D(w.generated))
             el(x, "Поступило", D(w.received))
             el(x, "Утилизировано", D(w.used))
@@ -152,18 +160,26 @@ class WasteReportIII(Report):
                 a.font = xlsx.BOLD
 
     def _movement(self, wb):
-        """Раздел 2 — движение отходов (полный баланс масс)."""
+        """Раздел 2 — движение отходов (полный баланс масс).
+
+        Наличие на начало года печатается двумя графами — «хранение» и
+        «накопление», как в графах 5 и 6 таблицы 4.2 отчёта ПЭК (приказ № 173):
+        это разные правовые режимы, их нельзя схлопывать в одну цифру.
+        """
         ws = wb.create_sheet("Движение отходов")
-        xlsx.header_row(ws, 1, ["ФККО", "Наименование", "Кл.", "Нач. года, т",
+        xlsx.header_row(ws, 1, ["ФККО", "Наименование", "Кл.",
+                                "Нач. года (хран.), т", "Нач. года (накопл.), т",
                                 "Образовано, т", "Поступило, т", "Утилизир., т",
                                 "Обезвр., т", "Передано, т", "Размещено, т",
                                 "Кон. года, т"],
-                        widths=[14, 30, 5, 12, 12, 12, 11, 11, 11, 11, 12])
+                        widths=[14, 30, 5, 12, 12, 12, 12, 11, 11, 11, 11, 12])
         r = 2
         for w in self.ctx.wastes:
             xlsx.data_row(ws, r, [
                 w.fkko_code, w.name, w.hazard_class,
-                float(D(w.accumulated_start)), float(D(w.generated)),
+                float(D(w.accumulated_start)),
+                float(D(w.accumulated_start_nakopl)),
+                float(D(w.generated)),
                 float(D(w.received)), float(D(w.used)), float(D(w.neutralized)),
                 float(D(w.transferred)),
                 float(D(w.placed_norm) + D(w.placed_over)),

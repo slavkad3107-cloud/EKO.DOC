@@ -446,6 +446,17 @@ def sync_from_forms(force: bool = False) -> int:
         return 0
     if not force and cat.get("stamp") == stamp:
         return 0                       # тот же файл — уже загружен
+    if not force and cat.get("codes"):
+        # применяем только файл, который ДЕЙСТВИТЕЛЬНО новее действующего
+        # каталога: выгрузка в «Формах» бывает древним снимком (у пользователя
+        # лежал ФККО-2014 на 7499 кодов), и она не должна затирать свежий
+        # каталог, пришедший с обновлением программы (9146 кодов)
+        from datetime import date as _date
+        file_day = _date.fromtimestamp(st.st_mtime).isoformat()
+        # строго старше: файл того же дня — это свежая подмена, её принимаем
+        # (изменение того же файла в тот же день ловится штампом выше)
+        if str(cat.get("updated", "")) > file_day:
+            return 0
     try:
         records = parse_table(f) if f.suffix.lower() in (".xls", ".xlsx", ".xlsm") \
             else parse(f.read_text(encoding="utf-8-sig", errors="replace"))

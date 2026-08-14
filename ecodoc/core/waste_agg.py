@@ -95,7 +95,9 @@ def aggregate_acts(acts: list[WasteAct], year=None, quarter=None) -> tuple[list[
         code = norm_fkko(a.fkko_code)     # нормализация: пробелы в коде не двоят отход
         if not code and not a.name:
             continue
-        key = code or a.name
+        # имя — без учёта регистра, как в _flow_key: иначе акты без кода
+        # давали «лом…» и «Лом…» двумя разными позициями
+        key = code or (a.name or "").strip().lower()
         w = by_code.get(key)
         if w is None:
             w = WasteFlow(fkko_code=code, name=a.name, hazard_class=a.hazard_class)
