@@ -48,20 +48,25 @@ class HazardClassCalc(_Dev):
 @register
 class NMUPlan(_Dev):
     code = "nmu"
-    title = "План мероприятий при НМУ (пр. МПР № 811) — .docx"
+    title = ("План мероприятий по снижению выбросов в периоды НМУ "
+             "(пр. МПР № 662 и № 651 от 11.2025, № 811 утратил силу) — .docx")
     devdoc = True   # генерируется как .docx через api_devdoc / ecodoc devdoc nmu
 
 
 @register
 class PLARN(_Dev):
     code = "plarn"
-    title = "ПЛАРН — план ликвидации аварийных разливов нефтепродуктов"
+    devdoc = True        # генератор: ecodoc/development/plarn.py (ПП РФ № 2451)
+    title = ("ПЛАРН — план предупреждения и ликвидации разливов нефти и "
+             "нефтепродуктов (ПП РФ № 2451)")
 
 
 @register
 class DVOS(_Dev):
     code = "dvos"
-    title = "Декларация о воздействии на окружающую среду (II категория)"
+    devdoc = True        # генератор: ecodoc/development/dvos.py (пр. № 117)
+    title = ("ДВОС — декларация о воздействии на окружающую среду, II категория "
+             "(форма — приказ Минприроды № 117 от 19.03.2025)")
 
 
 @register

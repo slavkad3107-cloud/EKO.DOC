@@ -586,9 +586,11 @@ def api_devdoc(params, body):
     if kind == "nmu":
         from ecodoc.development import nmu
         path = nmu.generate(ctx, out_dir / "план_НМУ.docx")
+        return {"path": str(path), "gaps": nmu.gaps(ctx)}
     elif kind == "pek-program":
         from ecodoc.development import pek_program
         path = pek_program.generate(ctx, out_dir / "программа_ПЭК.docx")
+        return {"path": str(path), "gaps": pek_program.gaps(ctx)}
     elif kind == "waste-inventory":
         from ecodoc.development import waste_inventory
         path = waste_inventory.generate(
@@ -611,6 +613,14 @@ def api_devdoc(params, body):
         path = oos.generate(ctx, out_dir / f"раздел_ООС{_year_suffix(ctx)}.docx",
                             stage=body.get("stage", "эксплуатация"))
         return {"path": str(path), "gaps": oos.gaps(ctx)}
+    elif kind == "plarn":
+        from ecodoc.development import plarn
+        path = plarn.generate(ctx, out_dir / "ПЛАРН.docx")
+        return {"path": str(path), "gaps": plarn.gaps(ctx)}
+    elif kind == "dvos":
+        from ecodoc.development import dvos
+        path = dvos.generate(ctx, out_dir / f"ДВОС{_year_suffix(ctx)}.docx")
+        return {"path": str(path), "gaps": dvos.gaps(ctx)}
     elif kind == "waste-passport":
         from ecodoc.development import waste_passport
         made = waste_passport.generate(ctx, out_dir / "паспорта")
