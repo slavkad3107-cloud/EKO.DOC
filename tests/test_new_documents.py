@@ -123,10 +123,11 @@ def test_oos4_registered_and_validates(ctx):
 
 
 def test_oos4_print_matches_blank(ctx, tmp_path):
-    """Форма № 4-ОС: одна таблица, строки 01–10, платы за НВОС в ней нет."""
+    """Форма № 4-ОС: бланк ред. 22.07.2025 (приказ № 346), платы за НВОС нет."""
     from ecodoc.core import registry
     registry.load_all()
-    ctx.extra["oos4"] = {"costs": {"air": "120.5", "waste": "340", "water": 0}}
+    ctx.extra["oos4"] = {"costs": {"air": "120.5", "waste": "340", "water": 0,
+                                   "noise": "7.7"}}
     rep = registry.get("4-oos")(ctx)
     assert rep.title.startswith("4-ОС")            # официальный индекс формы
     out = rep.render_print(tmp_path / "4oos.xlsx")
@@ -136,12 +137,37 @@ def test_oos4_print_matches_blank(ctx, tmp_path):
     assert "01" in flat and "02" in flat and "10" in flat
     assert not any(v in ("101", "106") for v in flat)
     assert "120.5" in flat and "340" in flat
-    # строка 01 — контрольная сумма 02-10
-    assert "460.5" in flat
+    # строка 01 — контрольная сумма 02-10 (460.5 + 7.7 шума)
+    assert "468.2" in flat
     # раздела о плате за НВОС в действующей форме нет
     assert not any("Плата за негативное" in v for v in flat)
+    # бланк ред. 22.07.2025: заголовок таблицы и блоки граф
+    joined = " ".join(flat)
+    assert "Выполнение работ по охране окружающей среды" in joined
+    assert "Для собственных нужд" in joined
+    assert "Специализированные природоохранные услуги" in joined
+    # два блока по 8 граф: нумерация А, Б, 3–10, 11–18
+    num_row = next(r for r in rows if r and str(r[0]) == "А")
+    nums = [str(v) for v in num_row if v is not None]
+    assert nums == ["А", "Б"] + [str(i) for i in range(3, 19)]
+    # строки 06/07 — как в действующем бланке (06 шум, 07 биоразнообразие);
+    # затраты по шуму (7.7) должны встать именно в строку 06
+    by_code = {}
+    for r in rows:
+        vals = [v for v in r if v is not None]
+        if len(vals) >= 2 and str(vals[1]) in {f"{i:02d}" for i in range(2, 11)}:
+            by_code[str(vals[1])] = (str(vals[0]), vals[2] if len(vals) > 2 else None)
+    assert "шумового и вибрационного" in by_code["06"][0]
+    assert by_code["06"][1] == 7.7
+    assert "биоразнообразия" in by_code["07"][0]
+    # дословные формулировки строк действующего бланка
+    assert "обращение со сточными водами" in by_code["03"][0]
+    assert "экологическая реабилитация земель" in by_code["05"][0]
+    assert "за исключением мер по предотвращению аварий" in by_code["08"][0]
+    assert "в области охраны окружающей среды" in by_code["09"][0]
     titul = " ".join(str(v) for row in _cells(out, "Титул") for v in row if v)
     assert "4-ОС" in titul and "0609030" in titul
+    assert "346" in titul and "1-го рабочего дня" in titul
 
 
 # ── ТУ ───────────────────────────────────────────────────────────────────

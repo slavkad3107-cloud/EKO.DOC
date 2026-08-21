@@ -112,7 +112,13 @@ class WasteFlow:
     transferred_burial: Decimal = Decimal("0")   # из переданного — на захоронение
     placed_norm: Decimal = Decimal("0")         # размещено в пределах лимита
     placed_over: Decimal = Decimal("0")         # размещено сверх лимита
-    accumulated_end: Decimal = Decimal("0")     # на конец периода
+    # размещение на СОБСТВЕННЫХ объектах по видам: 2-ТП гр. 27/28, ПЭК 4.2
+    # гр. 18/19 — «хранение» и «захоронение» раздельно; placed_norm/over
+    # (пределы лимита) — это для платы, не для вида размещения
+    placed_storage: Decimal = Decimal("0")      # размещено на хранение
+    placed_burial: Decimal = Decimal("0")       # размещено на захоронение
+    accumulated_end: Decimal = Decimal("0")     # на конец периода (хранение)
+    accumulated_end_nakopl: Decimal = Decimal("0")  # на конец периода (накопление)
 
     is_mining: bool = False     # отход добывающей промышленности (для ставки V кл.)
     # отрасль для ставки V класса: у него ТРИ разные ставки — добывающая

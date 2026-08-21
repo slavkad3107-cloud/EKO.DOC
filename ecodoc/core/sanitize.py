@@ -95,6 +95,121 @@ def _hits(name: str, words) -> str:
     return ""
 
 
+# ── сверка «код ↔ наименование» по официальному перечню ─────────────────
+# Ошибки распознавания дают записи вроде «0325 Керосин» (0325 — мышьяк),
+# «0333 Азот (II) оксид» (0333 — сероводород), «3003 диоксид серы» (такого
+# кода нет). Каждая — дубль настоящего вещества под чужим кодом; без сверки
+# с перечнем санитар их пропускал, и вещество двоилось в отчётности.
+#
+# Сравнение осторожное: русские окончания («углерод»/«углерода») сводятся
+# основой слова, одно общее слово («углеводороды») совпадением не считается,
+# а код меняется только когда наименованию соответствует РОВНО один код.
+_STOP = {"в", "на", "по", "и", "с", "смесь", "пересчете", "пересчёте",
+         "прочие", "соединения", "соединений", "его"}
+_ENDINGS = ("ами", "ями", "ого", "его", "ому", "ему", "ыми", "ими",
+            "ов", "ев", "ах", "ях", "ой", "ей", "ий", "ый", "ая", "яя",
+            "ое", "ее", "ые", "ие", "ом", "ем", "ам", "ям",
+            "а", "я", "ы", "и", "у", "ю", "е", "о")
+
+
+def _stem(word: str) -> str:
+    if len(word) <= 4 or not re.fullmatch(r"[а-я]+", word):
+        return word
+    for end in _ENDINGS:
+        if word.endswith(end) and len(word) - len(end) >= 4:
+            return word[: -len(end)]
+    return word
+
+
+def _tokens(text: str) -> set:
+    t = str(text or "").lower().replace("ё", "е")
+    t = re.sub(r"\([^)]*\)", " ", t)
+    return {_stem(w) for w in re.findall(r"[а-яa-z0-9]+", t)} - _STOP
+
+
+def _name_variants(official: str) -> list:
+    """Главное имя и каждый синоним из скобок — отдельными наборами слов."""
+    out = [_tokens(official)]
+    for inner in re.findall(r"\(([^)]*)\)", str(official or "")):
+        for syn in inner.split(";"):
+            t = _tokens(syn)
+            if t:
+                out.append(t)
+    return [v for v in out if v]
+
+
+def _strong(nm: set, var: set) -> bool:
+    """Сильное совпадение двух наборов слов-основ."""
+    if not nm or not var:
+        return False
+    if nm == var:
+        return True
+    common = nm & var
+    if len(common) >= 2:
+        return True
+    # одно слово — только если это полное имя с обеих сторон и слово длинное
+    if len(nm) == 1 and len(var) == 1:
+        w = next(iter(common), "")
+        return len(w) >= 5
+    return False
+
+
+def _names_agree(ours: str, official: str) -> bool:
+    """Не противоречит ли наше наименование официальному для этого кода."""
+    nm = _tokens(ours)
+    if not nm:
+        return True                     # нечего сравнивать — код решает
+    for var in _name_variants(official):
+        if _strong(nm, var):
+            return True
+        if nm & var:                    # хоть одно общее слово — не спорим
+            return True
+    return False
+
+
+def codes_for_name(name: str) -> list:
+    """Коды официального перечня, которым наименование соответствует сильно."""
+    from ecodoc.core.refdata import official_air
+    nm = _tokens(name)
+    if not nm:
+        return []
+    hits = []
+    for code, official in official_air().items():
+        if any(_strong(nm, var) for var in _name_variants(official)):
+            hits.append(code)
+    return hits
+
+
+def code_name_conflict(code: str, name: str) -> tuple:
+    """(причина, верный_код) если код расходится с наименованием.
+
+    Верный код возвращается ТОЛЬКО когда он единственный; если кандидатов
+    несколько или нет — причина есть, кода нет (пользователь решит сам)."""
+    from ecodoc.core.refdata import official_air
+    table = official_air()
+    if not table or not code:
+        return "", ""
+    official = table.get(code)
+    if official is not None and _names_agree(name, official):
+        return "", ""
+    want = codes_for_name(name)
+    if official is not None:
+        if not want:
+            return "", ""               # имя незнакомое — код решает
+        if code in want:
+            return "", ""
+        fix = want[0] if len(want) == 1 else ""
+        return (f"код {code} — это «{official[:40]}», а наименование "
+                f"«{name[:40]}» соответствует коду "
+                f"{fix or '/'.join(want[:3])}"), fix
+    if want:
+        fix = want[0] if len(want) == 1 else ""
+        return (f"кода {code} нет в перечне загрязняющих веществ, а "
+                f"наименование соответствует коду "
+                f"{fix or '/'.join(want[:3])}"), fix
+    return "", ""
+
+
 def check_substance(code, name, medium: str = "air") -> Verdict:
     """Пускать ли позицию в перечень веществ (выбросы/сбросы).
 
@@ -140,6 +255,18 @@ def check_substance(code, name, medium: str = "air") -> Verdict:
                               f"воздуха, а позиция отнесена к сбросам: "
                               f"проверьте среду",
                        fixed=[])
+
+    if v.code and medium != "water":
+        reason, want = code_name_conflict(v.code, nm)
+        if reason:
+            # дубль настоящего вещества под чужим кодом: если верный код
+            # единственный — чиним и показываем; если нет — только показываем
+            v.suspect = True
+            v.reason = reason
+            if want:
+                v.fixed.append(f"код {v.code} → {want}")
+                v.code = want
+            return v
 
     if v.code and v.code != raw:
         v.fixed.append(f"код {raw} → {v.code}")
@@ -353,12 +480,24 @@ def clean_context(ctx, drop_bad: bool = True, drop_dupes: bool = True,
         if drop_dupes and key in groups:
             prev = groups[key]
             prev_mass = prev.mass_norm + prev.mass_limit + prev.mass_over
-            if mass > prev_mass:            # оставляем ту, где есть данные
+            if mass and not prev_mass:      # у первой масс нет — берём эту
                 keep_p[keep_p.index(prev)] = p
                 groups[key] = p
                 report["removed_pollutants"].append(
                     {"label": f"{prev.code} {prev.name}".strip()[:70],
                      "reason": "повтор того же вещества (без масс)"})
+            elif mass and prev_mass and mass != prev_mass:
+                # обе с массами и они разные — не выбираем молча большую:
+                # остаётся первая (из основного документа), а расхождение
+                # показываем, чтобы пользователь сверил с источником
+                report["removed_pollutants"].append(
+                    {"label": label,
+                     "reason": f"повтор того же вещества с ДРУГОЙ массой "
+                               f"({mass} против {prev_mass}) — оставлена "
+                               f"первая, сверьте с источником"})
+                report.setdefault("mass_conflicts", []).append(
+                    {"code": prev.code, "name": prev.name[:60],
+                     "kept": str(prev_mass), "dropped": str(mass)})
             else:
                 report["removed_pollutants"].append(
                     {"label": label, "reason": "повтор того же вещества"})

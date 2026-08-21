@@ -1382,6 +1382,13 @@ async function cleanData(){
       ((j.fixed_codes||[]).length ? `, кодов нормализовано ${j.fixed_codes.length}` : "") +
       `\nОсталось: отходов ${j.left.wastes}, веществ ${j.left.pollutants}`;
     if (j.backup) t += `\nКопия до очистки: ${j.backup}`;
+    const mc = j.mass_conflicts || [];
+    if (mc.length){
+      t += `\n\n⚠ У ${mc.length} веществ в разных документах РАЗНЫЕ массы — оставлена первая, `+
+        "сверьте с источником (ООС/НДВ/ПЭК могут относиться к разным периодам):\n" +
+        mc.slice(0, 12).map(c => `  ${c.code} ${c.name}: оставлено ${c.kept}, отброшено ${c.dropped}`).join("\n") +
+        (mc.length > 12 ? `\n  … ещё ${mc.length - 12}` : "");
+    }
     alert(t);
     await loadCtx();
     auditData().catch(()=>{});

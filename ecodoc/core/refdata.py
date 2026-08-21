@@ -78,3 +78,36 @@ def oktmo_ref() -> dict:
         except (json.JSONDecodeError, OSError):
             return _OKTMO_CACHE["entries"]
     return _OKTMO_CACHE["entries"]
+
+
+# ── официальный перечень веществ с кодами (из ставок платы) ───────────────
+# Ставки платы утверждены распоряжением Правительства РФ и перечисляют
+# 199 веществ атмосферного воздуха с кодами и полными наименованиями
+# (включая синонимы в скобках). Это единственный в программе официальный
+# источник пары «код ↔ вещество», по нему санитар ловит ошибки распознавания
+# вроде «0325 Керосин» (0325 — мышьяк, керосин — 2732).
+def official_air() -> dict[str, str]:
+    """Код вещества атмосферного воздуха → официальное наименование."""
+    try:
+        by_year = rates_nvos().get("rates_by_year") or {}
+    except FileNotFoundError:
+        return {}
+    if not by_year:
+        return {}
+    latest = by_year[max(by_year, key=lambda y: int(y))]
+    # часть позиций в ставках идёт без кода (ключ «имя:…») — это не коды
+    return {code: rec.get("name", "") for code, rec in (latest.get("air") or {}).items()
+            if code.isdigit() and len(code) == 4}
+
+
+def official_water_names() -> list[str]:
+    """Официальные наименования веществ для сбросов (коды у них в ставках
+    не ведутся — сверяем только по имени)."""
+    try:
+        by_year = rates_nvos().get("rates_by_year") or {}
+    except FileNotFoundError:
+        return []
+    if not by_year:
+        return []
+    latest = by_year[max(by_year, key=lambda y: int(y))]
+    return [rec.get("name", "") for rec in (latest.get("water") or {}).values()]

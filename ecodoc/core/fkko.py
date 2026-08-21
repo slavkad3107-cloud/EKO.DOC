@@ -610,3 +610,27 @@ def update(timeout: int = 30, progress=None) -> tuple[int, str]:
     save(records, source=f"rpn.gov.ru ({CURRENT_EDITION})",
          partial=False, stamp=f"rpn@{date.today().isoformat()}")
     return len(records), RPN_PAGE
+
+
+# ── печатное представление (общее для всех форм) ────────────────────────
+# В бланках, ФККО и принятых отчётах код пишется с пробелами по блокам
+# («7 33 100 01 72 4»), а класс — римской цифрой. В базе храним 11 цифр
+# и int, а в документы выводим через эти две функции — чтобы все формы
+# печатали одинаково.
+_ROMAN_BY_CLASS = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V"}
+
+
+def fmt(code) -> str:
+    """11 цифр → «7 33 100 01 72 4»; не код — как есть."""
+    d = norm(code)
+    if len(d) != 11:
+        return str(code or "")
+    return f"{d[0]} {d[1:3]} {d[3:6]} {d[6:8]} {d[8:10]} {d[10]}"
+
+
+def roman(hazard_class) -> str:
+    """Класс опасности римской цифрой: 4 → «IV»; неизвестный — пусто."""
+    try:
+        return _ROMAN_BY_CLASS.get(int(hazard_class or 0), "")
+    except (TypeError, ValueError):
+        return ""
