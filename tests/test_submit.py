@@ -56,3 +56,23 @@ def test_preflight_flags_missing_ogrnip(tmp_path):
     registry.load_all()
     issues = registry.get("2tp-waste")(ctx).validate()
     assert any(i.level == "error" and "ОГРНИП" in i.field for i in issues)
+
+
+def test_waste_report_iii_is_not_lkpp(tmp_path):
+    """Справка о движении отходов (waste-report-iii) — не форма ЛКПП: её XML
+    внутренний, отдельной подачи нет (п. 7 ст. 18 ФЗ-89 — сведения входят в
+    отчёт ПЭК). Чек-лист не должен предлагать «Импорт XML» в ЛКПП."""
+    from ecodoc.submit.package import _destination
+    dest = _destination("waste-report-iii")
+    assert "ЛКПП" not in dest["where"] and "раздел 4 отчёта ПЭК" in dest["where"]
+    assert "внутренний XML" in dest["xml_label"]
+    assert not any("Импорт XML" in s for s in dest["steps"])
+    # ПЭК и 2-ТП по-прежнему идут в ЛКПП
+    assert "ЛКПП" in _destination("pek")["where"]
+
+    registry.load_all()
+    ctx = _ctx_ip()
+    ctx.objects[0].category = "III"
+    res = build_package(registry.get("waste-report-iii")(ctx), tmp_path)
+    text = res["checklist"].read_text(encoding="utf-8")
+    assert "раздел 4 отчёта ПЭК" in text and "Импорт XML" not in text

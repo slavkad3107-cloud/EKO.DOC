@@ -1,4 +1,12 @@
-"""Тесты формы 2-ТП (водхоз) и коэрции типов из формы."""
+"""Тесты формы 2-ТП (водхоз) и коэрции типов из формы.
+
+Бланк — приложение к приказу Росстата от 02.10.2024 № 445 (в ред. приказа
+от 06.08.2026 № 473), сверено 22.08.2026 по normativ.kontur.ru
+(documentId=507797): Раздел 1 — 49 граф, строки 11, 12, …; гр.32-41 — пять
+пар «код/объём» использования, гр.42-47 — три пары передачи без
+использования, гр.48-49 — передано после использования; Раздел 2 — строки
+21, 22, …, 30 граф + пары ЗВ с гр.31; итоговых строк в бланке нет.
+"""
 import tempfile
 from pathlib import Path
 
@@ -18,7 +26,7 @@ def _ctx():
         period=ReportPeriod(year=2024))
     ctx.extra["water"] = {
         "intake": [{"name": "Скв.1", "type": "подземный", "volume": "12.5"}],
-        "discharge": [{"receiver": "р. Нева", "quality": "нормативно-чистые",
+        "discharge": [{"receiver": "р. Нева", "quality": "СД",
                        "volume": "8.0"}],
         "recycled": "40"}
     return ctx
@@ -43,17 +51,21 @@ def _ctx_full():
             "okato": "41221505", "vhu": "01.03.00.004",
             "limit": 145.71, "volume": 1.29, "months": list(_MONTHS),
             "measured": 1.29, "losses": 0.0,
+            "used_total": 1.29,
             "uses": [{"code": "102", "volume": 1.29}],
+            "transfers": [{"code": "ПК", "volume": 0.1}],
+            "transfer_after_use": {"code": "СК", "volume": 0.2},
         }],
         "discharge": [{
-            "receiver": "р. Нарва", "quality": "НЧ",
+            "receiver": "р. Нарва", "quality": "СД",
             "doc_type": "Р", "doc_no": "123", "doc_date": "01.01.2023",
             "receiver_code": "20", "water_body_code": "БАЛ/НАРВА",
             "distance_km": 16.9, "okato": "41221505", "vhu": "01.03.00.004",
             "limit": 145.71, "volume": 1.29, "measured": 1.29,
-            "normatively_treated": 1.29, "treatment_code": "40",
+            "normatively_treated": 1.29, "treatment_code": "5",
             "treatment_capacity": 2.5, "months": list(_MONTHS),
-            "pollutants": [{"code": "132", "name": "БПКполн", "mass": 0.05}],
+            "pollutants": [{"code": "132", "name": "БПКполн",
+                            "mass": 0.0504}],
         }],
         "recycled": "40"}
     return ctx
@@ -101,18 +113,26 @@ def test_title_page_requisites(tmp_path):
     # подпись: должность, ФИО, телефон, e-mail
     assert "Брезгин М.Ю." in text and "89214494705" in text
     assert "Должностное лицо" in text
+    # на бланке — реквизиты и приказа об утверждении, и приказа об изменениях
+    assert "02.10.2024 № 445" in text and "06.08.2026" in text
+    assert "№ 473" in text
 
 
 def test_section1_49_graphs(tmp_path):
-    """Расхождения 2 и 4: Раздел 1 — 49 пронумерованных граф, включая
-    документ, коды, лимит (гр.11) и помесячную разбивку (гр.13-24)."""
+    """Раздел 1 по бланку № 445 — 49 пронумерованных граф, включая
+    документ, коды, лимит (гр.11), помесячную разбивку (гр.13-24), ПЯТЬ пар
+    использования (гр.32-41), три пары передачи без использования (гр.42-47)
+    и одну пару после использования (гр.48-49); графа «А» — N строки с 11."""
     rep = _report(_ctx_full())
     wb = load_workbook(rep.render_print(tmp_path / "w.xlsx"))
     ws = wb["Раздел 1"]
-    # строка 4 — номера граф 1..49 (графа N в колонке N+1, A — справочно)
+    # строка 4 — номера граф 1..49 (графа N в колонке N+1, A — «N строки»)
     nums = [ws.cell(row=4, column=2 + i).value for i in range(49)]
     assert nums == list(range(1, 50))
+    assert ws.cell(row=4, column=1).value == "А"
+    assert ws.cell(row=3, column=1).value == "N строки"
     row = 5  # первая строка данных
+    assert ws.cell(row=row, column=1).value == 11        # N строки по бланку
     assert ws.cell(row=row, column=2).value == "Л"          # гр.1 тип документа
     assert ws.cell(row=row, column=3).value == "480082"     # гр.2 номер
     assert ws.cell(row=row, column=5).value == "60"         # гр.4 код типа ист.
@@ -126,28 +146,47 @@ def test_section1_49_graphs(tmp_path):
     assert ws.cell(row=row, column=26).value == 1.29        # гр.25 по приборам
     assert ws.cell(row=row, column=33).value == "102"       # гр.32 код вида исп.
     assert ws.cell(row=row, column=34).value == 1.29        # гр.33 объём
+    # гр.42-47 — передано БЕЗ использования (п. 2.16), первая пара = гр.42-43
+    assert ws.cell(row=row, column=43).value == "ПК"
+    assert ws.cell(row=row, column=44).value == 0.1
+    # гр.48-49 — передано ПОСЛЕ использования (п. 2.17)
+    assert ws.cell(row=row, column=49).value == "СК"
+    assert ws.cell(row=row, column=50).value == 0.2
+    # шапка: пары 32-41 — виды использования, 42-47 — без использования
+    assert "использования" in ws.cell(row=3, column=42).value   # гр.41
+    assert "без использования" in ws.cell(row=3, column=43).value  # гр.42
+    assert "после использования" in ws.cell(row=3, column=49).value  # гр.48
+    # итоговой строки в бланке нет
+    assert ws.cell(row=row + 1, column=1).value in (None, "")
 
 
 def test_section2_graphs_and_zv(tmp_path):
-    """Расхождения 3 и 4: Раздел 2 — 30 граф бланка (категории очистки
-    гр.13-18, помесячно гр.19-30) + пары «код ЗВ / масса» с гр.31."""
+    """Раздел 2 по бланку № 445 — 30 граф (категории очистки гр.13-18,
+    помесячно гр.19-30) + пары «код ЗВ / масса» с гр.31; N строки с 21;
+    масса ЗВ округляется до трёх знаков (примечание к бланку)."""
     rep = _report(_ctx_full())
     wb = load_workbook(rep.render_print(tmp_path / "w.xlsx"))
     ws = wb["Раздел 2"]
     nums = [ws.cell(row=4, column=2 + i).value for i in range(32)]
     assert nums == list(range(1, 33))  # 30 граф + 1 пара ЗВ (гр.31-32)
     row = 5
+    assert ws.cell(row=row, column=1).value == 21           # N строки
     assert ws.cell(row=row, column=2).value == "Р"          # гр.1
     assert ws.cell(row=row, column=5).value == "20"         # гр.4 тип приёмника
-    assert ws.cell(row=row, column=8).value == "НЧ"         # гр.7 качество кодом
+    assert ws.cell(row=row, column=8).value == "СД"         # гр.7 код Прил. 2
     assert ws.cell(row=row, column=11).value == 145.71      # гр.10 лимит
     assert ws.cell(row=row, column=12).value == 1.29        # гр.11 всего за год
-    assert ws.cell(row=row, column=17).value == "40"        # гр.16 код очистн.
+    assert ws.cell(row=row, column=17).value == "5"         # гр.16 код Прил. 4
     assert ws.cell(row=row, column=18).value == 1.29        # гр.17 норм.-очищ.
     assert ws.cell(row=row, column=19).value == 2.5         # гр.18 мощность
     assert ws.cell(row=row, column=31).value == 0.92        # гр.30 декабрь
     assert ws.cell(row=row, column=32).value == "132"       # гр.31 код ЗВ
-    assert ws.cell(row=row, column=33).value == 0.05        # гр.32 масса ЗВ
+    assert ws.cell(row=row, column=33).value == 0.05        # гр.32: 0.0504→0.050
+    text = " ".join(str(c.value) for r_ in ws.iter_rows() for c in r_
+                    if c.value not in (None, ""))
+    # сноска <1> бланка — дословно, включая взвешенные вещества и азот общий
+    assert "взвешенные вещества (113)" in text and "азот общий (2)" in text
+    assert "округляется до трёх знаков" in text
 
 
 def test_xml_months_and_new_fields(tmp_path):
@@ -169,14 +208,19 @@ def test_xml_months_and_new_fields(tmp_path):
     assert out.findtext("ДопустимыйОбъём") == "145.71"
     cat = out.find("ОтведеноПоКатегориям")
     assert cat is not None
-    assert cat.find("НормативноОчищенные").get("код") == "40"
+    assert cat.find("НормативноОчищенные").get("код") == "5"
     assert cat.findtext("МощностьОчистных") == "2.5"
+    assert src.find("ПереданоБезИспользования").get("код") == "ПК"
+    assert src.find("ПереданоПослеИспользования").get("код") == "СК"
+    assert out.find("ЗВ").get("ед") == "т"        # БПК полн (132) — в тоннах
+    assert "№ 473" in root.get("НПА")
 
 
 def test_minimal_old_data_prints_empty_graphs(tmp_path):
     """Страховка обратной совместимости: старые данные (только
     name/type/volume) не ломают 49-графный лист — объём попадает в гр.12,
-    остальные графы ПУСТЫЕ (ничего не выдумываем), ИТОГО считается,
+    остальные графы ПУСТЫЕ (ничего не выдумываем), итоги — только на
+    служебном листе «Сводка» (в бланке итоговой строки нет),
     а в XML необязательные элементы не появляются."""
     rep = _report(_ctx())
     wb = load_workbook(rep.render_print(tmp_path / "w.xlsx"))
@@ -184,8 +228,8 @@ def test_minimal_old_data_prints_empty_graphs(tmp_path):
     assert ws.cell(row=5, column=13).value == 12.5   # гр.12 — всего за год
     assert ws.cell(row=5, column=2).value in (None, "")   # гр.1 — пусто
     assert ws.cell(row=5, column=12).value in (None, "")  # гр.11 лимит — пусто
-    assert ws.cell(row=6, column=1).value == "ИТОГО"
-    assert ws.cell(row=6, column=13).value == 12.5
+    assert ws.cell(row=6, column=1).value in (None, "")   # нет строки ИТОГО
+    assert wb["Сводка"].cell(row=2, column=2).value == 12.5
     root = etree.parse(str(rep.render_xml(tmp_path / "w.xml"))).getroot()
     src = root.find(".//Источник")
     assert src.findtext("Объём") == "12.5"
@@ -207,14 +251,50 @@ def test_months_sum_mismatch_warns():
 
 
 def test_quality_code_not_warned():
-    """Короткие коды Прил. 2 («НЧ», «ТН») — не повод для предупреждения;
-    длинный произвольный текст — повод."""
+    """Коды Прил. 2 («СД», «ТН») — не повод для предупреждения; всё прочее
+    (старый «НЧ», текст) — повод: бланк принимает только коды."""
     ctx = _ctx_full()
     issues = _report(ctx).validate()
     assert not [i for i in issues if i.field == "качество"]
-    ctx.extra["water"]["discharge"][0]["quality"] = "какая-то вода"
+    ctx.extra["water"]["discharge"][0]["quality"] = "НЧ"
     issues = _report(ctx).validate()
     assert [i for i in issues if i.field == "качество"]
+
+
+def test_blank_codes_validated():
+    """Код очистного сооружения — только 5/6/7 (Прил. 4); сумма гр.14+17 =
+    гр.11 (п. 3.10); сумма видов использования = гр.31 (п. 2.15);
+    к Разделу 2 прилагается расчёт НДС (п. 3.1)."""
+    ctx = _ctx_full()
+    issues = _report(ctx).validate()
+    assert not [i for i in issues if i.field == "очистка"]
+    assert not [i for i in issues if i.field == "использование"]
+    assert any(i.field == "приложения" and "допустимого сброса" in i.message
+               for i in issues)
+    d = ctx.extra["water"]["discharge"][0]
+    d["treatment_code"] = "40"                 # код старой формы
+    d["normatively_treated"] = 1.0             # 1.0 ≠ гр.11 = 1.29
+    ctx.extra["water"]["intake"][0]["uses"][0]["volume"] = 0.5
+    issues = _report(ctx).validate()
+    msgs = [i.message for i in issues if i.field == "очистка"]
+    assert any("Прил. 4" in m for m in msgs) and any("3.10" in m for m in msgs)
+    assert any(i.field == "использование" and "2.15" in i.message
+               for i in issues)
+
+
+def test_pairs_limits_warn_and_do_not_overflow(tmp_path):
+    """Шестой вид использования и 25-е вещество в бланк не помещаются —
+    предупреждение, а печать не съезжает на чужие графы."""
+    ctx = _ctx_full()
+    src = ctx.extra["water"]["intake"][0]
+    src["uses"] = [{"code": str(100 + i), "volume": 0.1} for i in range(6)]
+    src["used_total"] = 0.6
+    issues = _report(ctx).validate()
+    assert any("5 пар" in i.message for i in issues)
+    wb = load_workbook(_report(ctx).render_print(tmp_path / "w.xlsx"))
+    ws = wb["Раздел 1"]
+    assert ws.cell(row=5, column=42).value == 0.1     # гр.41 — пятая пара
+    assert ws.cell(row=5, column=43).value == "ПК"    # гр.42 — уже передача
 
 
 def test_period_year_coerced_from_string():

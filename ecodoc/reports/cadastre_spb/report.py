@@ -9,12 +9,19 @@
 среды и обеспечению экологической безопасности СПб от 26.04.2023 № 87-р
 (в ред. Распоряжения от 14.02.2025 № 28-р). Срок — не позднее 31 марта года,
 следующего за отчётным, по каждому обособленному подразделению отдельно.
-Каналы подачи (сверено с офиц. источниками Комитета): e-mail
-kadastr@kpoos.gov.spb.ru (электронный документ с УКЭП, тема — ИНН и
-наименование) либо бумажный прошитый экземпляр заказным письмом с описью
-(191123, СПб, ул. Чайковского, д. 20, лит. В); независимо от способа формы
-дублируются файлом Excel на тот же адрес. XML-выгрузки нет. Электронная
-подсистема «Кадастр отходов» — это Ленинградская область, у СПб её нет.
+Каналы подачи (офиц. страница Комитета gov.spb.ru/gov/otrasl/ecology/
+otchotnost/regionalnyj-kadastr-othodov/, обновлена 10.06.2026, и «Руководство
+по внесению сведений в РКО» от 16.10.2025): с 2025 г. сведения готовятся в
+подсистеме «Ведение регионального кадастра отходов» ГИС СПб «Обращение с
+отходами производства и потребления в Санкт-Петербурге»
+(oopp.kpoos.gov.spb.ru) либо по типовым формам 1-5; подача — через Подсистему
+с УКЭП, либо файлом Excel (.xlsx/.xls) на kadastr@kpoos.gov.spb.ru, либо
+почтой на адрес Комитета: 191144, Санкт-Петербург, Дегтярный пер., д. 9
+стр. 1 (адрес ул. Чайковского, 20, лит. В из Руководства 10.2025 уже не
+актуален). XML-выгрузки нет: программа делает Excel по типовым формам.
+Сведения, поданные с нарушением Порядка (в т.ч. без района СПб в п. 2.2
+Формы 1), по п. 27 Порядка считаются не представленными — отсюда error в
+validate().
 Места накопления — из ctx.extra['accumulation_sites'] (плоские записи либо
 запись места со списком wastes); объекты обработки — из
 ctx.extra['treatment_objects'] (обычно отсутствуют, тогда строка «-»).
@@ -31,7 +38,9 @@ from pathlib import Path
 
 from openpyxl.utils import column_index_from_string, get_column_letter
 
+from ecodoc.core import fkko
 from ecodoc.core.models import Issue
+from ecodoc.core.refdata import oktmo_ref
 from ecodoc.core.money import D
 from ecodoc.core.registry import register
 from ecodoc.core.waste_agg import norm_fkko
@@ -72,11 +81,28 @@ class CadastreSPB(Report):
             issues.append(Issue("warning", "регион",
                                 "объекты вне СПб/ЛО — проверьте, требуется ли региональный "
                                 f"кадастр (коды: {', '.join(sorted(regions))})"))
+        # Район СПб в п. 2.2 Формы 1 обязателен (подсказка бланка в D22 и офиц.
+        # страница Комитета); без него сведения по п. 27 Порядка «считаются не
+        # представленными» — поэтому error, а не warning. Для объектов в ЛО
+        # (region_code 47) форма Комитета СПб не сдаётся — там не проверяем.
+        ob = self.ctx.objects[0] if self.ctx.objects else None
+        if ob is not None and str(ob.region_code or "") in ("", "78") \
+                and not self._district(ob):
+            issues.append(Issue("error", "район",
+                                "в п. 2.2 Формы 1 не определён район Санкт-Петербурга "
+                                "(бланк: адрес объекта «с указанием района "
+                                "Санкт-Петербурга»; по п. 27 Порядка сведения без "
+                                "района считаются не представленными) — добавьте "
+                                "«<Название> район» в адрес объекта или укажите "
+                                "extra.district"))
         year_next = (self.ctx.period.year + 1) if self.ctx.period.year else "след."
         issues.append(Issue("warning", "срок",
                             f"срок подачи — не позднее 31 марта {year_next} по каждому "
                             "обособленному подразделению (Распоряжение Комитета по "
-                            "природопользованию СПб № 87-р в ред. № 28-р); для ЛО/иных "
+                            "природопользованию СПб № 87-р в ред. № 28-р); готовить в "
+                            "Подсистеме «Ведение регионального кадастра отходов» ГИС "
+                            "СПб (oopp.kpoos.gov.spb.ru, подача с УКЭП) либо по типовым "
+                            "формам — Excel на kadastr@kpoos.gov.spb.ru; для ЛО/иных "
                             "регионов — сверьте свой НПА"))
         return issues
 
@@ -124,7 +150,7 @@ class CadastreSPB(Report):
             ("1.12", "ФИО руководителя с указанием должности", director),
             ("1.13", "Коды ОКВЭД (основной и вспомогательные)", o.okved),
             ("1.14", "Должность, ФИО, номер телефона, адрес электронной почты "
-                     "ответственного за представление сведений в кадастр",
+                     "ответственного за представление сведений в региональный кадастр",
              self._responsible()),
         ]
         r = 6
@@ -141,8 +167,10 @@ class CadastreSPB(Report):
         rows2 = [
             ("2.1", "Код объекта, оказывающего негативное воздействие на окружающую среду",
              ob.code if ob else ""),
+            # Бланк (D22): «адрес объекта … (с указанием района Санкт-Петербурга)»;
+            # в принятом отчёте район дописан в скобках после адреса.
             ("2.2", "Адрес местонахождения объекта, оказывающего негативное воздействие "
-                    "на окружающую среду", ob.address if ob else ""),
+                    "на окружающую среду", self._address_with_district(ob) if ob else ""),
             ("2.3", "Код ОКТМО объекта, оказывающего негативное воздействие на окружающую среду",
              (ob.oktmo if ob else "") or o.oktmo),
         ]
@@ -196,8 +224,10 @@ class CadastreSPB(Report):
                     xlsx.cell(ws, f"E{r}", s.get("capacity_m3", "") if i == 0 else "")
                     xlsx.cell(ws, f"F{r}", w.get("waste_name") or w.get("name", ""),
                               align="left")
-                    xlsx.cell(ws, f"G{r}", w.get("fkko", ""))
-                    xlsx.cell(ws, f"H{r}", w.get("hazard_class", ""))
+                    # Код — в формате ФККО «7 33 100 01 72 4» (так в бланке,
+                    # Подсистеме и принятом отчёте), класс — римской цифрой.
+                    xlsx.cell(ws, f"G{r}", fkko.fmt(w.get("fkko", "")))
+                    xlsx.cell(ws, f"H{r}", _hazard(w.get("hazard_class", "")))
                     xlsx.cell(ws, f"I{r}", w.get("method", "отдельно от других отходов"),
                               align="left")
                     r += 1
@@ -275,7 +305,10 @@ class CadastreSPB(Report):
             else:
                 to_other, region_name, purpose = 0.0, "", ""
             vals = {
-                "A": n, "B": w.name, "C": w.fkko_code, "D": w.hazard_class,
+                # после агрегации актов код хранится 11 цифрами без пробелов —
+                # печатаем в формате каталога, класс римской (как в принятом отчёте)
+                "A": n, "B": w.name, "C": fkko.fmt(w.fkko_code),
+                "D": _hazard(w.hazard_class),
                 "E": _num(w.accumulated_start), "F": _num(w.generated),
                 "G": _num(w.received), "H": 0.0, "I": "", "J": "",
                 "K": _num(w.processed), "L": 0.0, "M": _num(w.used), "N": 0.0,
@@ -297,12 +330,12 @@ class CadastreSPB(Report):
         xlsx.cell(ws, f"{last}1", "Форма 4", border=False, bold=True, align="right")
         xlsx.cell(ws, "A3", "Сведения об объекте обработки, утилизации, обезвреживания отходов",
                   border=False, bold=True, align="left")
-        # Двухъярусная шапка, как в принятом Комитетом отчёте: строка 5 —
-        # групповые заголовки (объединены по горизонтали) и одиночные графы
-        # (объединены по вертикали 5:6), строка 6 — подписи граф внутри групп,
-        # строка 7 — номера граф, данные — со строки 8. Тексты подписей —
-        # полные формулировки эталона (без склейки «Группа: подпись» и без
-        # многоточий-заглушек).
+        # Сетка шапки повторяет типовую форму Комитета (Типовые_формы.xlsx,
+        # лист «Форма 4»): одиночные графы объединены по вертикали 5:8,
+        # групповые заголовки — по горизонтали в строке 5, подписи граф внутри
+        # групп объединены 6:8, номера граф — строка 9, данные — с 10-й.
+        # Тексты подписей — полные формулировки эталона (без склейки
+        # «Группа: подпись» и без многоточий-заглушек).
         singles = {
             1: "№, п/п",
             2: "Код объекта в государственном реестре объектов, оказывающих негативное "
@@ -355,18 +388,19 @@ class CadastreSPB(Report):
         }
         for num, label in singles.items():
             col = get_column_letter(num)
-            xlsx.merge(ws, f"{col}5:{col}6", label, bold=True, fill=True, size=8)
+            xlsx.merge(ws, f"{col}5:{col}8", label, bold=True, fill=True, size=8)
         for (c1, c2), label in groups.items():
             xlsx.merge(ws, f"{get_column_letter(c1)}5:{get_column_letter(c2)}5", label,
                        bold=True, fill=True, size=8)
         for num, label in subs.items():
-            xlsx.cell(ws, f"{get_column_letter(num)}6", label, bold=True, fill=True, size=8)
+            col = get_column_letter(num)
+            xlsx.merge(ws, f"{col}6:{col}8", label, bold=True, fill=True, size=8)
         for i in range(27):
             col = get_column_letter(i + 1)
-            xlsx.cell(ws, f"{col}7", i + 1, italic=True, size=9)
+            xlsx.cell(ws, f"{col}9", i + 1, italic=True, size=9)
             ws.column_dimensions[col].width = 6 if i == 0 else 16
         objs = self._extra_list("treatment_objects")
-        r = 8
+        r = 10
         if objs:
             for n, obj in enumerate(objs, 1):
                 xlsx.cell(ws, f"A{r}", n)
@@ -376,7 +410,7 @@ class CadastreSPB(Report):
                 r += 1
         else:
             for i in range(27):
-                xlsx.cell(ws, f"{get_column_letter(i+1)}8", "-")
+                xlsx.cell(ws, f"{get_column_letter(i+1)}10", "-")
         xlsx.heights(ws, {5: 45, 6: 75})
 
     # Форма 5 — уведомление -------------------------------------------
@@ -396,10 +430,11 @@ class CadastreSPB(Report):
                    "производства и потребления в Санкт-Петербурге", border=False, bold=True)
         xlsx.merge(ws, "A15:I15",
                    f"     Направляю в Ваш адрес сведения в региональный кадастр отходов "
-                   f"в Санкт-Петербурге за отчетный {year} год.", border=False, align="left")
+                   f"в Санкт-Петербурге за отчетный период {year} год.", border=False, align="left")
         xlsx.cell(ws, "A16", "     Уникальный идентификационный номер: ",
                   border=False, align="left")
-        xlsx.merge(ws, "A18:I18", "УИН, либо штрих код", border=False, italic=True,
+        # «2» — номер сноски из бланка (A18), расшифровка в A34-A35
+        xlsx.merge(ws, "A18:I18", "УИН, либо штрих код2", border=False, italic=True,
                    size=9, align="left")
         xlsx.cell(ws, "A21", "     Достоверность представленных сведений подтверждаю.",
                   border=False, align="left")
@@ -415,8 +450,47 @@ class CadastreSPB(Report):
         xlsx.cell(ws, "B30", "М.П.", border=False)
         xlsx.cell(ws, "F30", "(дата)", border=False, italic=True, size=8)
         xlsx.cell(ws, "B31", "(при наличии).", border=False, italic=True, size=8)
+        # сноска бланка: A34 — линия, A35 — «2 Не заполняется» (УИН присваивает
+        # Комитет, заявитель поле не трогает)
+        xlsx.cell(ws, "A34", "___________________", border=False, align="left")
+        xlsx.cell(ws, "A35", "2 Не заполняется", border=False, size=9, align="left")
 
     # --- вспомогательное ---
+    def _district(self, ob) -> str:
+        """Район Санкт-Петербурга объекта для п. 2.2 Формы 1 (пусто — не определён).
+
+        Источники по порядку: extra['district'] (ручное указание эколога),
+        «<Название> район»/«р-н» в адресе объекта, запись справочника
+        data/oktmo_ref.json с тем же ОКТМО, где в value назван район (напр.
+        «Санкт-Петербург, Приморский р-н (Богатырский пр.)»). ОКТМО СПб кодирует
+        муниципальные округа (40 3xx 000), а не районы, поэтому таблицы
+        «ОКТМО → район» здесь нет — её не из чего проверить."""
+        e = self.ctx.extra if isinstance(self.ctx.extra, dict) else {}
+        manual = str(e.get("district") or "").strip()
+        if manual:
+            return _district_name(manual) or manual
+        found = _district_name(ob.address or "")
+        if found:
+            return found
+        code = str(ob.oktmo or "").strip()
+        if code:
+            for rec in oktmo_ref().values():
+                if isinstance(rec, dict) and str(rec.get("oktmo") or "") == code:
+                    found = _district_name(str(rec.get("value") or ""))
+                    if found:
+                        return found
+        return ""
+
+    def _address_with_district(self, ob) -> str:
+        """Адрес объекта с районом в скобках, как в принятом отчёте
+        («…стр.1 (Всеволожский р-н)»); если район уже назван в адресе —
+        адрес как есть."""
+        addr = ob.address or ""
+        district = self._district(ob)
+        if not district or _district_name(addr):
+            return addr
+        return f"{addr} ({district} район)"
+
     def _responsible(self) -> str:
         e = self.ctx.extra if isinstance(self.ctx.extra, dict) else {}
         if e.get("responsible"):
@@ -429,6 +503,29 @@ class CadastreSPB(Report):
         e = self.ctx.extra if isinstance(self.ctx.extra, dict) else {}
         v = e.get(key, [])
         return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+
+
+# «Приморский район», «Приморский р-н», «р-н Центральный» → название района.
+# Прилагательное с большой буквы (-ий/-ый/-ой: Приморский, Центральный,
+# Курортный, Петродворцовый, Всеволожский) строго рядом со словом «район»/
+# «р-н» — иначе слово из названия улицы за район не примется.
+_RE_DISTRICT = re.compile(
+    r"(?:(?<![А-Яа-яЁё])([А-ЯЁ][а-яё]+(?:ий|ый|ой))\s+(?:район|р-н)(?![А-Яа-яЁё]))"
+    r"|(?:(?<![А-Яа-яЁё])(?:район|р-н)\s+([А-ЯЁ][а-яё]+(?:ий|ый|ой))(?![А-Яа-яЁё]))")
+
+
+def _district_name(text: str) -> str:
+    """Название района из текста адреса (без слова «район»); пусто — нет."""
+    m = _RE_DISTRICT.search(text or "")
+    if not m:
+        return ""
+    return m.group(1) or m.group(2) or ""
+
+
+def _hazard(value) -> str:
+    """Класс опасности для печати — римской цифрой (I…V), как в принятом
+    Комитетом отчёте; уже римский/неизвестный текст — как есть."""
+    return fkko.roman(value) or str(value or "")
 
 
 # Резервные ТКО-подтипы для случая, когда приёмщик неизвестен: 7 31 … (отходы

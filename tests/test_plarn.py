@@ -1,4 +1,6 @@
-"""Тесты ПЛАРН (ecodoc/development/plarn.py) — план по ПП РФ № 2451.
+"""Тесты ПЛАРН (ecodoc/development/plarn.py) — план по ПП РФ № 2451
+в редакции ПП от 02.06.2026 № 684 (действует с 01.09.2026; сверено
+22.08.2026 по normativ.kontur.ru/document/1/506401 и base.garant.ru/400170332).
 
 Проверяем: состав разделов по п. 5 Правил, расчёт максимального расчётного
 объёма «100 % наибольшей ёмкости» и пороги 3 т / 0,5 т, наполнение таблиц из
@@ -35,6 +37,9 @@ def _ctx(full=True):
                         "details": "полис № 555", "amount": "1000000"},
             "operations": ["приём", "хранение", "выдача дизельного топлива"],
             "notify": [{"to": "ЕДДС района", "phone": "112"}],
+            "sorbent": "торфяной сорбент «Сорбойл»",
+            "waste_transporter": {"name": "ООО «ЭкоТранс»",
+                                  "license": "№ 78-00123 от 01.01.2025"},
         }
     return ctx
 
@@ -50,15 +55,24 @@ def _docx_text(path):
 
 
 def test_sections_follow_pp2451():
-    """Состав плана — по п. 5 Правил № 2451: все ключевые блоки на месте."""
+    """Состав плана — по п. 5 Правил № 2451 в ред. ПП № 684: подпункты
+    «а»–«л», «о» на месте, «м»/«н» (утратили силу) отсутствуют, приложения
+    по п. 6 — отдельным разделом."""
+    letters = [l for _k, l, _t in plarn.SECTIONS if l]
+    assert letters == ["а", "б", "в", "г", "д", "е", "ж", "з", "и", "к",
+                       "л", "о"]
     joined = " ".join(t for _k, _l, t in plarn.SECTIONS).lower()
-    for need in ["источниках разливов", "максимальные расчётные объёмы",
-                 "зоны распространения", "первоочередные действия",
-                 "локализации", "аварийно-спасательн", "оповещения",
-                 "утилизации собранных", "финансовое обеспечение",
-                 "календарный план"]:
+    for need in ["полное наименование и сокращённое наименование",
+                 "идентификационный номер налогоплательщика",
+                 "источниках разливов", "максимальные расчётные объёмы",
+                 "зоны распространения", "первоочередных действий",
+                 "локализации", "и (или) привлечённых", "оповещения",
+                 "вида сорбента", "размещение и транспортировка",
+                 "финансовое обеспечение", "приложения к плану",
+                 "календарные планы"]:
         assert need in joined, f"в составе разделов нет «{need}»"
-    assert "2451" in plarn.NPA and "46" in plarn.NPA
+    assert "объём работ" not in joined and "стоимости единицы" not in joined
+    assert "2451" in plarn.NPA and "46" in plarn.NPA and "684" in plarn.NPA
 
 
 def test_max_spill_is_100_percent_of_largest_tank():
@@ -96,10 +110,16 @@ def test_generate_fills_tables_from_data(tmp_path):
     text = _docx_text(p)
     for need in ["РВС-100 № 1", "дизельное топливо", "ПАСФ «Спасатель»",
                  "№ 12-ЛРН", "договор страхования", "2451", "7-ФЗ",
-                 "100 % объёма одной наибольшей ёмкости"]:
+                 "100 процентов объёма одной наибольшей ёмкости",
+                 "пп. «л» п. 7", "Сорбойл", "ЭкоТранс", "78-00123",
+                 "координат (широта, долгота)", "30 минут"]:
         assert need in text, f"в документе нет «{need}»"
-    # нормативы локализации — 4 часа вода / 6 часов суша
-    assert "не более 4 часов" in text and "6 часов" in text
+    # нормативы локализации — 4 часа вода / 6 часов суша (пп. «ж» п. 5)
+    assert "в течение 4 часов" in text and "6 часов" in text
+    # пп. «а» п. 5 (ред. № 684): полное/сокращённое наименование, ИНН, адрес
+    assert "полное наименование" in text and "ИНН 7801234564" in text
+    # адресаты оповещения по п. 25 — в тексте даже при заданных телефонах
+    assert "ЦУКС" in plarn.ALERT_ADDRESSEES[0]
 
 
 def test_empty_data_gives_marks_and_gaps(tmp_path):
@@ -126,15 +146,35 @@ def test_gaps_match_text_marks(tmp_path):
 
 
 def test_approval_and_drills_in_validate_and_text(tmp_path):
-    """Честно: согласование РПН, утверждение, комплексные учения раз в 3 года."""
+    """Согласование в ТЕРРИТОРИАЛЬНЫЙ орган РПН (16 раб. дней), учения до
+    утверждения и не реже 1 раза в 5 лет (п. 8 в ред. № 684), уведомление
+    об утверждении за 14 календарных дней (п. 24)."""
     ctx = _ctx()
     problems = plarn.gaps(ctx)
-    assert any("учениями" in g and "Росприроднадзор" in g for g in problems)
+    assert any("учения" in g and "Росприроднадзора" in g for g in problems)
     issues = plarn.validate(ctx)
-    assert any("учениями" in i.message for i in issues)
+    assert any("учения" in i.message for i in issues)
     text = _docx_text(plarn.generate(ctx, tmp_path / "plarn.docx"))
-    assert "комплексными учениями" in text
-    assert "Росприроднадзор" in text
+    assert "комплексные учения" in text
+    assert "территориальный орган Росприроднадзора" in text
+    assert "одного раза в 5 лет" in text and "3 года" not in text
+    assert "16 рабочих дней" in text and "14 календарных дней" in text
+    assert plarn.DRILLS_EVERY_YEARS == 5
+
+
+def test_sorbent_and_transporter_are_gaps_when_missing(tmp_path):
+    """Пп. «л» п. 5 и п. 6 Правил (ред. № 684): без вида сорбента и лицензии
+    перевозчика отходов — пометка в тексте и строка в gaps()."""
+    ctx = _ctx()
+    del ctx.extra["plarn"]["sorbent"]
+    del ctx.extra["plarn"]["waste_transporter"]
+    problems = plarn.gaps(ctx)
+    assert any("сорбента" in g for g in problems)
+    assert any("транспортировке отходов" in g for g in problems)
+    text = _docx_text(plarn.generate(ctx, tmp_path / "plarn.docx"))
+    assert f"[требуется: {plarn.REQ_SORBENT}]" in text
+    assert f"[требуется: {plarn.REQ_TRANSPORTER}]" in text
+    assert "Приложения к плану" in text
 
 
 def test_liquidation_wastes_from_base_and_fkko(tmp_path, monkeypatch):

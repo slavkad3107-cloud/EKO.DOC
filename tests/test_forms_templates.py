@@ -120,7 +120,8 @@ def test_fill_template_keeps_formulas(forms_dir, tmp_path):
     assert ws["I7"].value == "=G7+H7"
     texts = [[c.value for c in row] for row in ws.iter_rows(min_row=7, max_row=9)]
     flat = [str(v) for row in texts for v in row if v is not None]
-    assert "Лампы ртутные" in flat and "47110101521" in flat
+    # код ФККО — как в бланке пользователя, с пробелами («7 33 100 01 72 4»)
+    assert "Лампы ртутные" in flat and "4 71 101 01 52 1" in flat
     assert "Мусор офисный" in flat and 1.9 in [v for row in texts for v in row]
 
 

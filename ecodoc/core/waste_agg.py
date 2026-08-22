@@ -34,6 +34,36 @@ def is_tko(fkko) -> bool:
     return norm_fkko(fkko).startswith("73")
 
 
+# получатель — региональный оператор / оператор по обращению с ТКО
+# (2-ТП гр. 14 по п. 13 Указаний к № 614: «количество ТКО, переданных
+# региональному оператору… оператору по обращению с ТКО»). Признак берём из
+# текста получателя в акте/справке — отдельного поля в WasteAct нет.
+_RE_REGOP = re.compile(r"регион|оператор\s+по\s+обращени[юя]\s+с\s+тко|оператор\s+тко", re.I)
+
+
+def is_regional_operator(act: WasteAct) -> bool:
+    """Получатель по акту — региональный оператор (оператор ТКО)?"""
+    return bool(_RE_REGOP.search(f"{act.receiver or ''} {act.operation or ''}"))
+
+
+def transfer_kind(op: str) -> str:
+    """Назначение передачи по тексту операции акта: burial/storage/util/
+    neutral/processing или '' — не распознано (тогда масса остаётся только
+    в transferred, а форма 2-ТП не может разнести её по графам 15–23)."""
+    op = (op or "").lower()
+    if "захорон" in op or "размещ" in op:
+        return "burial"
+    if "хранени" in op:
+        return "storage"
+    if "утилиз" in op or "рецикл" in op:
+        return "util"
+    if "обезвреж" in op:
+        return "neutral"
+    if "обработ" in op or "сортиров" in op:
+        return "processing"
+    return ""
+
+
 _RE_DATE = re.compile(r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})\b")
 _RE_DATE_ISO = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
 
@@ -78,12 +108,15 @@ def _in_period(act: WasteAct, year, quarter) -> bool:
     return True
 
 
-def aggregate_acts(acts: list[WasteAct], year=None, quarter=None) -> tuple[list[WasteFlow], list[dict]]:
+def aggregate_acts(acts: list[WasteAct], year=None, quarter=None,
+                   warnings: list[str] | None = None) -> tuple[list[WasteFlow], list[dict]]:
     """Свернуть акты по ФККО в список WasteFlow + список получателей (для
     Приложения 3 журнала №1028, кадастра, формы III кат.).
 
     Если задан year (и quarter) — учитываются только акты этого периода по их
-    дате (акты без даты включаются)."""
+    дате (акты без даты включаются). В warnings (если передан список)
+    дописываются предупреждения — напр. акт без распознанного назначения
+    передачи, чтобы масса не терялась молча."""
     by_code: dict[str, WasteFlow] = {}
     order: list[str] = []
     receivers: list[dict] = []
@@ -107,17 +140,35 @@ def aggregate_acts(acts: list[WasteAct], year=None, quarter=None) -> tuple[list[
         op = _op(a)
         w.generated += m           # образовано (акт = образованный и переданный отход)
         w.transferred += m         # передано другим лицам, всего
-        if "захорон" in op or "размещ" in op:
+        regop = is_tko(code) and is_regional_operator(a)
+        kind = transfer_kind(op)
+        if regop:
+            # ТКО региональному оператору — это графа 14 формы 2-ТП, а не
+            # графы 15–23 «по видам»; поэтому по видам НЕ раскладываем:
+            # в 2-ТП гр.14 = transferred − сумма по видам
+            pass
+        elif kind == "burial":
             w.transferred_burial += m
-        elif "хранени" in op:
+        elif kind == "storage":
             w.transferred_storage += m
-        elif "утилиз" in op or "рецикл" in op:
+        elif kind == "util":
             w.transferred_util += m
-        elif "обезвреж" in op:
+        elif kind == "neutral":
             w.transferred_neutral += m
-        elif "обработ" in op or "сортиров" in op:
+        elif kind == "processing":
             w.transferred_processing += m
-        # получатель (для Прил.3 / кадастра) — уникальный по (код, получатель)
+        elif warnings is not None:
+            # назначение передачи не распознано: масса остаётся только в
+            # transferred (не теряется), но по графам 15–23 2-ТП её разнести
+            # нельзя — эколог должен уточнить операцию в акте
+            warnings.append(
+                f"акт {a.date or 'без даты'} «{a.name}» ({code or 'без кода'}), "
+                f"{float(m):g} т: не указано назначение передачи "
+                f"(операция «{a.operation or ''}» — ожидается утилизация/"
+                "обезвреживание/захоронение/хранение/обработка); в 2-ТП "
+                "масса не разнесена по графам 15–23")
+        # получатель (для Прил.3 / кадастра) — уникальный по (код, получатель);
+        # mass и regional_operator нужны 2-ТП гр.14 (ТКО региональному оператору)
         if a.receiver:
             rk = (code, a.receiver)
             if rk not in seen_recv:
@@ -125,7 +176,11 @@ def aggregate_acts(acts: list[WasteAct], year=None, quarter=None) -> tuple[list[
                 receivers.append({
                     "fkko": code, "receiver": a.receiver, "inn": a.receiver_inn,
                     "license": a.license, "carrier": a.carrier,
-                    "operation": a.operation})
+                    "operation": a.operation, "mass": 0.0,
+                    "regional_operator": bool(is_regional_operator(a))})
+            rec = next(r for r in receivers
+                       if r["fkko"] == code and r["receiver"] == a.receiver)
+            rec["mass"] = float(D(rec.get("mass") or 0) + m)
 
     wastes = [by_code[k] for k in order]
     return wastes, receivers
@@ -261,11 +316,21 @@ def apply_acts(ctx) -> bool:
     per = getattr(ctx, "period", None)
     year = getattr(per, "year", None) or None
     quarter = getattr(per, "quarter", None) or None
-    wastes, receivers = aggregate_acts(acts, year=year, quarter=quarter)
+    warnings: list[str] = []
+    wastes, receivers = aggregate_acts(acts, year=year, quarter=quarter,
+                                       warnings=warnings)
     ctx.wastes = _merge_flows(ctx.wastes or [], wastes)
-    if receivers:
+    if receivers or warnings:
         if not isinstance(ctx.extra, dict):
             ctx.extra = {}
+    if receivers:
         ctx.extra["waste_receivers"] = _merge_receivers(
             ctx.extra.get("waste_receivers"), receivers)
+    # предупреждения агрегации — чтобы формы (2-ТП validate) могли их показать;
+    # при каждом пересчёте список заменяется, а не копится
+    if isinstance(ctx.extra, dict):
+        if warnings:
+            ctx.extra["waste_agg_warnings"] = warnings
+        else:
+            ctx.extra.pop("waste_agg_warnings", None)
     return True

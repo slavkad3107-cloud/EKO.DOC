@@ -23,8 +23,12 @@ def test_marks_found_in_good_blank(tmp_path):
                ["Обобщенные данные учета в области обращения с отходами",
                 "Код ФККО"])
     v = forms_norms.check_blank("waste-movement", p)
-    assert v.ok and v.level == "ok"
-    assert "1028" in v.npa
+    assert v.ok                                   # признаки формы на месте
+    # форма меняется с 01.09.2026 (№ 227): бланк, сделанный до этой даты,
+    # получает предупреждение о смене — это не ошибка бланка
+    assert v.level == "warn" and any("01.09.2026" in n or "2026-09-01" in n
+                                     for n in v.notes)
+    assert "1028" in v.npa and "227" in v.npa
 
 
 def test_wrong_blank_flagged(tmp_path):
@@ -50,7 +54,9 @@ def test_html_blank_from_lkpp_is_read(tmp_path):
                  "<h1>Декларация о плате за негативное воздействие</h1>"
                  "</body></html>", encoding="utf-8")
     v = forms_norms.check_blank("declaration-nvos", p)
-    assert v.ok and v.level == "ok" and not v.notes
+    assert v.ok                                   # html прочитан, признаки есть
+    # единственное замечание — о смене формы с 01.09.2026 (№ 182)
+    assert all("2026" in n for n in v.notes)
 
 
 def test_scan_without_text_layer_is_warn_not_error(tmp_path):

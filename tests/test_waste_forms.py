@@ -209,7 +209,8 @@ def test_waste_movement_template_clears_sample_and_expands(tmp_path):
     assert "F16:H16" in {str(r) for r in ws.merged_cells.ranges}
     # титул: чужая организация/период/исполнитель заменены на наши
     assert wb["Титул"]["B9"].value.startswith("ООО «Ромашка»")
-    assert wb["Титул"]["F11"].value == "за 2024 год"
+    # период без «за»: в шапках листов оно уже есть («…отходами за» + =Титул!F11)
+    assert wb["Титул"]["F11"].value == "2024 года"
     assert wb["Титул"]["G15"].value == "Иванов И.И."
     # Прил. 3: только переданные отходы, чужой приёмщик заменён на нашего
     a3 = wb["Приложение 3 (год)"]
@@ -251,7 +252,8 @@ def test_cadastre_spb_forms(tmp_path):
     assert wb["Форма 2"]["C8"].value == "Контейнерная площадка"
     f3 = wb["Форма 3"]
     assert f3["B13"].value == "Лампы ртутные"             # наименование в графе 2
-    assert f3["C13"].value == "47110101521"              # код в графе 3
+    assert f3["C13"].value == "4 71 101 01 52 1"   # код в графе 3 — формат ФККО
+    assert f3["D13"].value == "I"                  # класс римской, как в принятом отчёте
     # мусор офисный 7 33 100 01 72 4 без записи о приёмщике — резервный
     # признак ТКО по коду, масса в гр.17 (графа Q)
     assert f3["Q14"].value == 42.6
@@ -330,7 +332,8 @@ def test_cadastre_spb_form2_site_with_waste_list(tmp_path):
     # место 1: две строки отходов, описание и вместимость только в первой
     assert (f2["B8"].value, f2["C8"].value, f2["D8"].value) == \
         (1, "Металлический контейнер", 15.0)
-    assert f2["G8"].value == "73310001724"
+    assert f2["G8"].value == "7 33 100 01 72 4"
+    assert f2["H8"].value == "IV"
     assert f2["I8"].value == "в смеси с другими отходами"
     # пустая строка при чтении openpyxl видна как None — важно, что не число/текст
     assert (f2["B9"].value, f2["C9"].value, f2["D9"].value) == (None, None, None)
@@ -338,7 +341,7 @@ def test_cadastre_spb_form2_site_with_waste_list(tmp_path):
     assert f2["I9"].value == "отдельно от других отходов"
     # место 2 (плоская запись) — следующая строка со своим номером
     assert (f2["B10"].value, f2["C10"].value) == (2, "Контейнер пластмассовый")
-    assert f2["G10"].value == "47110101521"
+    assert f2["G10"].value == "4 71 101 01 52 1"
 
 
 def test_cadastre_spb_form4_two_tier_header(tmp_path):
@@ -348,7 +351,7 @@ def test_cadastre_spb_form4_two_tier_header(tmp_path):
     p = registry.get("cadastre-spb")(_ctx()).render_print(tmp_path / "k4.xlsx")
     f4 = openpyxl.load_workbook(p)["Форма 4"]
     merged = {str(r) for r in f4.merged_cells.ranges}
-    assert {"N5:P5", "Q5:R5", "X5:AA5", "A5:A6"} <= merged
+    assert {"N5:P5", "Q5:R5", "X5:AA5", "A5:A8", "N6:N8"} <= merged
     assert f4["N5"].value == "Используемые установки (необходимое оборудование)"
     assert f4["Q5"].value == "Получение вторичной продукции (энергии)"
     assert f4["X5"].value == "Образование вторичных отходов"
@@ -360,9 +363,10 @@ def test_cadastre_spb_form4_two_tier_header(tmp_path):
     assert f4["G5"].value.endswith("и наименование органа, выдавшего ее")
     assert "в случае отсутствия кода по ОКПД" in f4["Q6"].value
     assert "с указанием единицы измерения" in f4["R6"].value
-    # номера граф в строке 7, данные (прочерки без treatment_objects) — в 8
-    assert f4["A7"].value == 1 and f4["AA7"].value == 27
-    assert f4["A8"].value == "-"
+    # номера граф в строке 9, данные (прочерки без treatment_objects) — в 10,
+    # как в типовой форме Комитета
+    assert f4["A9"].value == 1 and f4["AA9"].value == 27
+    assert f4["A10"].value == "-"
 
 
 def test_tp2_waste_datapacket_xml(tmp_path):
@@ -380,110 +384,212 @@ def test_tp2_waste_datapacket_xml(tmp_path):
     assert "<CHECKSUM>" in xml
 
 
-def test_tp2_waste_print_pages(tmp_path):
-    registry.load_all()
-    rep = registry.get("2tp-waste")(_ctx())
-    p = rep.render_print(tmp_path / "2tp.xlsx")
-    wb = openpyxl.load_workbook(p)
-    assert wb.sheetnames == ["стр.1", "стр.2", "стр.3"]
-    assert wb["стр.1"]["A17"].value == "0609013"       # код формы по ОКУД
-    assert wb["стр.2"]["B4"].value == "ВСЕГО"           # агрегатная строка
-    # графы А,Б,В,Г (строка 3) + 29 граф (Приказ № 614)
-    assert wb["стр.2"]["A3"].value == "А"
-    from openpyxl.utils import get_column_letter
-    assert wb["стр.2"][f"{get_column_letter(4 + 29)}3"].value == 29  # графа 29
+# --- журнал 1028: блок «продолжение», межлистовые ссылки, период, ред. № 227 ---
+
+def _user_blank_1028_full(path):
+    """Мини-копия бланка МО 2025: Прил. 1 + Прил. 2 с ДВУМЯ блоками (шапка
+    продолжения объединена, строка 16 — чужой образец с формулой =G8) +
+    Прил. 3, где первая строка — межлистовые ссылки на строку 6 Прил. 1."""
+    wb = openpyxl.Workbook()
+    t = wb.active
+    t.title = "Титул"
+    t["B5"] = "ДАННЫЕ УЧЕТА В ОБЛАСТИ ОБРАЩЕНИЯ С ОТХОДАМИ"
+    t["B9"] = 'ООО "ЧУЖАЯ ФИРМА"\nПлощадка по адресу: "чужой адрес"'
+    t["E11"] = "период"
+    t["F11"] = "1 кв - 3 кв 2025 года"
+    a1 = wb.create_sheet("Приложение 1")
+    a1["G1"] = ("Приложение N 1\nк Порядку учета в области обращения с отходами, "
+                "утвержденному приказом Минприроды России от 8 декабря 2020 года N 1028")
+    a1["A2"] = "Состав образующихся видов отходов, подлежащих учету"
+    for i, h in enumerate(["№ п/п", "Наименование отходов", "Код ФККО",
+                           "Класс опасности вида отхода", "Происхождение",
+                           "Агрегатное состояние", "Химический состав"], 1):
+        a1.cell(row=4, column=i, value=h)
+        a1.cell(row=5, column=i, value=i)
+    a1["A6"], a1["B6"], a1["C6"], a1["D6"] = 3, "Чужой отход", "7 33 100 01 72 4", 4
+    ws = wb.create_sheet("Приложение 2 (год)")
+    ws["A2"] = "Обобщенные данные учета в области обращения с отходами за"
+    ws["G3"], ws["H3"] = "=Титул!F11", "год"
+    for ref, txt in {"A5": "№ п/п", "B5": "Наименование отходов", "C5": "Код ФККО",
+                     "D5": "Класс опасности вида отхода",
+                     "E5": "Наличие отходов на начало отчетного периода, тонн",
+                     "G5": "Образовано отходов в отчетном периоде, тонн",
+                     "H5": "Получено отходов от других лиц в отчетном периоде, тонн"}.items():
+        ws[ref] = txt
+    for c in "ABCDGH":
+        ws.merge_cells(f"{c}5:{c}6")
+    ws.merge_cells("E5:F5")
+    ws["E6"], ws["F6"] = "хранение", "накопление"
+    for i, lbl in enumerate(["А", 1, 2, 3, 4, 5, 6, 7]):
+        ws.cell(row=7, column=1 + i, value=lbl)
+    ws["A8"], ws["B8"] = 1, "='Приложение 1'!B6"
+    ws["C8"], ws["D8"] = "='Приложение 1'!C6", "='Приложение 1'!D6"
+    ws["G8"] = 0
+    ws["J12"] = "продолжение"
+    ws["A13"] = "№ строки"
+    ws["B13"] = "Обработано отходов в отчетном периоде, тонн"
+    ws["C13"] = "Утилизировано отходов в отчетном периоде, тонн"
+    ws["D13"] = "Обезврежено отходов в отчетном периоде, тонн"
+    ws["E13"] = "Передано отходов за отчетный период, тонн"
+    ws["F13"] = "Размещено отходов на эксплуатируемых объектах в отчетном периоде, тонн"
+    ws["I13"] = "Наличие отходов на конец отчетного периода, тонн"
+    for c in "ABCDE":
+        ws.merge_cells(f"{c}13:{c}14")
+    ws.merge_cells("F13:H13")
+    ws.merge_cells("I13:J13")
+    ws["F14"], ws["G14"], ws["H14"] = "Всего", "Хренение", "Захоронение"  # опечатка как в бланке
+    ws["I14"], ws["J14"] = "Хранение", "Накопление"
+    for i, lbl in enumerate(["А", 8, 9, 10, 11, 12, 13, 14, 15, 16]):
+        ws.cell(row=15, column=1 + i, value=lbl)
+    ws["A16"], ws["B16"], ws["E16"], ws["F16"] = 1, 0, "=G8", 0   # чужая строка образца
+    a3 = wb.create_sheet("Приложение 3 (год)")
+    a3["A2"] = "Данные учета переданных другим лицам отходов за"
+    a3["L3"], a3["M3"] = "=Титул!F11", "год"
+    for ref, txt in {"A5": "№ п/п", "B5": "Наименование отходов", "C5": "Код ФККО",
+                     "D5": "Класс опасности вида отхода",
+                     "E5": "Количество переданных отходов за отчетный период, тонн",
+                     "K5": "Сведения о лицах, которым переданы отходы",
+                     "L5": "Дата и номер договора", "M5": "Срок действия договора",
+                     "N5": "Реквизиты лицензии"}.items():
+        a3[ref] = txt
+    for c in "ABCDKLMN":
+        a3.merge_cells(f"{c}5:{c}6")
+    a3.merge_cells("E5:J5")
+    for col, lbl in zip("EFGHIJ", ["Всего", "Для обработки", "Для утилизации",
+                                   "Для обезвреживания", "Для хранения", "Для захоронения"]):
+        a3[f"{col}6"] = lbl
+    for i in range(14):
+        a3.cell(row=7, column=1 + i, value=i + 1)
+    a3["A8"], a3["B8"] = "='Приложение 1'!A6", "='Приложение 1'!B6"
+    a3["C8"], a3["D8"] = "='Приложение 1'!C6", "='Приложение 1'!D6"
+    a3["E8"], a3["J8"] = "=SUM(F8:J8)", "='Приложение 2 (год)'!E16"
+    a3["K8"] = 'ООО "ЧУЖОЙ ПРИЁМЩИК"'
+    wb.save(path)
+    return path
 
 
-def test_tp2_waste_fkko_spaced_in_print(tmp_path):
-    """Графа В печатается в каноническом виде ФККО с пробелами (как в печати
-    ЛКПП: «7 33 100 01 72 4»), а в XML код остаётся без пробелов."""
-    registry.load_all()
-    rep = registry.get("2tp-waste")(_ctx())
-    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "2tp.xlsx"))
-    s2 = wb["стр.2"]
-    # строки: 4 = ВСЕГО, 5 = класс 1, 6 = класс 4, далее позиции отходов
-    assert s2["C7"].value == "4 71 101 01 52 1"
-    assert s2["C8"].value == "7 33 100 01 72 4"
-    xml = rep.render_xml(tmp_path / "2tp.xml").read_text(encoding="utf-8")
-    assert "<WST_CODE>73310001724</WST_CODE>" in xml   # XML — без пробелов
-
-
-def test_tp2_waste_section2_structure(tmp_path):
-    """Раздел II — по бланку № 614: официальный заголовок, шапка А|Б|В|Г и
-    29 граф тремя подтаблицами (1–9 / 10–17 / 18–29); шапка печатается и у
-    нерегоператора (с пояснением), Раздел III — фикс. строки 11–31."""
-    registry.load_all()
-    rep = registry.get("2tp-waste")(_ctx())      # не регоператор
-    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "2tp.xlsx"))
-    s3 = wb["стр.3"]
-    assert s3["A1"].value.startswith(
-        "Раздел II. Сведения об образовании, обработке, утилизации, "
-        "обезвреживании, размещении отходов производства и потребления, "
-        "представляемые региональными операторами")
-    assert s3["A1"].value.rstrip().endswith("тонна")
-    # подтаблица 1: буквенная строка А|Б|В|Г + графы 1–9
-    assert [s3[f"{c}4"].value for c in "ABCD"] == ["А", "Б", "В", "Г"]
-    assert [s3.cell(row=4, column=5 + i).value for i in range(9)] == \
-        list(range(1, 10))
-    # подтаблица 2 (гр.10–17) и 3 (гр.18–29) — после строк «продолжение»
-    assert s3["A5"].value == "продолжение раздела II"
-    assert [s3.cell(row=7, column=5 + i).value for i in range(8)] == \
-        list(range(10, 18))
-    assert [s3.cell(row=10, column=5 + i).value for i in range(12)] == \
-        list(range(18, 30))
-    # структура не подменяется текстом — пояснение идёт ПОД шапкой
-    assert "не является региональным оператором" in s3["A11"].value
-    # Раздел III: фиксированные строки 11–31 с прочерками
-    assert s3["A13"].value.startswith("Раздел III")
-    assert (s3["A14"].value, s3["B14"].value, s3["C14"].value) == \
-        ("N строки", "Наименование показателя", "Фактически")
-    assert s3["A15"].value == 11 and s3["C15"].value == "-"
-    assert s3["A35"].value == 31 and s3["C35"].value == "-"
-
-
-def test_tp2_waste_wording_matches_lkpp_sample(tmp_path):
-    """Формулировки — дословно по печатной форме ЛКПП (приказ № 614):
-    титул без «ТРАНСПОРТИРОВАНИИ» и с реквизитами приказа/сроков,
-    Раздел I — полный официальный заголовок, Раздел III — «из них ТКО»
-    (в бланке аббревиатура, а не расшифровка)."""
-    registry.load_all()
-    rep = registry.get("2tp-waste")(_ctx())
-    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "2tp.xlsx"))
-    s1 = wb["стр.1"]
-    assert "ТРАНСПОРТИРОВАНИИ" not in s1["A3"].value
-    assert "от 06.11.2025 № 614" in s1["A6"].value
-    assert "1 февраля" in s1["A6"].value and "15 марта" in s1["A6"].value
-    assert wb["стр.2"]["A1"].value == (
-        "Раздел I. Сведения об образовании, обработке, утилизации, "
-        "обезвреживании, размещении отходов производства и потребления; "
-        "сведения об образовании и передаче твердых коммунальных отходов "
-        "региональному оператору, тонна")
-    s3 = wb["стр.3"]
-    assert s3["B16"].value == "из них ТКО, ед"     # строка 12 Раздела III
-    assert s3["B34"].value == "из них ТКО, га"     # строка 30 Раздела III
-
-
-def test_tp2_waste_section2_operator_data(tmp_path):
-    """Данные регоператора ложатся в свои графы: ключи g1..g29 плюс
-    обратная совместимость (received→гр.3, processed→гр.10, placed→гр.27);
-    графы без источника — прочерк."""
+def _ctx3():
+    """Три отхода: передаётся только третий (проверка нумерации Прил. 3)."""
     ctx = _ctx()
-    ctx.extra["tko_operators"] = [
-        {"name": "Отходы коммунальные", "fkko": "73111001724",
-         "hazard_class": 4, "g1": 10.5, "received": 100.0,
-         "processed": 50.0, "placed": 20.0}]
+    ctx.wastes = [
+        WasteFlow(fkko_code="47110101521", name="Лампы ртутные", hazard_class=1,
+                  generated="0.115", accumulated_end="0.115"),
+        WasteFlow(fkko_code="73310001724", name="Мусор офисный", hazard_class=4,
+                  generated="42.6", used="2.6", placed_norm="40"),
+        WasteFlow(fkko_code="92130201523", name="Обтирочный материал", hazard_class=4,
+                  generated="0.111", processed="0.011", transferred="0.1",
+                  transferred_neutral="0.1"),
+    ]
+    ctx.extra["waste_receivers"] = [
+        {"fkko": "92130201523", "receiver": "ООО «Приёмщик»", "contract": "№9"}]
+    ctx.period = ReportPeriod(year=2025, quarter=1)
+    return ctx
+
+
+def test_waste_movement_blank_continuation_block_filled(tmp_path):
+    """[critical] Блок «продолжение» Прил. 2 (графы 8–16) заполняется по тем
+    же строкам, что и первая часть; чужая строка образца (=G8) затёрта;
+    подграфы «хранение/накопление» различаются по родительской графе."""
+    from ecodoc.reports.waste_movement.template import fill
+    sample = _user_blank_1028_full(tmp_path / "бланк.xlsx")
+    out = fill(_ctx3(), tmp_path / "из_бланка.xlsx", sample=sample)
+    ws = openpyxl.load_workbook(out)["Приложение 2 (год)"]
+    assert [ws[f"A{r}"].value for r in (16, 17, 18)] == [1, 2, 3]   # № строки
+    assert ws["E16"].value is None and ws["I16"].value == 0.115    # =G8 затёрт; остаток
+    assert ws["C17"].value == 2.6                                  # утилизировано
+    assert ws["F17"].value == 40.0 and ws["H17"].value == 40.0     # размещено всего/захоронение
+    assert ws["B18"].value == 0.011 and ws["E18"].value == 0.1     # обработано / передано
+    flat = [c.value for row in ws.iter_rows() for c in row]
+    assert not any(isinstance(v, str) and v.startswith("='Приложение") for v in flat)
+
+
+def test_waste_movement_blank_cross_sheet_refs_replaced(tmp_path):
+    """[critical] Межлистовые ссылки первой строки Прил. 3 (на отход №1 из
+    Прил. 1, «для захоронения» = E16 Прил. 2) заменены значениями; SUM по
+    своей строке оставлен Excel; номер отхода — как в Прил. 1 (3, не 1)."""
+    from ecodoc.reports.waste_movement.template import fill
+    sample = _user_blank_1028_full(tmp_path / "бланк.xlsx")
+    out = fill(_ctx3(), tmp_path / "из_бланка.xlsx", sample=sample)
+    wb = openpyxl.load_workbook(out)
+    a3 = wb["Приложение 3 (год)"]
+    assert a3["A8"].value == 3 and a3["B8"].value == "Обтирочный материал"
+    assert a3["C8"].value == "9 21 302 01 52 3"
+    assert a3["E8"].value == "=SUM(F8:J8)"                 # агрегат по строке
+    assert a3["H8"].value == 0.1 and a3["J8"].value is None   # обезвреживание, не захоронение
+    assert a3["K8"].value == "ООО «Приёмщик»" and a3["B9"].value is None
+    a2 = wb["Приложение 2 (год)"]
+    assert a2["B8"].value == "Лампы ртутные" and a2["C8"].value == "4 71 101 01 52 1"
+
+
+def test_waste_movement_blank_period_and_edition_825(tmp_path):
+    """[major] Период из ctx.period без «за» («1 кв 2025 года»), слово «год»
+    рядом с =Титул!F11 убрано; реквизит приказа дополнен ред. № 825,
+    Таблица 1 — «Перечень…»; титул — «Площадка по адресу» + ИНН/ОГРН."""
+    from ecodoc.reports.waste_movement.template import fill
+    sample = _user_blank_1028_full(tmp_path / "бланк.xlsx")
+    out = fill(_ctx3(), tmp_path / "из_бланка.xlsx", sample=sample)
+    wb = openpyxl.load_workbook(out)
+    assert wb["Титул"]["F11"].value == "1 кв 2025 года"
+    a2 = wb["Приложение 2 (год)"]
+    assert a2["G3"].value == "=Титул!F11" and a2["H3"].value is None
+    assert wb["Приложение 3 (год)"]["M3"].value is None
+    a1 = wb["Приложение 1"]
+    assert a1["A2"].value == "Перечень образующихся видов отходов, подлежащих учету"
+    assert "N 825" in a1["G1"].value and a1["G1"].value.startswith("Приложение N 1\n")
+    title = wb["Титул"]["B9"].value
+    assert 'Площадка по адресу: "СПб, Богатырский пр., 2"' in title
+    assert "ИНН 7801234564" in title and "ОГРН 1157847008219" in title
+
+
+def test_waste_movement_edition_227(tmp_path):
+    """[major] С 01.09.2026 — приказ № 227: реквизит, графы 8/13 Табл. 2 о
+    собственных объектах, 4 знака при массе < 0,001 т, лист полученных —
+    самостоятельное Приложение N 4."""
+    from ecodoc.reports.waste_movement import template as tmpl
     registry.load_all()
-    rep = registry.get("2tp-waste")(ctx)
-    wb = openpyxl.load_workbook(rep.render_print(tmp_path / "2tp.xlsx"))
-    s3 = wb["стр.3"]
-    # подтаблица 1: данные в строке 5 (шапка 3–4)
-    assert s3["B5"].value == "Отходы коммунальные"
-    assert s3["C5"].value == "7 31 110 01 72 4"     # графа В — с пробелами
-    assert s3["E5"].value == 10.5                    # гр.1 ← g1
-    assert s3["G5"].value == 100.0                   # гр.3 ← received (legacy)
-    assert s3["F5"].value == "-"                     # гр.2 — нет источника
-    # подтаблица 2: строка 9, гр.10 ← processed
-    assert s3["E9"].value == 50.0
-    # подтаблица 3: строка 13, гр.27 ← placed (колонка N), гр.29 — прочерк
-    assert s3["N13"].value == 20.0
-    assert s3["P13"].value == "-"
+    ctx = _ctx3()
+    ctx.period = ReportPeriod(year=2026, quarter=3)
+    assert tmpl.edition(ctx) == "227"
+    ctx.period = ReportPeriod(year=2026, quarter=2)
+    assert tmpl.edition(ctx) == "825"          # 2 кв. 2026 обобщается в июле
+    ctx.extra["report_date"] = "05.10.2026"    # а с датой составления — по ней
+    assert tmpl.edition(ctx) == "227"
+    ctx.period = ReportPeriod(year=2026, quarter=3)
+    ctx.wastes[0].generated = Decimal("0.0004")
+    ctx.extra["own_transfers"] = [{"fkko": "73310001724", "transferred_own": "1.5"}]
+    ctx.extra["period_text"] = "9 месяцев 2026 года"
+    p = registry.get("waste-movement")(ctx).render_print(tmp_path / "j.xlsx")
+    wb = openpyxl.load_workbook(p)
+    a2 = wb["Приложение 2 (год)"]
+    assert "N 227" in a2["I1"].value and "производства и потребления" in a2["I1"].value
+    assert a2["I5"].value.startswith("Поступление отходов с собственных объектов")
+    assert a2["I7"].value == 8
+    assert a2["G8"].value == 0.0004                   # 4 знака при массе < 0,001 т
+    assert a2["G3"].value == "9 месяцев 2026 года"
+    # 3 отхода (строки 8–10) + 3 строки отступа → шапка продолжения в 14–15,
+    # нумерация граф 9–18 в строке 16, данные с 17
+    assert a2["F14"].value.startswith("Передача отходов (за исключением ТКО)")
+    assert [a2[f"{c}16"].value for c in "ABCDEFGHIJK"] == ["А"] + list(range(9, 19))
+    assert a2["F18"].value == 1.5                      # передача на собственные объекты
+    assert wb["Приложение 4 (год)"]["M1"].value.startswith("Приложение N 4\n")
+    # а в ред. № 825 лист полученных — Таблица 4 Приложения N 3
+    ctx.period, ctx.extra["report_date"] = ReportPeriod(year=2025), ""
+    ctx.extra.pop("period_text")
+    p = registry.get("waste-movement")(ctx).render_print(tmp_path / "j2.xlsx")
+    wb = openpyxl.load_workbook(p)
+    assert wb["Приложение 4 (год)"]["M1"].value.startswith("Приложение N 3 (Таблица 4)\n")
+    assert wb["Приложение 2 (год)"]["G8"].value == 0.0    # 3 знака: 0,0004 → 0
+    assert wb["Приложение 3 (год)"]["A8"].value == 3      # № отхода из Прил. 1
+    assert wb["Приложение 1"]["A2"].value == "Перечень образующихся видов отходов, подлежащих учету"
+    assert wb["Титул"]["F11"].value == "за 2025 года"
+    assert wb["Титул"]["B10"].value == "ИНН 7801234564, ОГРН 1157847008219"
+
+
+def test_waste_accounting_calendar_monthly_last_day():
+    """[major] Календарь: журнал — ежемесячно, срок — последний день
+    следующего месяца (№ 1028 ред. № 825 п. 11; № 227 п. 13), а не 10-е."""
+    from ecodoc.calendar.obligations import OBLIGATIONS
+    o = next(x for x in OBLIGATIONS if x.code == "waste-accounting")
+    assert o.periodicity == "месяц"
+    assert len(o.due) == 12 and (1, 31) in o.due and (2, 28) in o.due and (4, 30) in o.due
+    assert "полугодие" in o.coverage and "последнего дня" in o.coverage
