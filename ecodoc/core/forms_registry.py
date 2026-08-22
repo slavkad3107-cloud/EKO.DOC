@@ -96,6 +96,18 @@ SLOTS: list[FormSlot] = [
     FormSlot("ndv", "НДВ", "development", "Разработка/НДВ", keywords=("ндв",)),
     FormSlot("oos", "ООС", "development", "Разработка/ООС",
              keywords=("оос", "охрана окружающей")),
+    FormSlot("2tp-water", "2-ТП водхоз", "reporting", "Отчетность/2-ТП водхоз",
+             keywords=("2-тп", "водхоз")),
+    FormSlot("plarn", "ПЛАРН", "development", "Разработка/ПЛАРН",
+             keywords=("пларн", "разлив")),
+    FormSlot("dvos", "ДВОС", "development", "Разработка/ДВОС",
+             keywords=("двос", "декларация о воздействии")),
+    # справочные папки: программа эти документы НЕ генерирует (решение
+    # пользователя), но образцы нужны ИИ-анализу и сверке раздела ООС
+    FormSlot("", "ИЭИ (справочно)", "development", "Разработка/ИЭИ",
+             keywords=("иэи", "изыскани")),
+    FormSlot("", "Оценка (справочно)", "development", "Разработка/ОЦЕНКА",
+             keywords=("оценка",)),
     FormSlot("waste-table", "Табличка отходов", "reporting", "",
              keywords=("таблич", "отход")),
     FormSlot("", "Перечень для контроля (воздух)", "reporting", "",
@@ -123,7 +135,10 @@ def scan() -> list[FormSlot]:
         if slot.folder:
             d = base / slot.folder
             if d.is_dir():
-                slot.files = [str(f.relative_to(base)) for f in sorted(d.iterdir())
+                # рекурсивно: пользователь раскладывает образцы по подпапкам
+                # «по требованиям Москвы», «объект в СПб …» — это разные
+                # региональные/объектные варианты одной формы, все нужны
+                slot.files = [str(f.relative_to(base)) for f in sorted(d.rglob("*"))
                               if f.is_file() and f.suffix.lower() in DOC_EXTS]
         else:                                  # файлы в корне «Формы»
             for f in sorted(base.glob("*")):

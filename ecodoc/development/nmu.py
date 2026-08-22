@@ -68,6 +68,24 @@
 Пояснения (требование о снижении вкладов, запреты п. 9 № 651,
 ответственные, журнал) печатаются ПОСЛЕ формы как пояснительная записка —
 без продолжения нумерации образца.
+
+Региональные варианты (ecodoc.development.nmu_regions, сверены с ПРИНЯТЫМИ
+планами из Формы/Разработка/НМУ): регион объекта 77 — Москва (таблица п. 7
+на 8 граф как в плане, согласованном ДПиООС 24.04.2026; приложения по
+Порядку 231-ПП — пояснительная записка п. 17, журнал прил. 1, план-график
+контроля прил. 3, состав заявления п. 16), 78 — Санкт-Петербург (таблица
+на 9 граф с «экологическим эффектом, %» и блок «Должностное лицо,
+ответственное…», как в принятом перечне; согласует Комитет по
+природопользованию), иначе — федеральный образец № 662. Ядро (пп. 1–9
+формы № 662) одинаково во всех вариантах. Дополнительно из extra['nmu']:
+      below_0_1_pdk:   True — приземные концентрации при штатном режиме
+                       < 0,1 ПДК на границе СЗЗ/жилой застройки (п. 14/17
+                       Порядка 231-ПП — достаточно мероприятий общего
+                       характера, пояснительная записка из 3 разделов);
+      processes:       характеристика производственных процессов (текст
+                       для пояснительной записки, п. 17 Порядка 231-ПП);
+      control_schedule:[{source, unit, substance, periodicity, method,
+                       norm, org}] — план-график контроля (прил. 3 231-ПП).
 """
 from __future__ import annotations
 
@@ -512,6 +530,52 @@ def measure_rows(ctx: ReportContext, mode: int) -> tuple[list[list[str]], bool]:
     return rows, True
 
 
+def units_by_source(ctx: ReportContext) -> dict[str, str]:
+    """Номер источника → «цех. участок» (графа «Структурное подразделение
+    (цех)» региональных таблиц). Берём workshop/site инвентаризации;
+    если их нет — пусто (дальше печатается пометка, название источника
+    цехом не подменяем: в принятых планах это именно подразделение)."""
+    out: dict[str, str] = {}
+    for s in sources(ctx):
+        parts = [str(s.get("workshop") or "").strip(),
+                 str(s.get("site") or "").strip()]
+        out[s["number"]] = ". ".join(p for p in parts if p)
+    return out
+
+
+def regional_rows(ctx: ReportContext, prof: dict) -> list[list[str]]:
+    """Строки таблицы п. 7 в региональной форме (Москва — 8 граф, СПб — 9):
+    одна таблица на все степени, степень — отдельной графой (так в обоих
+    принятых планах). Основа — measure_rows() по образцу № 662, графы
+    «степень», «цех» и «эффект, %» добавляются, ничего не пересчитывая.
+    """
+    from ecodoc.development.nmu_regions import (UNIT_REQUIRED, effect_pct)
+    units = units_by_source(ctx)
+    rows: list[list[str]] = []
+    n = 0
+    for mode in plan_modes(ctx):
+        base, _ = measure_rows(ctx, mode)
+        degree = (prof["degree_general"] if mode == 0
+                  else prof["degree_fmt"].format(n=mode))
+        for r in base:
+            n += 1
+            unit = units.get(r[1], "") or UNIT_REQUIRED
+            row = [str(n), degree, unit, r[1], r[2], r[3], r[4], r[5]]
+            if prof["effect_col"]:
+                row.append(effect_pct(r[4], r[5]) if r[5] != AFTER_REQUIRED
+                           else effect_pct("x", "x"))
+            rows.append(row)
+    return rows
+
+
+def control_schedule(ctx: ReportContext) -> list[dict]:
+    """План-график контроля в периоды НМУ (прил. 3 к 231-ПП) — только
+    из extra['nmu']['control_schedule']; периодичность и методику
+    машина не знает."""
+    return [r for r in (_cfg(ctx).get("control_schedule") or [])
+            if isinstance(r, dict)]
+
+
 def responsible_list(ctx: ReportContext) -> list[dict]:
     """Ответственные по подразделениям (п. 8 № 651): [{unit, position, name}].
 
@@ -617,6 +681,45 @@ def gaps(ctx: ReportContext) -> list[str]:
         out.append("требуется: ответственные за проведение мероприятий "
                    "по структурным подразделениям (должность, ФИО; "
                    "п. 8 приказа № 651)")
+    out += regional_gaps(ctx)
+    return out
+
+
+def regional_gaps(ctx: ReportContext) -> list[str]:
+    """Чего не хватает именно для региональной формы (Москва/СПб)."""
+    from ecodoc.development import nmu_regions as R
+    prof = R.profile(ctx)
+    out: list[str] = []
+    if not prof or _cfg(ctx).get("no_measures_required"):
+        return out
+    units = units_by_source(ctx)
+    missing = sorted({s["number"] or "—" for s in controlled_sources(ctx)
+                      if not units.get(s["number"])})
+    if missing:
+        out.append("требуется: структурное подразделение (цех) для "
+                   f"источников {', '.join(missing)} (графа 3 формы "
+                   f"{prof['name']}; workshop/site в инвентаризации)")
+    if prof["effect_col"] and any(
+            r[-1] == R.EFFECT_REQUIRED for r in regional_rows(ctx, prof)):
+        out.append("требуется: достигаемый экологический эффект, % "
+                   "(графа 9 перечня СПб) — считается из величины после "
+                   "мероприятия, задайте measures[].after/reduction_pct")
+    if prof["key"] == "msk":
+        cfg = _cfg(ctx)
+        if "below_0_1_pdk" not in cfg:
+            out.append("требуется: признак «приземные концентрации при "
+                       "штатном режиме < 0,1 ПДК на границе СЗЗ/жилой "
+                       "застройки» (п. 14/17 Порядка 231-ПП; "
+                       "extra['nmu']['below_0_1_pdk'])")
+        if not cfg.get("processes"):
+            out.append("требуется: характеристика производственных "
+                       "процессов для пояснительной записки (п. 17 "
+                       "Порядка 231-ПП; extra['nmu']['processes'])")
+        if not control_schedule(ctx):
+            out.append("требуется: план-график контроля выбросов в периоды "
+                       "НМУ — периодичность, методика, организация "
+                       "(приложение 3 к Порядку 231-ПП; "
+                       "extra['nmu']['control_schedule'])")
     return out
 
 
@@ -628,11 +731,15 @@ def generate(ctx: ReportContext, out_path: str | Path) -> Path:
     from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
     from docx.shared import Cm, Pt
 
+    from docx.enum.section import WD_ORIENT
+    from ecodoc.development import nmu_regions as R
+
     org = ctx.organization
     cfg = _cfg(ctx)
     kind = forecast_kind(ctx)
     modes = plan_modes(ctx)
     problems = gaps(ctx)
+    prof = R.profile(ctx)          # None — федеральный образец № 662
 
     doc = Document()
     style = doc.styles["Normal"]
@@ -641,17 +748,27 @@ def generate(ctx: ReportContext, out_path: str | Path) -> Path:
     for s in doc.sections:
         s.left_margin, s.right_margin = Cm(3), Cm(1.5)
         s.top_margin, s.bottom_margin = Cm(2), Cm(2)
+        if prof:
+            # почему альбомная: обе региональные таблицы (8–9 граф) в
+            # принятых планах напечатаны на альбомном листе
+            s.orientation = WD_ORIENT.LANDSCAPE
+            s.page_width, s.page_height = s.page_height, s.page_width
+            s.left_margin, s.right_margin = Cm(2), Cm(1.5)
 
     # грифы по рекомендуемому образцу № 662: слева «Утверждено», справа
-    # «Согласовано» (уполномоченный орган субъекта РФ, п. 6 требований)
+    # «Согласовано» — штамп уполномоченного органа в правом верхнем углу
+    # (п. 8 требований № 662); для Москвы/СПб орган известен по имени
+    authority = (prof["authority"] if prof else
+                 "[требуется: уполномоченный орган субъекта РФ — "
+                 "региональный экологический надзор]")
     grif = doc.add_table(rows=1, cols=2)
     grif.rows[0].cells[0].text = ("УТВЕРЖДЕНО\n"
                                   f"{org.official_title or 'Руководитель'}\n"
                                   f"____________ {org.director_name or '[ФИО]'}\n"
                                   "«___» __________ 20__ г.\nМесто для печати")
-    grif.rows[0].cells[1].text = ("СОГЛАСОВАНО\n[требуется: уполномоченный "
-                                  "орган субъекта РФ — региональный "
-                                  "экологический надзор]\n«___» ______ 20__ г.\n"
+    grif.rows[0].cells[1].text = (f"СОГЛАСОВАНО\n{authority}\n"
+                                  "____________ /______________/\n"
+                                  "«___» ______ 20__ г.\n"
                                   "Место для печати")
 
     doc.add_paragraph()
@@ -710,6 +827,16 @@ def generate(ctx: ReportContext, out_path: str | Path) -> Path:
             if len(modes) > 1 and rows:
                 doc.add_paragraph().add_run(f"{MODES[mode]}:").bold = True
             _table(doc, HEADER, rows, numbered=True)
+    elif prof:
+        # региональная форма: одна таблица на все степени, графы «степень»
+        # и «цех» (+ «эффект, %» для СПб) — дословно как в принятых планах
+        _table(doc, prof["header"], regional_rows(ctx, prof), numbered=True,
+               small=True)
+        for mode in [m for m in modes if not user_measures(ctx, m)]:
+            doc.add_paragraph(
+                "Мероприятия подставлены по виду источников — "
+                f"[требуется: проверка технологом типовых мероприятий — "
+                f"«{MODES[mode]}» (подставлены по виду источников)]")
     else:
         for mode in modes:
             if len(modes) > 1:
@@ -759,8 +886,25 @@ def generate(ctx: ReportContext, out_path: str | Path) -> Path:
         "[требуется: метод контроля — инструментальный или расчётный, "
         "по п. 18 Порядка инвентаризации № 871 (п. 9 Плана)]"))
 
+    # ── СПб: блок ответственного лица — сразу под формой, как в принятом
+    # перечне («Должностное лицо, ответственное за проведение мероприятий:
+    # ФИО, подпись»)
+    if prof and prof["key"] == "spb":
+        doc.add_paragraph()
+        resp_spb = responsible_list(ctx)
+        t = doc.add_table(rows=max(1, len(resp_spb)), cols=2)
+        t.rows[0].cells[0].text = R.SPB_RESPONSIBLE_LABEL
+        for i in range(max(1, len(resp_spb))):
+            who = (f"{resp_spb[i]['name']} ______________\nФИО, подпись"
+                   if resp_spb else
+                   "[требуется: ФИО ответственного] ______________\n"
+                   "ФИО, подпись")
+            t.rows[i].cells[1].text = who
+
     # ── пояснительная записка — ВНЕ формы образца № 662 (без нумерации) ──
     doc.add_page_break()
+    if prof:
+        _regional_note(doc, ctx, prof)
     doc.add_paragraph().add_run(
         "Пояснительная записка к Плану (приложение, в форму образца "
         "приказа № 662 не входит)").bold = True
@@ -810,15 +954,49 @@ def generate(ctx: ReportContext, out_path: str | Path) -> Path:
         "Мероприятия вводятся с момента поступления прогноза НМУ и "
         "проводятся в течение всего периода его действия.")
     doc.add_paragraph(PROHIBITIONS_651)
+    if prof and prof["key"] == "msk":
+        # Москва: журнал строго по приложению 1 к Порядку 231-ПП
+        doc.add_paragraph(
+            "Поступление информации о НМУ регистрируется ответственным "
+            "лицом в журнале по приложению 1 к Порядку 231-ПП (п. 9 "
+            "Порядка):")
+        doc.add_paragraph().add_run(R.MSK_JOURNAL_TITLE).bold = True
+        _table(doc, R.MSK_JOURNAL_HEADER, [[""] * 6], numbered=True,
+               small=True)
+        doc.add_paragraph("Примечания:")
+        for note in R.MSK_JOURNAL_NOTES:
+            doc.add_paragraph(note)
+    else:
+        doc.add_paragraph(
+            "Поступление прогнозов и проведение мероприятий фиксируются "
+            "в журнале учёта:")
+        _table(doc, ["Дата, время получения прогноза",
+                     "Вид прогноза / степень НМУ",
+                     "Период действия НМУ",
+                     "Проведённые мероприятия (N по Плану)",
+                     "Начало / окончание работ", "Подпись ответственного"],
+               [["", "", "", "", "", ""]])
+
+    # ── порядок согласования: федеральный (№ 662) + региональный орган ──
+    doc.add_paragraph().add_run("Порядок согласования и утверждения").bold = True
     doc.add_paragraph(
-        "Поступление прогнозов и проведение мероприятий фиксируются "
-        "в журнале учёта:")
-    _table(doc, ["Дата, время получения прогноза",
-                 "Вид прогноза / степень НМУ",
-                 "Период действия НМУ",
-                 "Проведённые мероприятия (N по Плану)",
-                 "Начало / окончание работ", "Подпись ответственного"],
-           [["", "", "", "", "", ""]])
+        "План направляется на согласование в уполномоченный орган субъекта "
+        "РФ сопроводительным письмом со способами связи; срок рассмотрения — "
+        "15 рабочих дней; при согласовании штамп проставляется в верхнем "
+        "правом углу Плана; План утверждается не позднее 3 рабочих дней со "
+        "дня получения согласования (пп. 6–12 требований, утв. приказом "
+        "Минприроды России от 28.11.2025 № 662).")
+    if prof:
+        doc.add_paragraph(
+            f"Уполномоченный орган для объекта в регионе «{prof['name']}» — "
+            f"{prof['authority']}. Региональный акт: {prof['npa']}. "
+            f"Подача: {prof['submit']}. Прогноз НМУ: {prof['forecast']}.")
+        if prof["key"] == "msk":
+            doc.add_paragraph(
+                "К заявлению о согласовании прилагаются (п. 16 Порядка "
+                "231-ПП):")
+            for item in R.MSK_APPLICATION:
+                doc.add_paragraph(f"— {item};")
 
     # ── чего не хватает (тот же список, что gaps) ───────────────────────
     if problems:
@@ -836,10 +1014,105 @@ def generate(ctx: ReportContext, out_path: str | Path) -> Path:
     return out
 
 
+def _regional_note(doc, ctx: ReportContext, prof: dict) -> None:
+    """Региональные приложения к Плану: Москва — пояснительная записка
+    по п. 17 Порядка 231-ПП и план-график контроля (прил. 3);
+    СПб — пояснение о форме перечня. Печатается перед общей пояснительной
+    запиской, без нумерации образца № 662."""
+    from ecodoc.development import nmu_regions as R
+    cfg = _cfg(ctx)
+    if prof["key"] != "msk":
+        doc.add_paragraph().add_run(
+            "Примечание о форме (Санкт-Петербург)").bold = True
+        doc.add_paragraph(
+            "Таблица п. 7 приведена в форме перечня, принимаемого Комитетом "
+            "по природопользованию (графы «Степень опасности НМУ», "
+            "«Структурное подразделение (цех)», «Достигаемый экологический "
+            "эффект, %» сохранены из принятых перечней); пп. 1–9 и грифы — "
+            "по образцу приказа Минприроды России от 28.11.2025 № 662. "
+            "Эффект, % рассчитан как снижение выброса г/с по данным "
+            "технолога.")
+        doc.add_paragraph()
+        return
+
+    doc.add_paragraph().add_run(
+        "Пояснительная записка к плану мероприятий (п. 17 Порядка, "
+        "утв. постановлением Правительства Москвы от 25.04.2017 "
+        "№ 231-ПП)").bold = True
+    below = cfg.get("below_0_1_pdk")
+    if below is None:
+        doc.add_paragraph(
+            "[требуется: признак «приземные концентрации при штатном "
+            "режиме < 0,1 ПДК на границе СЗЗ/жилой застройки» (п. 14/17 "
+            "Порядка 231-ПП; extra['nmu']['below_0_1_pdk'])] — ниже "
+            "приведён полный состав разделов.")
+    sections = R.MSK_NOTE_BELOW_01 if below else R.MSK_NOTE_FULL
+    if below:
+        doc.add_paragraph(
+            "Максимальные приземные концентрации загрязняющих веществ от "
+            "источников производственной территории при нормальных "
+            "условиях составляют менее 0,1 ПДК на границе нормативной "
+            "СЗЗ и ближайшей жилой застройки — достаточно мероприятий "
+            "общего характера (п. 14 Порядка 231-ПП).")
+    units = units_by_source(ctx)
+    for i, title in enumerate(sections, 1):
+        doc.add_paragraph().add_run(
+            f"{i}. {title[:1].upper()}{title[1:]}").bold = True
+        if i == 1:
+            doc.add_paragraph(str(cfg.get("processes") or
+                                  "[требуется: характеристика "
+                                  "производственных процессов для "
+                                  "пояснительной записки (п. 17 Порядка "
+                                  "231-ПП; extra['nmu']['processes'])]"))
+        elif "инвентаризация" in title:
+            _table(doc, ["Номер источника", "Наименование",
+                         "Цех, участок", "Вещества (код — г/с)"],
+                   [[s["number"] or "—", s["name"] or "—",
+                     units.get(s["number"]) or "—",
+                     "; ".join(f"{p.get('code', '')} — "
+                               f"{_fmt(_dec(p.get('g_s')))}"
+                               for p in s["pollutants"])]
+                    for s in sources(ctx)], small=True)
+        elif "план-график" in title:
+            doc.add_paragraph("См. план-график контроля ниже.")
+        elif "расчеты рассеивания" in title:
+            doc.add_paragraph(str(cfg.get("dispersion") or
+                                  "[требуется: результаты расчётов "
+                                  "рассеивания (п. 8 Плана)]"))
+        else:
+            doc.add_paragraph("[требуется: обоснование и расчёты "
+                              "эффективности по данным технолога "
+                              f"(раздел «{title}», п. 17 Порядка 231-ПП)]")
+
+    # план-график контроля — приложение 3 к Порядку (графы дословно)
+    doc.add_paragraph()
+    doc.add_paragraph().add_run(
+        R.MSK_SCHEDULE_TITLE + " (приложение 3 к Порядку 231-ПП)").bold = True
+    obj = ctx.objects[0] if ctx.objects else None
+    addr = obj.address if obj and obj.address else "[требуется]"
+    doc.add_paragraph(f"для {ctx.organization.name or '[требуется]'} "
+                      f"по адресу: {addr}")
+    rows = [[str(r.get("source") or "—"), str(r.get("unit") or "—"),
+             str(r.get("substance") or "—"),
+             str(r.get("periodicity") or "—"), str(r.get("method") or "—"),
+             str(r.get("norm") or "—"), "", str(r.get("org") or "—")]
+            for r in control_schedule(ctx)]
+    if not rows:
+        rows = [[s["number"] or "—", units.get(s["number"]) or "—",
+                 f"{p.get('code', '')} {p.get('name', '')}".strip(),
+                 "[требуется]", "[требуется]",
+                 f"{_fmt(_dec(p.get('g_s')))} г/с", "", "[требуется]"]
+                for s in controlled_sources(ctx) for p in s["pollutants"]]
+    _table(doc, R.MSK_SCHEDULE_HEADER, rows, numbered=True, small=True)
+    doc.add_paragraph()
+
+
 def _table(doc, header: list[str], rows: list[list[str]],
-           numbered: bool = False) -> None:
+           numbered: bool = False, small: bool = False) -> None:
     """Таблица с шапкой; numbered=True — строка номеров граф «1 2 … n»,
-    как в образце № 662."""
+    как в образце № 662; small=True — 9 pt для широких региональных
+    таблиц (8–9 граф на альбомном листе)."""
+    from docx.shared import Pt
     table = doc.add_table(rows=1, cols=len(header))
     table.style = "Table Grid"
     for i, text in enumerate(header):
@@ -856,3 +1129,9 @@ def _table(doc, header: list[str], rows: list[list[str]],
         cells = table.add_row().cells
         cells[0].text = ("[требуется: данные не заведены — источники и "
                          "вещества]")
+    if small:
+        for row in table.rows:
+            for cell in row.cells:
+                for par in cell.paragraphs:
+                    for run in par.runs:
+                        run.font.size = Pt(9)

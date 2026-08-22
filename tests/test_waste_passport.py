@@ -200,3 +200,92 @@ def test_aggregate_state_by_fkko_code(tmp_path):
     (path,) = wp.generate(ctx, tmp_path / "manual", approved_date=dt.date(2026, 1, 1))
     cells = _texts(path)[0]
     assert "шлам (ручной)" in cells and "Прочие дисперсные системы" not in cells
+
+
+# ─────────── сверка со всеми паспортами ПОО (ТЕХНОСТРОЙ: ТБО, ЛКМ, паркинг) ───────────
+
+def _docx_text(path):
+    from docx import Document
+    d = Document(path)
+    parts = [p.text for p in d.paragraphs]
+    parts += [c.text for t in d.tables for r in t.rows for c in r.cells]
+    return "\n".join(parts)
+
+
+def test_passport_composition_from_kha_protocol_with_requisites(tmp_path):
+    """Принятый паспорт ТБО ТЕХНОСТРОЙ (ПОО/П.о.о ТБО.pdf): состав — 11
+    компонентов из протокола ИЦ ООО «ТАСИС» № 20002.25-1-Отх от 27.02.2025
+    (аттестат РОСС RU.0001.21АУ50, МИ М-27-2023), протокол подшит к паспорту,
+    дата в грифе «28» февраля 2025 г., способ — «количественный морфологический
+    анализ отхода». У нас: состав берётся из extra.lab_results (КХА), реквизиты
+    протокола/лаборатории печатаются листом «Основание…», дата — в грифе."""
+    ctx = _ctx()
+    ctx.wastes = [WasteFlow(fkko_code="7 33 100 01 72 4",
+                            name="Мусор от офисных и бытовых помещений организаций "
+                                 "несортированный (исключая крупногабаритный)",
+                            hazard_class=4)]
+    ctx.extra["lab_results"] = [{
+        "kind": "КХА", "protocol_no": "20002.25-1-Отх", "date": "27.02.2025",
+        "lab": "ИЦ ООО «ТАСИС»", "lab_attestation": "№ РОСС RU.0001.21АУ50",
+        "method": "М-27-2023",
+        "object": "мусор от офисных и бытовых помещений организаций несортированный",
+        "substances": [{"name": "Бумага, картон", "value": "31,5", "unit": "%"},
+                       {"name": "Древесина", "value": "2,1", "unit": "%"},
+                       {"name": "Полиэтилентерефталат", "value": "11,3", "unit": "%"}]}]
+    ctx.extra["waste_details"] = {"7 33 100 01 72 4": {
+        "origin": "жизнедеятельность работников",
+        "method": "количественный морфологический анализ отхода",
+        "approved_date": "28.02.2025"}}
+    (path,) = wp.generate(ctx, tmp_path)
+    text = _docx_text(path)
+    assert "«28» февраля 2025 г." in text                      # дата в грифе
+    assert "количественный морфологический анализ отхода" in text
+    assert "Смесь твердых материалов (включая волокна) и изделий" in text  # …72 4
+    # состав из протокола, в порядке убывания
+    assert text.index("Бумага, картон") < text.index("Полиэтилентерефталат") < text.index("Древесина")
+    # лист «Основание…» с реквизитами протокола и лаборатории
+    assert "Основание для определения" in text
+    assert "№ 20002.25-1-Отх от 27.02.2025" in text
+    assert "ИЦ ООО «ТАСИС»" in text and "РОСС RU.0001.21АУ50" in text
+    assert "М-27-2023" in text
+
+
+def test_passport_protocol_from_waste_details_and_blank_date(tmp_path):
+    """Ручные реквизиты протокола (waste_details[код]['protocol']) печатаются;
+    без даты утверждения гриф остаётся бланком «____»; без протокола третьего
+    листа нет."""
+    ctx = _ctx()
+    ctx.wastes = [ctx.wastes[1]]
+    ctx.extra["waste_details"] = {"73310001724": {
+        "components": [{"name": "Бумага", "percent": "60"}],
+        "protocol": {"number": "7/25", "date": "01.02.2025", "lab": "ООО Лаб",
+                     "lab_attestation": "RA.RU.21XX"}}}
+    (path,) = wp.generate(ctx, tmp_path)
+    text = _docx_text(path)
+    assert "«____» ________________ 20____ г." in text
+    assert "№ 7/25 от 01.02.2025" in text and "RA.RU.21XX" in text
+    ctx.extra["waste_details"]["73310001724"].pop("protocol")
+    (path,) = wp.generate(ctx, tmp_path / "b")
+    assert "Основание для определения" not in _docx_text(path)
+
+
+def test_v_class_confirmation_by_biotest(tmp_path):
+    """V класс: паспорт не делается, но по акту/протоколу биотестирования
+    (ПОО: «акт о.п_биотест 5 кл» ТАСИС № 20102.25-1-4 от 27.01.2025, цель —
+    подтверждение V класса; протокол БИО ЦЭД) печатается справка о
+    подтверждении V класса со ссылкой на акт, лабораторию и аттестат."""
+    ctx = _ctx()
+    ctx.extra["lab_results"] = [{
+        "kind": "биотест", "protocol_no": "20102.25-1-4", "date": "27.01.2025",
+        "lab": "ИЦ ООО «ТАСИС»", "lab_attestation": "№ РОСС RU.0001.21АУ50",
+        "fkko": "73310002725"}]
+    paths = wp.generate_v_class(ctx, tmp_path)
+    assert [p.name for p in paths] == ["V_класс_73310002725.docx"]
+    text = _docx_text(paths[0])
+    assert "V КЛАССУ" in text and "№ 20102.25-1-4 от 27.01.2025" in text
+    assert "ТАСИС" in text and "№ 158" in text and "биотестирование" in text
+    # паспортов на V класс по-прежнему нет
+    assert not any("73310002725" in p.name for p in wp.generate(ctx, tmp_path / "p"))
+    # без акта биотестирования справка не выдумывается
+    ctx.extra["lab_results"] = []
+    assert wp.generate_v_class(ctx, tmp_path / "n") == []

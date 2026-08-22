@@ -92,22 +92,64 @@ def ref_text(ed: str) -> str:
     return REF_227 if ed == ED_227 else REF_825
 
 
+MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль",
+          "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+
+
+def period_month(ctx) -> int | None:
+    """Месяц помесячного журнала (1–12) из ctx.extra["period_month"] (число
+    или название: 1, "01", "январь"). В ReportPeriod поля месяца нет, а по
+    № 1028 (ред. № 825, п. 11) обобщение делается ЕЖЕМЕСЯЧНО — реальные
+    журналы ВСМ-Сервис: «1028 Журнал январь 2025.xlsx» … «декабрь 2025»."""
+    e = ctx.extra if isinstance(ctx.extra, dict) else {}
+    v = e.get("period_month")
+    if v in (None, ""):
+        return None
+    if isinstance(v, str) and not v.strip().isdigit():
+        t = v.strip().lower()
+        for i, m in enumerate(MONTHS, 1):
+            if t.startswith(m[:4]):
+                return i
+        return None
+    try:
+        m = int(v)
+    except (TypeError, ValueError):
+        return None
+    return m if 1 <= m <= 12 else None
+
+
 def period_text(ctx) -> str:
-    """Период отчёта БЕЗ предлога «за»: «1 кв 2025 года» / «2025 года».
+    """Период отчёта БЕЗ предлога «за»: «январь 2025 года» / «1 кв 2025 года»
+    / «2025 года».
 
     В бланке слово «за» уже стоит в шапке («…отходами за»), а на титул
     идёт формула =Титул!F11 — поэтому «за» в значение не вписываем, иначе
     получалось «за за 2025 год год». Свободный текст периода (как у
     пользователя: «1 кв - 3 кв 2025 года», «полугодие 2026 года» по № 227)
-    — через ctx.extra["period_text"]."""
+    — через ctx.extra["period_text"]; помесячный журнал — через
+    ctx.extra["period_month"] (в месячных журналах ВСМ титул — «за январь
+    2025 года», шапки приложений — «январь 2025 года»)."""
     e = ctx.extra if isinstance(ctx.extra, dict) else {}
     if e.get("period_text"):
         return str(e["period_text"]).strip()
     year = ctx.period.year or ""
+    m = period_month(ctx)
+    if m:
+        return f"{MONTHS[m - 1]} {year} года"
     q = ctx.period.quarter
     if q:
         return f"{q} кв {year} года"
     return f"{year} года" if year else ""
+
+
+def report_date_text(ctx) -> str:
+    """Дата на титуле как в принятых журналах: «25.12.2025 г.» — голая
+    ДД.ММ.ГГГГ дополняется « г.» (все 5 образцов в «Формах» — с «г.»)."""
+    e = ctx.extra if isinstance(ctx.extra, dict) else {}
+    d = str(e.get("report_date") or "").strip()
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", d):
+        return d + " г."
+    return d
 
 
 def _num(value, ed: str = ED_825) -> float | None:
@@ -183,6 +225,16 @@ _SUBCOLUMNS = {
     "количество переданных отходов": {"всего": "transferred"},
     "количество полученных отходов": {"всего": "received"},
 }
+
+# числовые графы таблиц: в реальных журналах (Б2/Б3/МО/У 2025, месячные ВСМ)
+# незаполненных клеток нет — везде напечатан 0, пустая клетка читается как
+# «забыли». Поэтому в строках данных None → 0 (а фильтр «есть ли передача»
+# по-прежнему смотрит на _num() до подстановки нуля)
+_NUMERIC = {"acc_start", "acc_start_nakopl", "generated", "received",
+            "received_own", "processed", "used", "neutralized", "transferred",
+            "transferred_own", "placed", "placed_storage", "placed_burial",
+            "acc_end", "acc_end_nakopl", "t_processing", "t_util", "t_neutral",
+            "t_storage", "t_burial"}
 
 _TITLE_FIELDS = [
     ("наименование юридического лица", "org_name"),
@@ -284,6 +336,12 @@ def _is_numbering_row(ws, row: int) -> bool:
             continue
         if isinstance(v, str):
             v = v.strip()
+            if v.startswith("="):
+                # служебные формулы пользователя правее таблицы (=B22 в
+                # строке нумерации месячного журнала ВСМ) — не признак данных;
+                # без этого строка «А 8 9 … 16» считалась строкой данных и
+                # затиралась первым отходом
+                continue
             if len(v) <= 2 and not v.isdigit():
                 continue                    # буквенные графы «А», «Б»
             if not v.isdigit():
@@ -481,10 +539,9 @@ def _fill_title(ws, ctx, values: dict) -> None:
         _replace_below_heading(ws, org_line(ctx, with_requisites=req_missing))
     if values.get("period"):
         tx.fill_by_labels(ws, {"период": values["period"]})
-    e = ctx.extra if isinstance(ctx.extra, dict) else {}
     _replace_right(ws, "ответственный исполнитель",
                    ctx.organization.director_name or "")
-    _replace_right(ws, "дата", str(e.get("report_date", "")))
+    _replace_right(ws, "дата", report_date_text(ctx))
 
 
 def _drop_year_after_period_formula(ws) -> None:
@@ -498,6 +555,32 @@ def _drop_year_after_period_formula(ws) -> None:
                 nxt = ws.cell(row=c.row, column=c.column + 1)
                 if _text(nxt.value) in ("год", "года") and not isinstance(nxt, MergedCell):
                     nxt.value = None
+
+
+_YEAR_RE = re.compile(r"\b20\d\d\b")
+
+
+def _replace_period_literal(ws, period: str) -> None:
+    """Шапки приложений, где период вписан ЗНАЧЕНИЕМ, а не =Титул!F11
+    (месячные журналы ВСМ: G3 «январь 2025» + H3 «года»; годовой проект:
+    « 2025 г»): короткая ячейка с годом в строках 2–4 — это период чужого
+    образца, заменяем своим; соседнее «год/года» убираем (период уже со
+    словом «года»)."""
+    if not period:
+        return
+    for row in ws.iter_rows(min_row=2, max_row=4):
+        for c in row:
+            v = c.value
+            if (not isinstance(v, str) or v.startswith("=") or isinstance(c, MergedCell)
+                    or len(v) > 40 or not _YEAR_RE.search(v)):
+                continue
+            low = _text(v)
+            if "приказ" in low or "n 1028" in low or "№ 1028" in low:
+                continue
+            c.value = period
+            nxt = ws.cell(row=c.row, column=c.column + 1)
+            if _text(nxt.value) in ("год", "года", "г", "г.") and not isinstance(nxt, MergedCell):
+                nxt.value = None
 
 
 def _actualize_edition(ws, ed: str, issues: list | None) -> None:
@@ -574,6 +657,8 @@ def _row_data(w, n: int, ed: str, own: dict) -> dict:
 def _write(ws, row: int, cols: dict, data: dict) -> None:
     for attr, col in cols.items():
         value = data.get(attr)
+        if value in (None, "") and attr in _NUMERIC:
+            value = 0               # как в образцах: пустых числовых клеток нет
         if value in (None, ""):
             continue
         cell = ws.cell(row=row, column=col)
@@ -584,10 +669,20 @@ def _write(ws, row: int, cols: dict, data: dict) -> None:
         cell.value = value
 
 
-def _fill_block(ws, header: int, cols: dict, rows: list[dict]) -> int:
+def _placeholder_row(cols: dict) -> dict:
+    """Строка-заглушка пустой таблицы как в образцах («Приложение 4» всех
+    пяти журналов: «- - - - 0 0 0 0 0 0 0 - - -»): прочерк в текстовых
+    графах, 0 — в числовых. Пустая таблица читалась бы как незаполненная."""
+    return {attr: (0 if attr in _NUMERIC else "-") for attr in cols}
+
+
+def _fill_block(ws, header: int, cols: dict, rows: list[dict],
+                placeholder: bool = True) -> int:
     """Очистить область под шапкой и записать строки; вернуть конец области."""
     start, end = data_region(ws, header)
     _clear_rows(ws, start, min(end, ws.max_row))
+    if not rows and placeholder:
+        rows = [_placeholder_row(cols)]
     row = start
     for data in rows:
         if row > end:               # таблица кончилась — раздвигаем её,
@@ -595,6 +690,12 @@ def _fill_block(ws, header: int, cols: dict, rows: list[dict]) -> int:
             end += 1
         _write(ws, row, cols, data)
         row += 1
+    # хвост области (строк образца больше, чем наших): внутристрочные
+    # =SUM(F9:J9) там печатали «0» в пустой строке — убираем и их
+    for r in range(row, min(end, ws.max_row) + 1):
+        for cell in ws[r]:
+            if not isinstance(cell, MergedCell) and is_row_formula(cell.value, r):
+                cell.value = None
     return end
 
 
@@ -629,6 +730,8 @@ def fill(ctx, out_path: str | Path, sample: Path | None = None,
         ws = wb[name]
         _actualize_edition(ws, ed, issues)
         _drop_year_after_period_formula(ws)
+        if name != wb.sheetnames[0]:
+            _replace_period_literal(ws, values["period"])
         head = header_row(ws)
         if not head:
             continue

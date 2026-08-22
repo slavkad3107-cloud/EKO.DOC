@@ -13,16 +13,20 @@ from ecodoc.core.models import (Medium, NVOSObject, Organization, Pollutant,
 from ecodoc.development import nmu
 
 
-def _ctx(**nmu_extra) -> ReportContext:
+def _ctx(code="41-0247-001234-П", address="Ленинградская обл., г. Кингисепп, "
+         "ул. Заводская, 1", region_code="", **nmu_extra) -> ReportContext:
+    """Полный контекст; по умолчанию объект в Ленобласти (47) — федеральный
+    образец № 662. Почему не СПб-код: регион 78 переключает форму."""
     ctx = ReportContext(
         organization=Organization(name="ООО «Завод»", inn="7801234564",
                                   ogrn="1027800000000",
                                   director_name="Иванов И.И."))
-    ctx.objects.append(NVOSObject(code="40-0178-001234-П",
-                                  name="Промплощадка № 1", category="II",
-                                  address="СПб, ул. Заводская, 1"))
+    ctx.objects.append(NVOSObject(code=code, name="Промплощадка № 1",
+                                  category="II", address=address,
+                                  region_code=region_code))
     ctx.extra["emission_sources"] = [
         {"number": "0001", "name": "Котельная", "kind": "организованный",
+         "workshop": "Котельная", "site": "Котёл № 1",
          "pollutants": [
              {"code": "0301", "name": "Азота диоксид", "g_s": "0.5",
               "t_year": "1.2"},
@@ -81,7 +85,7 @@ def test_sections_verbatim_662(tmp_path):
             "4. Категория объекта, оказывающего негативное воздействие "
             "на окружающую среду: II.",
             "5. Код объекта, оказывающего негативное воздействие "
-            "на окружающую среду: 40-0178-001234-П.",
+            "на окружающую среду: 41-0247-001234-П.",
             "(общий или специализированный): специализированный "
             "(степени НМУ: 1, 2, 3)."):
         assert fragment in text, fragment
@@ -279,3 +283,132 @@ def test_no_measures_required_branch(tmp_path):
     assert "не требуется" in text
     assert "п. 5 требований" in text
     assert nmu.MODES[1] not in text
+
+
+# ── региональные варианты (сверены с принятыми планами Москвы и СПб) ────────
+
+def test_region_detection():
+    """Регион: из region_code, иначе из кода ОНВОС («45-0177» → 77,
+    «40-0178» → 78); ЛО (47) и пустой контекст — федеральный образец."""
+    from ecodoc.development import nmu_regions as R
+    assert R.region_code(_ctx()) == "47" and R.profile(_ctx()) is None
+    assert R.profile(_ctx(code="45-0177-012344-П"))["key"] == "msk"
+    assert R.profile(_ctx(code="40-0178-001234-П"))["key"] == "spb"
+    assert R.profile(_ctx(code="", region_code="77"))["key"] == "msk"
+    assert R.profile(ReportContext()) is None
+
+
+def test_moscow_variant_like_approved_plan(tmp_path):
+    """Москва (77): пп. 1–9 № 662 + таблица на 8 граф дословно как в плане,
+    согласованном ДПиООС 24.04.2026 («Степень опасности НМУ»,
+    «Структурное подразделение (цех)»); гриф СОГЛАСОВАНО — Департамент;
+    приложения по 231-ПП: пояснительная записка п. 17, журнал прил. 1
+    (6 граф дословно + примечания), план-график контроля прил. 3, состав
+    заявления п. 16; альбомный лист."""
+    from docx import Document
+    from docx.enum.section import WD_ORIENT
+    from ecodoc.development import nmu_regions as R
+    ctx = _ctx(code="45-0177-012344-П", address="105005, г. Москва, "
+               "пер. Волховский, вл. 11, стр. 1, 2",
+               forecast_kind="общий", below_0_1_pdk=True,
+               processes="Учебные мастерские: пайка, слесарные работы.",
+               **_CTRL)
+    p = nmu.generate(ctx, tmp_path / "msk.docx")
+    text = _text(p)
+    tables = _tables(p)
+    assert Document(str(p)).sections[0].orientation == WD_ORIENT.LANDSCAPE
+    for frag in (nmu.P1, nmu.P6, nmu.P8, nmu.P9):
+        assert frag in text
+    t7 = [t for t in tables if t[0] == R.MSK_HEADER]
+    assert t7 and t7[0][1] == [str(i) for i in range(1, 9)]
+    row = t7[0][2]
+    assert row[1] == "Общий вид прогноза НМУ"
+    assert row[2] == "Котельная. Котёл № 1" and row[3] == "0001"
+    assert row[5] == "0301 Азота диоксид" and row[6] == "0,5000000"
+    assert ("Департамент природопользования и охраны окружающей среды "
+            "города Москвы") in text
+    assert "№ 231-ПП" in text and "п. 17 Порядка" in text
+    # пояснительная записка «< 0,1 ПДК» — 3 раздела по п. 17
+    for sec in R.MSK_NOTE_BELOW_01:
+        assert sec[1:40] in text
+    assert R.MSK_NOTE_FULL[1][1:40] not in text
+    assert "Учебные мастерские" in text
+    journal = [t for t in tables if t[0] == R.MSK_JOURNAL_HEADER]
+    assert journal and journal[0][1] == ["1", "2", "3", "4", "5", "6"]
+    assert R.MSK_JOURNAL_NOTES[0] in text
+    assert [t for t in tables if t[0] == R.MSK_SCHEDULE_HEADER]
+    for item in R.MSK_APPLICATION:
+        assert item in text
+    # федеральные таблицы по степеням не дублируются
+    assert not [t for t in tables if t[0] == nmu.HEADER]
+    # gaps: план-график — в списке, подразделения заданы; всё — в документе
+    gs = nmu.gaps(ctx)
+    assert any("план-график" in g for g in gs)
+    assert not any("структурное подразделение (цех) для" in g for g in gs)
+    for g in gs:
+        assert g in text, g
+
+
+def test_moscow_full_note_when_not_below_01(tmp_path):
+    """Москва без признака «< 0,1 ПДК»: полный состав записки (4 раздела),
+    пометка про признак — в gaps() и в документе."""
+    from ecodoc.development import nmu_regions as R
+    ctx = _ctx(code="45-0177-012344-П", forecast_kind="общий", **_CTRL)
+    text = _text(nmu.generate(ctx, tmp_path / "m.docx"))
+    for sec in R.MSK_NOTE_FULL:
+        assert sec[1:40] in text
+    assert any("below_0_1_pdk" in g for g in nmu.gaps(ctx))
+    assert "below_0_1_pdk" in text
+
+
+def test_spb_variant_like_accepted_list(tmp_path):
+    """СПб (78): таблица на 9 граф дословно как в принятом перечне
+    (с «Достигаемым экологическим эффектом, %»), одна таблица на все
+    степени («1 степени опасности» …), блок «Должностное лицо,
+    ответственное за проведение мероприятий: ФИО, подпись», гриф
+    СОГЛАСОВАНО — Комитет по природопользованию; эффект — целое число
+    из величины «после» (0,5 → 0,375 = 25 %), без «после» — пометка."""
+    from ecodoc.development import nmu_regions as R
+    ctx = _ctx(code="40-0178-001234-П", address="СПб, ул. Заводская, 1",
+               forecast_kind="специализированный", **_CTRL,
+               responsible=[{"unit": "Котельная", "position": "Начальник",
+                             "name": "Петров П.П."}],
+               measures=[{"mode": 1, "text": "Перевод котлов на газ",
+                          "reduction_pct": 25, "source": "0001"},
+                         {"mode": 2, "text": "Остановка котла № 2",
+                          "after": "0", "source": "0001"}])
+    p = nmu.generate(ctx, tmp_path / "spb.docx")
+    text = _text(p)
+    tables = _tables(p)
+    t7 = [t for t in tables if t[0] == R.SPB_HEADER]
+    assert t7 and t7[0][1] == [str(i) for i in range(1, 10)]
+    body = t7[0][2:]
+    assert [r[1] for r in body] == ["1 степени опасности",
+                                    "2 степени опасности",
+                                    "3 степени опасности"]
+    assert body[0][8] == "25" and body[1][8] == "100" and body[1][7] == "0"
+    assert body[2][8] == R.EFFECT_REQUIRED
+    assert body[0][2] == "Котельная. Котёл № 1"
+    assert R.SPB_RESPONSIBLE_LABEL in text and "Петров П.П." in text
+    assert "ФИО, подпись" in text
+    assert ("Комитет по природопользованию, охране окружающей среды "
+            "и обеспечению экологической безопасности") in text
+    assert "№ 86-р" in text
+    gs = nmu.gaps(ctx)
+    assert any("эффект" in g for g in gs)
+    for g in gs:
+        assert g in text, g
+
+
+def test_regional_unit_gap(tmp_path):
+    """Нет цеха у источника с контролируемым веществом — пометка
+    «[требуется: структурное подразделение (цех)]» в таблице и в gaps()."""
+    from ecodoc.development import nmu_regions as R
+    ctx = _ctx(code="40-0178-001234-П", forecast_kind="общий", **_CTRL)
+    ctx.extra["emission_sources"][0].pop("workshop")
+    ctx.extra["emission_sources"][0].pop("site")
+    rows = nmu.regional_rows(ctx, R.profile(ctx))
+    assert rows[0][2] == R.UNIT_REQUIRED
+    assert any("структурное подразделение (цех) для источников 0001" in g
+               for g in nmu.gaps(ctx))
+    assert R.UNIT_REQUIRED in _text(nmu.generate(ctx, tmp_path / "u.docx"))

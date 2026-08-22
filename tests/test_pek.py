@@ -367,3 +367,27 @@ def test_pek_xml_has_new_sections(tmp_path):
     xml = rep.render_xml(tmp_path / "pek.xml").read_text(encoding="utf-8")
     assert "ПобочныеПродуктыПроизводства" in xml
     assert "ИскусственныеГрунтыТКО" in xml
+
+
+def test_pek_table_11_ten_rows_like_accepted_report(tmp_path):
+    """Сверка с «Формы/Отчетность/ОТчет ПЭК/отчет ПЭК.pdf» (ИП Миних, отчёт за
+    2021 год по СТАРОЙ форме № 261 в ред. № 383 — старее действующей № 173
+    ред. № 262, поэтому форму не меняем). Что совпадает и в старой, и в новой
+    форме: Таблица 1.1 — ровно 10 строк в этом порядке (наименование, адрес,
+    руководитель, ответственные за ПЭК, ИНН, ОГРН, наименование объекта,
+    адрес объекта, код объекта, категория); Таблица 1.3 — 4 графы
+    (№, наименование, адрес, реквизиты аттестата); ссылок на № 261 нет."""
+    wb = _render(tmp_path)
+    ws = wb["Раздел 1"]
+    r = _row_after_title(ws, "Таблица 1.1.")
+    names = [ws.cell(row=r + 3 + i, column=2).value for i in range(10)]
+    assert [ws.cell(row=r + 3 + i, column=1).value for i in range(10)] == list(range(1, 11))
+    assert names[0].startswith("Полное (сокращённое) наименование")
+    assert names[1] == "Место нахождения (адрес)"
+    assert names[4] == "ИНН" and names[5] == "ОГРН"
+    assert names[6].startswith("Наименование объекта")
+    assert names[7] == "Адрес места нахождения объекта"
+    assert names[8] == "Код объекта" and names[9] == "Категория объекта"
+    assert ws.cell(row=r + 3 + 9, column=3).value == "III"
+    text = _text(wb["Титул"]) if "Титул" in wb.sheetnames else _text(wb[wb.sheetnames[0]])
+    assert "№ 261" not in text and "N 261" not in text

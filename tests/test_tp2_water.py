@@ -314,3 +314,40 @@ def test_period_year_coerced_from_string():
     assert loaded.period.year == 2024 and isinstance(loaded.period.year, int)
     assert loaded.period.quarter == 2
     assert loaded.wastes[0].hazard_class == 1
+
+
+def test_blank_layout_sheets_like_scan(tmp_path):
+    """Сверка со сканом сданного отчёта ПРОТЕЛЮКС-2023 («Формы/Отчетность/
+    2-ТП водхоз»): кроме машинных листов печатаются листы «(бланк)» в
+    разбивке на блоки граф 1-6 / 7-19 / 20-31 / 32-49 (Раздел 1) и
+    1-6 / 7-18 / 19-30 / пары ЗВ по 8 (Раздел 2) с подписями «Код по ОКЕИ»,
+    предпечатанными строками 11-15 / 21-25 и «Бланк № 1 / Всего бланков 1»."""
+    rep = _report(_ctx_full())
+    wb = load_workbook(rep.render_print(tmp_path / "w.xlsx"))
+    assert "Раздел 1 (бланк)" in wb.sheetnames and "Раздел 2 (бланк)" in wb.sheetnames
+    ws = wb["Раздел 1 (бланк)"]
+    assert ws["A1"].value == "Т1"
+    assert ws["A3"].value == "Код по ОКЕИ: километр - 008"
+    assert [ws.cell(row=5, column=c).value for c in range(2, 8)] == [1, 2, 3, 4, 5, 6]
+    assert [ws[f"A{r}"].value for r in range(6, 11)] == [11, 12, 13, 14, 15]   # предпечатанные
+    assert ws["B6"].value == "Л" and ws["F6"].value == "БАЛ/НАРВА"
+    assert ws["A12"].value == "Код по ОКЕИ: тысяча кубических метров - 114"
+    assert [ws.cell(row=14, column=c).value for c in range(2, 15)] == list(range(7, 20))
+    assert ws["G15"].value == 1.29 and ws["N15"].value == 0.02          # гр.12, гр.19 июль
+    assert [ws.cell(row=23, column=c).value for c in range(2, 14)] == list(range(20, 32))
+    assert ws["E24"].value == 0.31 and ws["F24"].value == 0.92         # ноябрь/декабрь
+    assert [ws.cell(row=32, column=c).value for c in range(2, 20)] == list(range(32, 50))
+    assert ws["B33"].value == "102" and ws["C33"].value == 1.29        # гр.32-33 как в скане
+    text = " ".join(str(c.value) for row in ws.iter_rows() for c in row if c.value)
+    assert "Бланк №  1" in text and "Всего бланков  1" in text
+    ws2 = wb["Раздел 2 (бланк)"]
+    assert ws2["A1"].value == "Т2"
+    assert [ws2[f"A{r}"].value for r in range(6, 11)] == [21, 22, 23, 24, 25]
+    assert [ws2.cell(row=14, column=c).value for c in range(2, 14)] == list(range(7, 19))
+    assert [ws2.cell(row=23, column=c).value for c in range(2, 14)] == list(range(19, 31))
+    assert ws2["B32"].value == 31 and ws2["B33"].value == "132" and ws2["C33"].value == 0.05
+    text2 = " ".join(str(c.value) for row in ws2.iter_rows() for c in row if c.value)
+    assert "приводятся в тоннах" in text2 and "округляется до трёх знаков" in text2
+    # титул: «Бланк № 1 / Всего бланков 1 / Годовая» — как на каждой странице скана
+    t = " ".join(str(c.value) for row in wb["Титульный лист"].iter_rows() for c in row if c.value)
+    assert "Бланк №  1" in t and "Годовая" in t

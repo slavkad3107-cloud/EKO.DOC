@@ -33,8 +33,65 @@ class VolumeSources:
     # результаты расчёта рассеивания (из «Эколога»): макс. концентрации в долях ПДК
     dispersion_table: list[list] = field(default_factory=list)
     dispersion_header: list[str] = field(default_factory=list)
+    # расчётные точки (код, X, Y, высота, тип, комментарий) — из «Эколога»
+    points_table: list[list] = field(default_factory=list)
+    points_header: list[str] = field(default_factory=list)
+    # вклады источников в максимальные концентрации (таблица № 5 Методики № 581)
+    contrib_table: list[list] = field(default_factory=list)
+    contrib_header: list[str] = field(default_factory=list)
     # приложения-исходники (пути к протоколам КХА, картам изолиний)
     appendices: list[str] = field(default_factory=list)
+
+
+# по каким словам в названии листа/шапке узнаём тип выгрузки «Эколога»:
+# книга результатов обычно многолистовая, и пользователь грузит её целиком
+_SHEET_KINDS = (
+    ("points", ("расчетн", "точк")),       # «Расчетные точки»
+    ("points", ("расчётн", "точк")),
+    ("contrib", ("вклад",)),               # «Вклады источников»
+    ("sources", ("источник",)),            # «Источники», «Параметры источников»
+    ("dispersion", ("концентрац",)),       # «Максимальные концентрации»
+    ("dispersion", ("результат",)),
+)
+
+
+def _sheet_kind(title: str, header: list[str]) -> str | None:
+    text = (title + " " + " ".join(header)).lower()
+    for kind, words in _SHEET_KINDS:
+        if all(w in text for w in words):
+            return kind
+    return None
+
+
+def ingest_ecolog_workbook(path: str | Path, src: "VolumeSources",
+                           default: str = "dispersion") -> list[str]:
+    """Разобрать многолистовую книгу «Эколога» по типам листов в VolumeSources.
+
+    Почему: результаты рассеивания «Эколог» выгружает одной книгой — точки,
+    вклады, концентрации на разных листах. Лист, тип которого не распознан,
+    идёт в `default`, если этот слот ещё пуст. Возвращает заметки по листам.
+    """
+    from openpyxl import load_workbook
+
+    notes = []
+    wb = load_workbook(path, data_only=True)
+    for ws in wb.worksheets:
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            continue
+        header = [str(c) if c is not None else "" for c in rows[0]]
+        body = [[("" if c is None else c) for c in r] for r in rows[1:]
+                if any(c not in (None, "") for c in r)]
+        kind = _sheet_kind(ws.title, header)
+        if kind is None:
+            if getattr(src, default + "_table"):
+                notes.append(f"лист «{ws.title}»: тип не распознан, пропущен")
+                continue
+            kind = default
+        setattr(src, kind + "_header", header)
+        setattr(src, kind + "_table", body)
+        notes.append(f"лист «{ws.title}» → {kind}: строк {len(body)}")
+    return notes
 
 
 def ingest_excel(path: str | Path, sheet: str | None = None,
@@ -75,15 +132,45 @@ _TYPES = {
 }
 
 
+def gaps(vtype: str, ctx: ReportContext, src: VolumeSources | None = None) -> list[str]:
+    """Чего не хватает тому. Для НДВ — полный перечень по Методике № 581."""
+    if vtype == "ndv":
+        from ecodoc.development import ndv_project
+        return ndv_project.gaps(ctx, _ndv_inputs(src or VolumeSources()))
+    out = []
+    if not (src and src.sources_table):
+        out.append("нет таблицы источников")
+    if not (src and src.dispersion_table):
+        out.append("нет результатов расчёта/обоснования")
+    return out
+
+
+def _ndv_inputs(src: VolumeSources):
+    from ecodoc.development.ndv_project import NdvInputs
+    return NdvInputs(sources_header=src.sources_header, sources_table=src.sources_table,
+                     dispersion_header=src.dispersion_header,
+                     dispersion_table=src.dispersion_table,
+                     points_header=src.points_header, points_table=src.points_table,
+                     contrib_header=src.contrib_header, contrib_table=src.contrib_table,
+                     appendices=list(src.appendices))
+
+
 def build(vtype: str, ctx: ReportContext, src: VolumeSources,
           out_path: str | Path) -> Path:
-    """Собрать том заданного типа (ndv|nds|szz) в .docx."""
+    """Собрать том заданного типа (ndv|nds|szz) в .docx.
+
+    НДВ собирается полноценным проектом (ndv_project — структура реального
+    проекта по Методике № 581); НДС и СЗЗ — пока каркасом, как раньше.
+    """
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt
 
     if vtype not in _TYPES:
         raise ValueError(f"Тип тома: {list(_TYPES)}")
+    if vtype == "ndv":
+        from ecodoc.development import ndv_project
+        return ndv_project.build(ctx, _ndv_inputs(src), out_path)
     title, subject = _TYPES[vtype]
     org = ctx.organization
 

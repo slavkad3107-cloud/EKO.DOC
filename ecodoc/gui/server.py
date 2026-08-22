@@ -665,7 +665,13 @@ def api_volume(params, body):
 
     Контур обмена с УПРЗА: источники выгружаются кнопкой «Выгрузить для
     УПРЗА», расчёт делает аттестованная программа («Эколог»), её Excel-выгрузки
-    возвращаются сюда — и том собирается с настоящими таблицами."""
+    возвращаются сюда — и том собирается с настоящими таблицами.
+
+    Файлы: sources_file — таблица источников; dispersion_file — книга
+    результатов (многолистовая: концентрации, расчётные точки, вклады —
+    листы распознаются по названиям); points_file / contrib_file — те же
+    таблицы отдельными файлами. Для НДВ в ответ добавляется gaps — перечень
+    того, чего не хватает до проекта по Методике № 581."""
     import shutil
 
     from ecodoc.development import volume_builder as vb
@@ -676,16 +682,18 @@ def api_volume(params, body):
     notes = []
     try:
         for key, attr in (("sources_file", "sources"),
-                          ("dispersion_file", "dispersion")):
+                          ("dispersion_file", "dispersion"),
+                          ("points_file", "points"),
+                          ("contrib_file", "contrib")):
             f = body.get(key)
             if not f:
                 continue
             try:
                 path = Path(_decode_to_tmp([f], tmpdir)[0])
-                header, rows = vb.ingest_excel(path)
-                setattr(src, attr + "_header", header)
-                setattr(src, attr + "_table", rows)
-                notes.append(f"{f.get('name')}: строк {len(rows)}")
+                # книга результатов «Эколога» многолистовая — раскладываем
+                # листы по типам; однолистовая идёт в свой слот как раньше
+                sheet_notes = vb.ingest_ecolog_workbook(path, src, default=attr)
+                notes.append(f"{f.get('name')}: " + "; ".join(sheet_notes))
             except Exception as e:
                 notes.append(f"⚠ {f.get('name')}: не прочитан ({e})")
         src.appendices = [str(n) for n in body.get("appendices") or []]
@@ -694,21 +702,27 @@ def api_volume(params, body):
             from ecodoc.development.air_inventory import sources as inv_sources
             inv = inv_sources(ctx)
             if inv:
-                src.sources_header = ["№", "Наименование", "Тип"]
-                src.sources_table = [[s.get("number", ""), s.get("name", ""),
-                                      s.get("kind", "")] for s in inv]
+                if vtype != "ndv":   # в НДВ таблица 2.6 строится из инвентаризации сама
+                    src.sources_header = ["№", "Наименование", "Тип"]
+                    src.sources_table = [[s.get("number", ""), s.get("name", ""),
+                                          s.get("kind", "")] for s in inv]
                 notes.append(f"источники из инвентаризации: {len(inv)}")
         out_dir = workspace.results_dir(body["org"], body["site"])
         names = {"ndv": "НДВ", "nds": "НДС", "szz": "СЗЗ"}
         path = vb.build(vtype, ctx, src,
-                        out_dir / f"том_{names.get(vtype, vtype)}"
-                                  f"{_year_suffix(ctx)}.docx")
+                        out_dir / (f"{'проект' if vtype == 'ndv' else 'том'}_"
+                                   f"{names.get(vtype, vtype)}"
+                                   f"{_year_suffix(ctx)}.docx"))
+        gaps = vb.gaps(vtype, ctx, src)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     if not src.dispersion_table:
         notes.append("⚠ результатов рассеивания нет — в томе остаётся "
                      "заглушка: выполните расчёт в УПРЗА и загрузите выгрузку")
-    return {"path": str(path), "notes": notes}
+    if gaps:
+        notes.append(f"чего не хватает ({len(gaps)}): " + "; ".join(gaps[:8])
+                     + ("; …" if len(gaps) > 8 else ""))
+    return {"path": str(path), "notes": notes, "gaps": gaps}
 
 
 def api_soil_class(params, body):

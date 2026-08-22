@@ -495,7 +495,7 @@ def test_waste_movement_blank_continuation_block_filled(tmp_path):
     out = fill(_ctx3(), tmp_path / "из_бланка.xlsx", sample=sample)
     ws = openpyxl.load_workbook(out)["Приложение 2 (год)"]
     assert [ws[f"A{r}"].value for r in (16, 17, 18)] == [1, 2, 3]   # № строки
-    assert ws["E16"].value is None and ws["I16"].value == 0.115    # =G8 затёрт; остаток
+    assert ws["E16"].value == 0 and ws["I16"].value == 0.115       # =G8 затёрт (0 как в образце); остаток
     assert ws["C17"].value == 2.6                                  # утилизировано
     assert ws["F17"].value == 40.0 and ws["H17"].value == 40.0     # размещено всего/захоронение
     assert ws["B18"].value == 0.011 and ws["E18"].value == 0.1     # обработано / передано
@@ -515,7 +515,7 @@ def test_waste_movement_blank_cross_sheet_refs_replaced(tmp_path):
     assert a3["A8"].value == 3 and a3["B8"].value == "Обтирочный материал"
     assert a3["C8"].value == "9 21 302 01 52 3"
     assert a3["E8"].value == "=SUM(F8:J8)"                 # агрегат по строке
-    assert a3["H8"].value == 0.1 and a3["J8"].value is None   # обезвреживание, не захоронение
+    assert a3["H8"].value == 0.1 and a3["J8"].value == 0      # обезвреживание, не захоронение (0 как в образцах)
     assert a3["K8"].value == "ООО «Приёмщик»" and a3["B9"].value is None
     a2 = wb["Приложение 2 (год)"]
     assert a2["B8"].value == "Лампы ртутные" and a2["C8"].value == "4 71 101 01 52 1"
@@ -593,3 +593,186 @@ def test_waste_accounting_calendar_monthly_last_day():
     assert o.periodicity == "месяц"
     assert len(o.due) == 12 and (1, 31) in o.due and (2, 28) in o.due and (4, 30) in o.due
     assert "полугодие" in o.coverage and "последнего дня" in o.coverage
+
+
+# --- сверка с реальными журналами из «Формы» (Б2/Б3/МО/У 2025 + месячные ВСМ) ---
+from pathlib import Path
+
+import pytest
+
+_J1028 = Path.home() / "OneDrive" / "Формы" / "Отчетность" / "Движение отходов 1028"
+
+
+def _monthly_blank_1028(path):
+    """Мини-копия месячного журнала ВСМ («1028 Журнал январь 2025.xlsx»):
+    период в шапке Прил. 2 вписан ЗНАЧЕНИЕМ (G3 «январь 2025», H3 «года»),
+    правее таблицы-продолжения — служебные формулы пользователя (=B15 в
+    строке нумерации граф, =C8 в строках данных)."""
+    _user_blank_1028_full(path)
+    wb = openpyxl.load_workbook(path)
+    wb["Титул"]["F11"] = "за январь 2025 года"
+    wb["Титул"]["J15"], wb["Титул"]["K15"] = "дата", "31.01.2025 г."
+    ws = wb["Приложение 2 (год)"]
+    ws["G3"], ws["H3"] = "январь 2025", "года"
+    for i, c in enumerate("BCDEFGHIJ"):
+        ws.cell(row=15, column=13 + i, value=f"={c}15")     # =B15 … в строке «А 8 9 …»
+    ws["L16"] = "=C8"
+    wb.save(path)
+    return path
+
+
+def test_waste_movement_monthly_period(tmp_path):
+    """[major] Помесячный журнал (№ 1028 ред. № 825 п. 11 — обобщение
+    ежемесячно; образцы ВСМ «1028 Журнал <месяц> 2025»): extra["period_month"]
+    даёт «январь 2025 года» на титуле и в шапках приложений (и там, где
+    период в образце вписан значением, а не =Титул!F11); дата — с « г.»;
+    строка нумерации граф с формулами-помощниками не затирается."""
+    from ecodoc.reports.waste_movement import template as tmpl
+    from ecodoc.reports.waste_movement.template import fill
+    ctx = _ctx3()
+    ctx.period = ReportPeriod(year=2025)
+    ctx.extra["period_month"] = "01"
+    ctx.extra["report_date"] = "31.01.2025"
+    assert tmpl.period_text(ctx) == "январь 2025 года"
+    ctx.extra["period_month"] = "Февраль"
+    assert tmpl.period_text(ctx) == "февраль 2025 года"
+    ctx.extra["period_month"] = 1
+    sample = _monthly_blank_1028(tmp_path / "месяц.xlsx")
+    out = fill(ctx, tmp_path / "январь.xlsx", sample=sample)
+    wb = openpyxl.load_workbook(out)
+    assert wb["Титул"]["F11"].value == "январь 2025 года"
+    assert wb["Титул"]["K15"].value == "31.01.2025 г."
+    a2 = wb["Приложение 2 (год)"]
+    assert a2["G3"].value == "январь 2025 года" and a2["H3"].value is None
+    assert [a2[f"{c}15"].value for c in "ABCDEFGHIJ"] == ["А"] + list(range(8, 17))
+    assert a2["A16"].value == 1 and a2["I16"].value == 0.115
+    assert a2["L16"].value is None                      # чужая ссылка =C8 затёрта
+    # рисуемая кодом форма: титул «за январь 2025 года», дата с « г.»
+    registry.load_all()
+    p = registry.get("waste-movement")(ctx).render_print(tmp_path / "код.xlsx")
+    wb = openpyxl.load_workbook(p)
+    assert wb["Титул"]["F11"].value == "за январь 2025 года"
+    assert wb["Титул"]["K15"].value == "31.01.2025 г."
+    assert wb["Приложение 2 (год)"]["G3"].value == "январь 2025 года"
+
+
+def test_waste_movement_blank_zeros_and_placeholder(tmp_path):
+    """[major] Как в принятых журналах: пустых числовых клеток нет (0), в
+    пустой таблице полученных — строка «- - - - 0 0 … - - -», хвостовые
+    =SUM(F9:J9) в незанятых строках образца не печатают «0» в пустой строке."""
+    from ecodoc.reports.waste_movement.template import fill
+    sample = _user_blank_1028_full(tmp_path / "бланк.xlsx")
+    wb = openpyxl.load_workbook(sample)
+    a3 = wb["Приложение 3 (год)"]
+    a3["E9"] = "=SUM(F9:J9)"                             # вторая чужая строка
+    a4 = wb.create_sheet("Приложение 4 (год)")
+    a4["A2"] = "Данные учета полученных от других лиц отходов за"
+    for ref, txt in {"A5": "№ п/п", "B5": "Наименование отходов", "C5": "Код ФККО",
+                     "D5": "Класс опасности вида отхода",
+                     "E5": "Количество полученных отходов за отчетный период, тонн",
+                     "L5": "Сведения о лицах, от которых получены отходы",
+                     "M5": "Дата и номер договора", "N5": "Срок действия договора"}.items():
+        a4[ref] = txt
+    for c in "ABCDLMN":
+        a4.merge_cells(f"{c}5:{c}7")
+    a4.merge_cells("E5:K5")
+    a4.merge_cells("E6:E7")
+    a4.merge_cells("F6:K6")
+    a4["E6"], a4["F6"] = "Всего", "в том числе:"
+    for col, lbl in zip("GHIJK", ["для обработки", "для утилизации", "для обезвреживания",
+                                  "для хранения", "для захоронения"]):
+        a4[f"{col}7"] = lbl
+    for i in range(14):
+        a4.cell(row=8, column=1 + i, value=i + 1)
+    a4["A9"], a4["B9"], a4["E9"], a4["L9"] = 7, "Чужой полученный отход", 3.5, "ООО Чужой"
+    wb.save(sample)
+    out = fill(_ctx3(), tmp_path / "из_бланка.xlsx", sample=sample)
+    wb = openpyxl.load_workbook(out)
+    a2 = wb["Приложение 2 (год)"]
+    assert [a2[f"{c}8"].value for c in "EFGH"] == [0, 0, 0.115, 0]
+    assert [a2[f"{c}17"].value for c in "BCDEFGHIJ"] == [0, 2.6, 0, 0, 40.0, 0, 40.0, 0, 0]
+    a3 = wb["Приложение 3 (год)"]
+    assert [a3[f"{c}8"].value for c in "FGHIJ"] == [0, 0, 0.1, 0, 0]
+    assert a3["E9"].value is None                      # хвостовой SUM убран
+    a4 = wb["Приложение 4 (год)"]
+    assert [a4[f"{c}9"].value for c in "ABCDE"] == ["-", "-", "-", "-", 0]
+    assert [a4[f"{c}9"].value for c in "GHIJK"] == [0, 0, 0, 0, 0]
+    assert [a4[f"{c}9"].value for c in "LMN"] == ["-", "-", "-"]
+
+
+def test_waste_movement_year_from_months():
+    """[major] Год собирается из месячных журналов как в «1028 2025 с
+    формулами.xlsx»: образовано/передано — суммы по месяцам, остаток на
+    начало — из первого месяца, на конец — из последнего, перечень —
+    объединение отходов всех месяцев."""
+    from ecodoc.reports.waste_movement.report import year_from_months
+    months = []
+    for m, gen in ((1, "0.12"), (2, "0.16"), (3, "0.08")):
+        ctx = _ctx()
+        ctx.period = ReportPeriod(year=2025)
+        ctx.extra["period_month"] = m
+        ctx.wastes = [WasteFlow(fkko_code="91920402604", name="Обтирочный", hazard_class=4,
+                                accumulated_start=Decimal(str(m)), generated=gen,
+                                transferred=gen, transferred_util=gen,
+                                accumulated_end=Decimal(str(m + 1)))]
+        if m == 3:
+            ctx.wastes.append(WasteFlow(fkko_code="73339002715", name="Смет", hazard_class=5,
+                                        generated="7.5", transferred="7.5"))
+        months.append(ctx)
+    year = year_from_months(months)
+    assert year.period.year == 2025 and year.period.quarter is None
+    assert "period_month" not in year.extra
+    assert [w.fkko_code for w in year.wastes] == ["91920402604", "73339002715"]
+    w = year.wastes[0]
+    assert w.generated == Decimal("0.36") and w.transferred_util == Decimal("0.36")
+    assert w.accumulated_start == Decimal("1") and w.accumulated_end == Decimal("4")
+    assert year.wastes[1].generated == Decimal("7.5")
+
+
+@pytest.mark.skipif(not _J1028.is_dir(), reason="нет папки «Формы» с журналами 1028")
+@pytest.mark.parametrize("name", ["Б2", "Б3", "МО", "У"])
+def test_waste_movement_real_blanks_fill(tmp_path, name):
+    """[major] Все четыре реальных бланка 2025 года (Б2/Б3/МО/У) из «Формы»
+    заполняются без чужих данных, с нулями и заглушкой, как в их pdf."""
+    from ecodoc.reports.waste_movement.template import fill
+    sample = _J1028 / f"{name} 2025 1028 Журнал.xlsx"
+    if not sample.is_file():
+        pytest.skip("нет бланка")
+    ctx = _ctx3()
+    ctx.extra["report_date"] = "30.04.2025"
+    out = fill(ctx, tmp_path / f"{name}.xlsx", sample=sample)
+    wb = openpyxl.load_workbook(out)
+    flat = " ".join(str(c.value) for ws in wb.worksheets for row in ws.iter_rows()
+                    for c in row if c.value is not None)
+    assert "ЭТАЛОНАКТИВ" not in flat and "Дубовик" not in flat and "ФЭО" not in flat
+    assert wb["Титул"]["F11"].value == "1 кв 2025 года"
+    assert wb["Титул"]["K15"].value == "30.04.2025 г."
+    a2 = wb["Приложение 2 (год)"]
+    assert a2["G3"].value == "=Титул!F11" and a2["H3"].value is None
+    assert [a2[f"{c}8"].value for c in "ABCDEFGH"] == [
+        1, "Лампы ртутные", "4 71 101 01 52 1", 1, 0, 0, 0.115, 0]
+    a3 = wb["Приложение 3 (год)"]
+    assert a3["A8"].value == 3 and a3["K8"].value == "ООО «Приёмщик»"
+    assert a3["E9"].value is None
+    a4 = wb["Приложение 4 (год)"]
+    assert a4["A9"].value == "-" and a4["E9"].value == 0
+
+
+@pytest.mark.skipif(not (_J1028 / "ВСМ" / "Журнал 1028").is_dir(),
+                    reason="нет месячных журналов ВСМ")
+def test_waste_movement_real_monthly_blank(tmp_path):
+    """[major] Месячный журнал ВСМ как бланк: период значением в G3,
+    служебные формулы справа — нумерация граф цела, период свой."""
+    from ecodoc.reports.waste_movement.template import fill
+    sample = _J1028 / "ВСМ" / "Журнал 1028" / "1028 Журнал январь 2025.xlsx"
+    ctx = _ctx3()
+    ctx.period = ReportPeriod(year=2025)
+    ctx.extra["period_month"] = 1
+    out = fill(ctx, tmp_path / "янв.xlsx", sample=sample)
+    wb = openpyxl.load_workbook(out)
+    assert wb["Титул"]["F11"].value == "январь 2025 года"
+    a2 = wb["Приложение 2 (год)"]
+    assert a2["G3"].value == "январь 2025 года" and a2["H3"].value is None
+    assert [a2[f"{c}22"].value for c in "ABCDEFGHIJ"] == ["А"] + list(range(8, 17))
+    assert a2["A23"].value == 1 and a2["I23"].value == 0.115
+    assert "ВСМ-Сервис" not in str(wb["Титул"]["B9"].value)

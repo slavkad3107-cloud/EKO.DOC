@@ -19,6 +19,24 @@
 
 Паспорт оформляется только на отходы I–IV класса: для V класса он не нужен —
 требуется подтверждение отнесения к V классу (протокол биотестирования).
+
+Сверено 22.08.2026 со ВСЕМИ паспортами из «Формы/Разработка/ПОО» (ТЕХНОСТРОЙ:
+ТБО, банки ЛКМ, осадки мойки, раствор, теплоизоляция): состав паспорта — это
+результаты протокола КХА/морфологии ИЦ ООО «ТАСИС» (№ 20002.25-1-Отх от
+27.02.2025, аттестат № РОСС RU.0001.21АУ50, МИ М-27-2023), сам протокол
+подшит к паспорту, дата в грифе заполнена («28» февраля 2025 г.), способ
+определения — «количественный морфологический анализ отхода». Поэтому:
+  * дата утверждения печатается в грифе, если известна;
+  * реквизиты протокола и лаборатории (extra['waste_details'][код]
+    ['protocol'] = {number, date, lab, lab_attestation, method_doc} либо
+    extra['lab_results'] вида {kind: "КХА", protocol_no, date, lab, object,
+    substances}) печатаются третьим листом «Основание…» — у типовой формы
+    строки для них нет, а в принятых паспортах протокол приложен;
+  * состав без ручного ввода берётся из extra['lab_results'] (substances →
+    компоненты), как из протокола;
+  * для V класса generate_v_class() делает справку об отнесении к V классу
+    по акту/протоколу биотестирования (в ПОО: «акт о.п_биотест 5 кл»,
+    «БИО_26312_25т…» — 3 пробы ТАСИС, цель «подтверждение V класса»).
 """
 from __future__ import annotations
 
@@ -191,13 +209,47 @@ def _details(ctx: ReportContext, w: WasteFlow) -> dict:
 
     extra = ctx.extra if isinstance(ctx.extra, dict) else {}
     d = dict((extra.get("waste_details") or {}).get(w.fkko_code) or {})
+    code = norm_fkko(w.fkko_code or "")
     if not d.get("components"):
-        code = norm_fkko(w.fkko_code or "")
         for p in extra.get("waste_passports") or []:
             if code and norm_fkko(str(p.get("fkko") or "")) == code:
                 d.setdefault("components", p.get("components") or [])
                 break
+    lab = lab_result_for(ctx, w, kinds=("КХА", "хим", "морф"))
+    if lab:
+        # как в принятых паспортах ТЕХНОСТРОЙ: состав = результаты протокола
+        if not d.get("components") and lab.get("substances"):
+            d["components"] = [{"name": x.get("name", ""),
+                                "percent": x.get("value", "")}
+                               for x in lab["substances"] if isinstance(x, dict)]
+        d.setdefault("protocol", {
+            "number": lab.get("protocol_no", ""), "date": lab.get("date", ""),
+            "lab": lab.get("lab", ""),
+            "lab_attestation": lab.get("lab_attestation", ""),
+            "method_doc": lab.get("method", "")})
     return d
+
+
+def lab_result_for(ctx: ReportContext, w: WasteFlow, kinds=()) -> dict | None:
+    """Протокол из extra['lab_results'] для отхода: по коду ФККО или по
+    наименованию в поле object (ИИ пишет туда «вид отхода» из протокола)."""
+    from ecodoc.core.waste_agg import norm_fkko
+
+    extra = ctx.extra if isinstance(ctx.extra, dict) else {}
+    code = norm_fkko(w.fkko_code or "")
+    name = (w.name or "").strip().lower()
+    for lab in extra.get("lab_results") or []:
+        if not isinstance(lab, dict):
+            continue
+        kind = str(lab.get("kind") or "").lower()
+        if kinds and not any(k.lower() in kind for k in kinds):
+            continue
+        target = str(lab.get("object") or "")
+        tcode = norm_fkko(lab.get("fkko") or "")
+        if (code and (tcode == code or code in norm_fkko(target))) or (
+                name and len(name) > 8 and name[:40] in target.lower()):
+            return lab
+    return None
 
 
 def generate(ctx: ReportContext, out_dir: str | Path,
@@ -224,13 +276,93 @@ def generate(ctx: ReportContext, out_dir: str | Path,
         d = _details(ctx, w)
         day = (_parse_date(approved_date) or _parse_date(d.get("approved_date"))
                or _parse_date(extra.get("passport_approved_date")))
-        _build(ctx.organization, w, hazard, d, form_for(day)).save(path)
+        _build(ctx.organization, w, hazard, d, form_for(day), day).save(path)
+        paths.append(path)
+    return paths
+
+
+_MONTHS_GEN = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+               "августа", "сентября", "октября", "ноября", "декабря")
+
+
+def date_line(day: _dt.date | None) -> str:
+    """«28» февраля 2025 г. — как в подписанных паспортах; без даты — бланк."""
+    if not day:
+        return "«____» ________________ 20____ г."
+    return f"«{day.day:02d}» {_MONTHS_GEN[day.month - 1]} {day.year} г."
+
+
+def generate_v_class(ctx: ReportContext, out_dir: str | Path) -> list[Path]:
+    """Справка о подтверждении V класса по биотестированию — по одному .docx
+    на отход V класса, у которого есть extra['waste_details'][код]['biotest']
+    = {number, date, lab, lab_attestation, conclusion} или запись
+    extra['lab_results'] с kind «биотест». Паспорт на V класс не нужен
+    (п. 1 Порядка), но отнесение к V классу подтверждается биотестированием
+    (ст. 14 ФЗ-89, приказ МПР № 158); в ПОО пользователя это «акт приёмки
+    проб на токсичность методом биотестирования» ТАСИС с целью
+    «подтверждение V класса опасности» и протокол БИО ЦЭД."""
+    from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
+    from docx.shared import Pt
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    extra = ctx.extra if isinstance(ctx.extra, dict) else {}
+    paths: list[Path] = []
+    for w in ctx.wastes:
+        try:
+            if int(w.hazard_class) != 5:
+                continue
+        except (TypeError, ValueError):
+            continue
+        d = dict((extra.get("waste_details") or {}).get(w.fkko_code) or {})
+        bio = d.get("biotest")
+        if not bio:
+            lab = lab_result_for(ctx, w, kinds=("биотест",))
+            if lab:
+                bio = {"number": lab.get("protocol_no", ""), "date": lab.get("date", ""),
+                       "lab": lab.get("lab", ""),
+                       "lab_attestation": lab.get("lab_attestation", ""),
+                       "conclusion": lab.get("conclusion", "")}
+        if not bio:
+            continue
+        doc = Document()
+        st = doc.styles["Normal"]
+        st.font.name, st.font.size = "Times New Roman", Pt(12)
+        h = doc.add_paragraph()
+        h.alignment = AL.CENTER
+        h.add_run("СВЕДЕНИЯ О ПОДТВЕРЖДЕНИИ ОТНЕСЕНИЯ ОТХОДА К V КЛАССУ "
+                  "ОПАСНОСТИ").bold = True
+        doc.add_paragraph(f"{ctx.organization.name}")
+        rows = [
+            ("Наименование вида отходов по ФККО", w.name or "—"),
+            ("Код вида отходов по ФККО", w.fkko_code or "—"),
+            ("Класс опасности", "V"),
+            ("Способ подтверждения", "биотестирование водной вытяжки отхода "
+             "(ст. 14 Федерального закона от 24.06.1998 № 89-ФЗ; Критерии, "
+             "утв. приказом Минприроды России от 31.03.2025 № 158)"),
+            ("Акт (протокол) биотестирования",
+             " ".join(x for x in (f"№ {bio.get('number')}" if bio.get("number") else "",
+                                  f"от {bio.get('date')}" if bio.get("date") else "")
+                      if x) or "—"),
+            ("Испытательная лаборатория", bio.get("lab") or "—"),
+            ("Реквизиты аттестата аккредитации", bio.get("lab_attestation") or "—"),
+            ("Вывод", bio.get("conclusion") or "отход не оказывает острого "
+             "токсического действия на тест-объекты — V класс опасности подтверждён"),
+        ]
+        t = doc.add_table(rows=len(rows), cols=2)
+        t.style = "Table Grid"
+        for i, (k, v) in enumerate(rows):
+            _set(t.cell(i, 0), k, AL.LEFT)
+            _set(t.cell(i, 1), str(v), AL.LEFT)
+        path = out_dir / f"V_класс_{(w.fkko_code or 'без кода').replace(' ', '')}.docx"
+        doc.save(path)
         paths.append(path)
     return paths
 
 
 def _build(org: Organization, w: WasteFlow, hazard: int, d: dict,
-           form: str = FORM_1026):
+           form: str = FORM_1026, day: _dt.date | None = None):
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH as AL
     from docx.enum.text import WD_BREAK
@@ -247,7 +379,7 @@ def _build(org: Organization, w: WasteFlow, hazard: int, d: dict,
         s.left_margin, s.right_margin = Cm(2), Cm(1.5)
         s.top_margin, s.bottom_margin = Cm(1.2), Cm(1.2)
 
-    _approval_block(doc, org, AL, Cm, Pt, form)
+    _approval_block(doc, org, AL, Cm, Pt, form, day)
 
     for text, size in ((_TITLE, 13), (_TEXT["subtitle"][form], 12)):
         p = doc.add_paragraph()
@@ -278,11 +410,55 @@ def _build(org: Organization, w: WasteFlow, hazard: int, d: dict,
 
     doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
     _person_table(doc, org, d, AL, Cm, form)
+    proto = d.get("protocol")
+    if isinstance(proto, dict) and any(proto.values()):
+        doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
+        _protocol_table(doc, proto, comps, AL, Cm)
     return doc
 
 
-def _approval_block(doc, org: Organization, AL, Cm, Pt, form: str = FORM_1026):
-    """Гриф «УТВЕРЖДАЮ» в правом верхнем углу листа."""
+def _protocol_table(doc, proto: dict, comps: list, AL, Cm):
+    """Третий лист «Основание для определения состава»: реквизиты протокола
+    КХА/морфологии и лаборатории. В типовой форме (№ 1026/№ 286) такой строки
+    нет, но в принятых паспортах ТЕХНОСТРОЙ протокол ИЦ ООО «ТАСИС» подшит к
+    паспорту — здесь его реквизиты, чтобы паспорт был проверяем без поиска
+    бумажного протокола."""
+    p = doc.add_paragraph()
+    p.alignment = AL.CENTER
+    p.add_run("Основание для определения химического и (или) компонентного "
+              "состава отхода").bold = True
+    rows = [("Протокол исследований (измерений)",
+             " ".join(x for x in (f"№ {proto.get('number')}" if proto.get("number") else "",
+                                  f"от {proto.get('date')}" if proto.get("date") else "")
+                      if x) or "—"),
+            ("Испытательная лаборатория (центр)", proto.get("lab") or "—"),
+            ("Уникальный номер записи об аккредитации (аттестат)",
+             proto.get("lab_attestation") or "—"),
+            ("Методика измерений", proto.get("method_doc") or "—")]
+    t = doc.add_table(rows=len(rows), cols=2)
+    t.style = "Table Grid"
+    _fix_widths(t, (Cm(9.3), Cm(8.2)))
+    for i, (k, v) in enumerate(rows):
+        _set(t.cell(i, 0), k, AL.JUSTIFY)
+        _set(t.cell(i, 1), str(v), AL.LEFT)
+    if comps:
+        doc.add_paragraph()
+        t2 = doc.add_table(rows=len(comps) + 1, cols=3)
+        t2.style = "Table Grid"
+        _fix_widths(t2, (Cm(1.5), Cm(11), Cm(5)))
+        for j, h in enumerate(("№", "Наименование компонента (по протоколу)",
+                               "Содержание, %")):
+            _set(t2.cell(0, j), h, AL.CENTER)
+        for i, c in enumerate(comps, 1):
+            _set(t2.cell(i, 0), str(i), AL.CENTER)
+            _set(t2.cell(i, 1), str(c.get("name", "")), AL.LEFT)
+            _set(t2.cell(i, 2), _fmt_pct(c.get("percent", "")), AL.CENTER)
+
+
+def _approval_block(doc, org: Organization, AL, Cm, Pt, form: str = FORM_1026,
+                    day: _dt.date | None = None):
+    """Гриф «УТВЕРЖДАЮ» в правом верхнем углу листа; дата — как в подписанных
+    паспортах («28» февраля 2025 г.), без даты — бланк для рукописной."""
     head = _L_HEAD_286 if form == FORM_286 else org.official_title
     for text in ("УТВЕРЖДАЮ", head, org.short_name or org.name):
         p = doc.add_paragraph()
@@ -307,7 +483,7 @@ def _approval_block(doc, org: Organization, AL, Cm, Pt, form: str = FORM_1026):
             if row == 0:
                 _bottom_border(cell)
 
-    for text, bold in (("«____» ________________ 20____ г.", True),
+    for text, bold in ((date_line(day), True),
                        (_TEXT["seal"][form], False), ("(при наличии)", False)):
         p = doc.add_paragraph()
         p.alignment = AL.RIGHT

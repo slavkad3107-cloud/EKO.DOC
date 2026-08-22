@@ -125,8 +125,8 @@ class WasteMovement(Report):
         xlsx.cell(ws, "B15", "Ответственный исполнитель", border=False, align="left")
         xlsx.merge(ws, "G15:H15", o.director_name or "", border=False)
         xlsx.cell(ws, "J15", "дата", border=False, align="right")
-        e = self.ctx.extra if isinstance(self.ctx.extra, dict) else {}
-        xlsx.merge(ws, "K15:L15", str(e.get("report_date", "")), border=False)
+        # «25.12.2025 г.» — как во всех принятых журналах
+        xlsx.merge(ws, "K15:L15", tmpl.report_date_text(self.ctx), border=False)
         xlsx.cell(ws, "E16", "подпись", border=False, italic=True, size=9)
         xlsx.merge(ws, "G16:H16", "ФИО", border=False, italic=True, size=9)
         xlsx.heights(ws, {5: 22, 9: 34})
@@ -405,6 +405,57 @@ class WasteMovement(Report):
         """От кого получены отходы (Таблица 4): ключи supplier/contract/
         contract_term — в модели WasteFlow этих сведений нет."""
         return tmpl._by_fkko(self.ctx, "waste_suppliers")
+
+
+def year_from_months(month_ctxs: list[ReportContext]) -> ReportContext:
+    """Собрать годовой журнал из месячных — как это делает пользователь в
+    «1028 2025 с формулами.xlsx»: Прил. 2 гр. 6 «Образовано» =
+    SUMIF по 12 месячным файлам, гр. 8–11 и графы 5–10 Прил. 3 — тоже суммы
+    по месяцам; остаток на начало года — из первого месяца, на конец — из
+    последнего; перечень Прил. 1 — объединение отходов всех месяцев (в
+    годовом файле у отхода есть столбцы-флажки «январь … декабрь»).
+
+    Контексты передавать в порядке месяцев. Организация/объекты/контрагенты
+    — из последнего (самого свежего) месяца; период — год без месяца."""
+    import copy
+    from ecodoc.core.models import ReportPeriod, WasteFlow
+
+    if not month_ctxs:
+        raise ValueError("нет месячных журналов")
+    flows = ("generated", "received", "processed", "used", "neutralized",
+             "transferred", "transferred_processing", "transferred_util",
+             "transferred_neutral", "transferred_storage", "transferred_burial",
+             "placed_norm", "placed_over", "placed_storage", "placed_burial")
+    acc: dict[str, WasteFlow] = {}
+    for ctx in month_ctxs:
+        for w in ctx.wastes:
+            key = fkko.norm(w.fkko_code) or w.name
+            if key not in acc:
+                y = copy.deepcopy(w)
+                for f in flows:
+                    setattr(y, f, D(0))
+                # остаток на начало года — из первого месяца, где отход встретился
+                y.accumulated_start = D(w.accumulated_start)
+                y.accumulated_start_nakopl = D(w.accumulated_start_nakopl)
+                acc[key] = y
+            y = acc[key]
+            for f in flows:
+                setattr(y, f, D(getattr(y, f)) + D(getattr(w, f)))
+            # остаток на конец — из последнего месяца
+            y.accumulated_end = D(w.accumulated_end)
+            y.accumulated_end_nakopl = D(w.accumulated_end_nakopl)
+            # Прил. 1 (состав/происхождение) — из самой свежей заполненной записи
+            for f in ("name", "origin", "aggregate_state", "composition"):
+                if getattr(w, f, ""):
+                    setattr(y, f, getattr(w, f))
+    last = month_ctxs[-1]
+    year = copy.copy(last)
+    year.extra = dict(last.extra if isinstance(last.extra, dict) else {})
+    year.extra.pop("period_month", None)
+    year.extra.pop("period_text", None)
+    year.period = ReportPeriod(year=last.period.year)
+    year.wastes = list(acc.values())
+    return year
 
 
 def _col(i: int) -> str:
