@@ -410,7 +410,12 @@ def audit_context(ctx) -> dict:
              "suspect": v.suspect, "reason": v.reason, "norm_code": v.code,
              "mass": str(a.mass), "date": a.date, "receiver": a.receiver})
 
+    from ecodoc.core.sanitize_sources import audit_sources
+    out["sources"] = audit_sources(ctx)
     out["totals"] = {
+        "sources": len(out["sources"]),
+        "sources_bad": sum(1 for r in out["sources"] if not r["ok"]),
+        "sources_dupes": sum(1 for r in out["sources"] if "duplicate_of" in r),
         "acts": len(ctx.waste_acts),
         "acts_bad": sum(1 for r in out["acts"] if not r["ok"]),
         "acts_suspect": sum(1 for r in out["acts"] if r["ok"] and r["suspect"]),
@@ -546,6 +551,12 @@ def clean_context(ctx, drop_bad: bool = True, drop_dupes: bool = True,
         wgroups[key] = w
         keep_w.append(w)
     ctx.wastes = keep_w
+
+    # ── источники выбросов: двери из ПБ, источники шума, дубли номеров ──
+    from ecodoc.core.sanitize_sources import clean_sources
+    src_rep = clean_sources(ctx, drop_bad=drop_bad, drop_dupes=drop_dupes)
+    report["removed_sources"] = src_rep["removed_sources"]
+    report["merged_sources"] = src_rep["merged_sources"]
 
     # движение пересчитываем из оставшихся актов: иначе очищенный перечень
     # снова наполнится мусором при первой же загрузке площадки

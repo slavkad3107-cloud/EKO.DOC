@@ -209,11 +209,14 @@ def region_code(ctx: ReportContext) -> str:
     if not ctx.objects:
         return ""
     obj = ctx.objects[0]
-    code = str(obj.region_code or "").strip()
+    from ecodoc.core.nvos import subject_code
+    # region_code в базе — префикс ОКТМО из кода ОНВОС (40 = СПб), а профили
+    # ждут код субъекта (78): переводим единой функцией ядра
+    code = subject_code(obj.region_code) or subject_code(obj.code)
     if code:
-        return code.zfill(2)
+        return code
     m = re.match(r"\s*\d{2}-(\d{4})-", str(obj.code or ""))
-    # почему из кода ОНВОС: вторая группа — «01» + код субъекта («0177»)
+    # запасной путь: вторая группа — «01» + код субъекта («0177»)
     return m.group(1)[-2:] if m else ""
 
 

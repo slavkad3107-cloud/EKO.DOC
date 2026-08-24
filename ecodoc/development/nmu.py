@@ -815,10 +815,26 @@ def generate(ctx: ReportContext, out_path: str | Path) -> Path:
             "(п. 5 требований, утв. приказом № 662). "
             "[требуется: подтверждающие материалы об отсутствии превышений "
             "ПДК в периоды НМУ (п. 5 требований № 662)]")
+    elif prof:
+        # региональная форма: одна таблица на все степени, графы «степень»
+        # и «цех» (+ «эффект, %» для СПб) — дословно как в принятых планах.
+        # Регион проверяется РАНЬШЕ перечня контролируемых веществ: у
+        # реального объекта перечня часто ещё нет, но форма Комитета/ДПиООС
+        # от этого не меняется (поймано на базе Техностроя — петербургский
+        # объект получал федеральные 6 граф вместо 9 граф СПб)
+        if not controlled_sources(ctx):
+            doc.add_paragraph(f"[{CONTROLLED_REQUIRED}]")
+        _table(doc, prof["header"], regional_rows(ctx, prof), numbered=True,
+               small=True)
+        for mode in [m for m in modes if not user_measures(ctx, m)]:
+            doc.add_paragraph(
+                "Мероприятия подставлены по виду источников — "
+                f"[требуется: проверка технологом типовых мероприятий — "
+                f"«{MODES[mode]}» (подставлены по виду источников)]")
     elif not controlled_sources(ctx):
-        # без перечня контролируемых веществ таблицу по всем источникам
-        # не строим — это противоречит пп. 3–4 № 651; собственные
-        # мероприятия пользователя (если есть) печатаются без величин г/с
+        # федеральная форма без перечня контролируемых веществ: таблицу по
+        # всем источникам не строим — это противоречит пп. 3–4 № 651;
+        # собственные мероприятия пользователя печатаются без величин г/с
         doc.add_paragraph(f"[{CONTROLLED_REQUIRED}]")
         for mode in modes:
             rows, _ = measure_rows(ctx, mode)
@@ -827,16 +843,6 @@ def generate(ctx: ReportContext, out_path: str | Path) -> Path:
             if len(modes) > 1 and rows:
                 doc.add_paragraph().add_run(f"{MODES[mode]}:").bold = True
             _table(doc, HEADER, rows, numbered=True)
-    elif prof:
-        # региональная форма: одна таблица на все степени, графы «степень»
-        # и «цех» (+ «эффект, %» для СПб) — дословно как в принятых планах
-        _table(doc, prof["header"], regional_rows(ctx, prof), numbered=True,
-               small=True)
-        for mode in [m for m in modes if not user_measures(ctx, m)]:
-            doc.add_paragraph(
-                "Мероприятия подставлены по виду источников — "
-                f"[требуется: проверка технологом типовых мероприятий — "
-                f"«{MODES[mode]}» (подставлены по виду источников)]")
     else:
         for mode in modes:
             if len(modes) > 1:

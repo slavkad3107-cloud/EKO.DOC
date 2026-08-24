@@ -76,7 +76,8 @@ class CadastreSPB(Report):
                                 "пустой; в принятых отчётах она заполнена (описание "
                                 "места, вместимость т/м³, перечень отходов, способ "
                                 "накопления)"))
-        regions = {str(ob.region_code) for ob in self.ctx.objects if ob.region_code}
+        from ecodoc.core.nvos import subject_code
+        regions = {subject_code(ob.region_code) for ob in self.ctx.objects if ob.region_code}
         if regions and not (regions & _REGIONS):
             issues.append(Issue("warning", "регион",
                                 "объекты вне СПб/ЛО — проверьте, требуется ли региональный "
@@ -86,7 +87,7 @@ class CadastreSPB(Report):
         # представленными» — поэтому error, а не warning. Для объектов в ЛО
         # (region_code 47) форма Комитета СПб не сдаётся — там не проверяем.
         ob = self.ctx.objects[0] if self.ctx.objects else None
-        if ob is not None and str(ob.region_code or "") in ("", "78") \
+        if ob is not None and subject_code(ob.region_code or "") in ("", "78") \
                 and not self._district(ob):
             issues.append(Issue("error", "район",
                                 "в п. 2.2 Формы 1 не определён район Санкт-Петербурга "

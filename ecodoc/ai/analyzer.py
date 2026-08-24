@@ -544,15 +544,33 @@ def _merge_passports(ctx: ReportContext, data: dict, src: str,
 def _merge_sources(ctx: ReportContext, data: dict, src: str,
                    rep: ExtractionReport):
     """Источники выбросов (инвентаризация/ООС/НДВ) → extra.emission_sources."""
+    from ecodoc.core import sanitize
+    from ecodoc.core import sanitize_sources as ss
     store = ctx.extra.setdefault("emission_sources", [])
     for s in data.get("emission_sources") or []:
-        num = str(s.get("number") or "").strip()
+        num = ss.norm_source_number(s.get("number"))
         name = str(s.get("name") or "").strip()
         if not num and not name:
             continue
-        if any((str(x.get("number") or "").strip() == num and num) or
-               (not num and str(x.get("name") or "").strip() == name)
-               for x in store):
+        # санитар: двери из тома ПБ, источники шума, вентсистемы из ИОС и
+        # вещества-как-источники в перечень ИЗАВ не идут
+        v = ss.check_source(num, name, s.get("pollutants"))
+        if not v.ok:
+            rep.rejected.append(Rejected("источник выбросов",
+                                         f"№{num or '—'} {name}", v.reason, src))
+            continue
+        if v.suspect and v.reason:
+            rep.doubts.append(Rejected("источник выбросов",
+                                       f"№{num or '—'} {name}", v.reason, src))
+        dup = next((x for x in store
+                    if (num and ss.norm_source_number(x.get("number")) == num)
+                    or (not num and sanitize.norm_name(x.get("name"))
+                        == sanitize.norm_name(name))), None)
+        if dup is not None:
+            # тот же номер из другого документа — не вторая запись, а
+            # доливка веществ, которых у первой ещё не было
+            ss.merge_into(dup, {"pollutants": [p for p in (s.get("pollutants") or [])
+                                               if isinstance(p, dict)]})
             continue
         item = {"number": num, "name": name, "kind": s.get("kind") or "",
                 "pollutants": [p for p in (s.get("pollutants") or [])

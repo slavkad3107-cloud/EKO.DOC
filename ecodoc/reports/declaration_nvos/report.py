@@ -304,7 +304,10 @@ class DeclarationNVOS(Report):
         if explicit:
             return explicit
         ob = self.ctx.objects[0] if self.ctx.objects else None
-        region = (getattr(ob, "region_code", "") if ob else "") or ""
+        from ecodoc.core.nvos import subject_code
+        # ТО РПН подбирается по субъекту (78), а в базе префикс ОКТМО (40)
+        region = (subject_code(getattr(ob, "region_code", "") if ob else "")
+                  or subject_code(getattr(ob, "code", "") if ob else ""))
         if not region and ob and getattr(ob, "code", ""):
             region = str(ob.code).split("-")[0]   # «40-0178-…» → 40
         oktmo = (getattr(ob, "oktmo", "") if ob else "") or self.ctx.organization.oktmo

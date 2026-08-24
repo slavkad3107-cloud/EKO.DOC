@@ -309,7 +309,9 @@ def authority(ctx: ReportContext) -> str:
     if pek.get("authority"):
         return str(pek["authority"])
     lvl = supervision_level(ctx)
-    regions = {str(o.region_code or "").strip() for o in ctx.objects}
+    from ecodoc.core.nvos import subject_code
+    # region_code в базе — префикс ОКТМО (40 = СПб); справочник органов — по субъекту (78)
+    regions = {subject_code(o.region_code) or subject_code(o.code) for o in ctx.objects}
     regions.discard("")
     if lvl and len(regions) == 1:
         return AUTHORITIES.get(next(iter(regions)), {}).get(lvl, "")
