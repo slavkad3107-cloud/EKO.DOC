@@ -24,10 +24,14 @@ def test_marks_found_in_good_blank(tmp_path):
                 "Код ФККО"])
     v = forms_norms.check_blank("waste-movement", p)
     assert v.ok                                   # признаки формы на месте
-    # форма меняется с 01.09.2026 (№ 227): бланк, сделанный до этой даты,
-    # получает предупреждение о смене — это не ошибка бланка
-    assert v.level == "warn" and any("01.09.2026" in n or "2026-09-01" in n
-                                     for n in v.notes)
+    # форма сменилась 01.09.2026 (№ 227): бланк, сделанный ДО этой даты,
+    # получает предупреждение о смене; бланк, сделанный после, — чистый «ok».
+    # Тестовый бланк создаётся «сегодня», поэтому исход зависит от даты прогона
+    from datetime import date
+    if date.today() < date(2026, 9, 1):
+        assert v.level == "warn" and any("2026" in n for n in v.notes)
+    else:
+        assert v.level == "ok" and not v.notes
     assert "1028" in v.npa and "227" in v.npa
 
 

@@ -133,8 +133,25 @@ def _ctx_version(p: Path) -> str:
 
 def api_context_get(params, body):
     p = _ctx_path(params["org"], params["site"])
-    return {"context": json.loads(p.read_text(encoding="utf-8-sig")),
-            "path": str(p), "version": _ctx_version(p)}
+    data = json.loads(p.read_text(encoding="utf-8-sig"))
+    # подпись периода для каждого акта («3 кв 2025», «март 2025», дата) —
+    # GUI группирует акты по годам и показывает период вместо сырой даты;
+    # считаем здесь, чтобы у старых актов без полей year/quarter/month
+    # подпись тоже была (разбор даты/текста периода)
+    try:
+        from ecodoc.core.models import WasteAct
+        from ecodoc.core.waste_agg import act_period, period_label
+        for a in data.get("waste_acts") or []:
+            if not isinstance(a, dict):
+                continue
+            act = WasteAct(date=str(a.get("date") or ""), year=int(a.get("year") or 0),
+                           quarter=int(a.get("quarter") or 0), month=int(a.get("month") or 0))
+            y, q, mo = act_period(act)
+            a["year"], a["quarter"], a["month"] = y, q, mo
+            a["period_label"] = period_label(act)
+    except Exception:
+        pass
+    return {"context": data, "path": str(p), "version": _ctx_version(p)}
 
 
 def api_context_save(params, body):
@@ -442,11 +459,20 @@ def api_clean_data(params, body):
         bak = path.with_name(f"context.до-очистки-{stamp}.json")
         shutil.copy2(path, bak)
         backup = str(bak)
-    rep = sanitize.clean_context(
-        ctx,
-        drop_bad=body.get("drop_bad", True),
-        drop_dupes=body.get("drop_dupes", True),
-        drop_empty=bool(body.get("drop_empty")))
+    only = str(body.get("only") or "")
+    if only == "passports":
+        # кнопка «Убрать не из паспортов» во вкладке ОТХОДЫ — трогаем только
+        # паспорта, остальное (вещества/отходы/акты) не пересматриваем
+        from ecodoc.core import sanitize_records as recs
+        rep = {"removed_passports": recs.clean_passports(
+            ctx, drop_bad_source=body.get("drop_bad", True),
+            drop_dupes=body.get("drop_dupes", True))}
+    else:
+        rep = sanitize.clean_context(
+            ctx,
+            drop_bad=body.get("drop_bad", True),
+            drop_dupes=body.get("drop_dupes", True),
+            drop_empty=bool(body.get("drop_empty")))
     workspace.save_context(org, site, ctx)
     rep["backup"] = backup
     rep["left"] = {"pollutants": len(ctx.pollutants), "wastes": len(ctx.wastes)}
@@ -754,6 +780,68 @@ def api_soil_class(params, body):
                         basis=body.get("basis", ""))
         out["path"] = str(path)
     return out
+
+
+def api_org_short_name(params, body):
+    """Предложить краткое наименование из полного («ИП Миних Е.А.»)."""
+    from ecodoc.core import sanitize_records as recs
+    ctx = workspace.load_context(body["org"], body["site"])
+    o = ctx.organization
+    return {"short_name": recs.suggest_short_name(o.name, o.inn),
+            "problem": recs.short_name_problem(o.name, o.short_name, o.inn)}
+
+
+def api_passports_check(params, body):
+    """Сверка паспортов отходов: источник, каталог, наименование/класс, акты."""
+    from ecodoc.core import sanitize_records as recs
+    ctx = workspace.load_context(body["org"], body["site"])
+    rows = recs.check_passports(ctx)
+    return {"rows": rows,
+            "totals": {"ok": sum(1 for r in rows if not r["problems"]),
+                       "bad": sum(1 for r in rows if r["problems"]),
+                       "bad_source": sum(1 for r in rows if not r["src_ok"])}}
+
+
+def api_fkko_fix(params, body):
+    """Заменить код ФККО (и при желании наименование/класс) во всех записях."""
+    from ecodoc.core import fkko
+    from ecodoc.core.waste_agg import norm_fkko
+    org, site = body["org"], body["site"]
+    old, new = norm_fkko(body.get("old")), norm_fkko(body.get("new"))
+    if len(old) != 11 or len(new) != 11:
+        return {"error": "коды ФККО — по 11 цифр"}
+    name, hazard = body.get("name") or "", body.get("hazard")
+    if new != old and not fkko.check(new).ok:
+        return {"error": f"код {fkko.fmt(new)} не найден в каталоге ФККО — замена отклонена"}
+    ctx = workspace.load_context(org, site)
+    n = 0
+    for coll in (ctx.wastes, ctx.waste_acts):
+        for w in coll:
+            if norm_fkko(w.fkko_code) == old:
+                w.fkko_code = new
+                if name:
+                    w.name = name
+                if hazard:
+                    try:
+                        w.hazard_class = int(hazard)
+                    except (TypeError, ValueError):
+                        pass
+                n += 1
+    for p in (ctx.extra.get("waste_passports") or []):
+        if isinstance(p, dict) and norm_fkko(p.get("fkko")) == old:
+            p["fkko"] = new
+            if name:
+                p["name"] = name
+            n += 1
+    workspace.save_context(org, site, ctx)
+    return {"replaced": n, "old": old, "new": new}
+
+
+def api_waste_periods(params, body):
+    """Разбивка отходов по годам/кварталам/месяцам в т и м³ (из актов)."""
+    from ecodoc.core import waste_periods
+    ctx = workspace.load_context(body["org"], body["site"])
+    return waste_periods.build(ctx)
 
 
 def api_watch(params, body):
@@ -1325,6 +1413,9 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "waste_table": api_waste_table, "disk_usage": api_disk_usage,
                "mark_submitted": api_mark_submitted,
                "audit_data": api_audit_data, "clean_data": api_clean_data,
+               "org_short_name": api_org_short_name,
+               "passports_check": api_passports_check,
+               "fkko_fix": api_fkko_fix, "waste_periods": api_waste_periods,
                "settings": api_settings, "cleanup": api_cleanup,
                "storage": api_storage,
                "ai_health": api_ai_health, "ai_task": api_ai_task,

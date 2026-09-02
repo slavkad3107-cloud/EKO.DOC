@@ -68,22 +68,89 @@ _RE_DATE = re.compile(r"\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})\b")
 _RE_DATE_ISO = re.compile(r"\b(\d{4})-(\d{1,2})-(\d{1,2})\b")
 
 
+_MONTHS = {"январ": 1, "феврал": 2, "март": 3, "апрел": 4, "ма": 5, "июн": 6,
+           "июл": 7, "август": 8, "сентябр": 9, "октябр": 10, "ноябр": 11,
+           "декабр": 12}
+_RE_QUARTER = re.compile(r"\b(\d)\s*[-–]?\s*(?:й\s*)?кв(?:\.|артал)?\w*\s*(\d{2,4})?", re.I)
+_RE_MONTH_YEAR = re.compile(r"\b(\d{1,2})[./](\d{4})\b")          # «03.2025»
+_RE_YEAR = re.compile(r"\b(20\d{2})\b")
+_ROMAN_Q = {"i": 1, "ii": 2, "iii": 3, "iv": 4}
+
+
+def parse_period(text) -> tuple[int, int, int]:
+    """(год, квартал, месяц) из даты ИЛИ текста периода; 0 — неизвестно.
+
+    В справках операторов период пишут как угодно: «15.03.2025», «2025-03-15»,
+    «3 кв 25», «III квартал 2024», «март 2025», «03.2025», «2025». Всё это —
+    один и тот же смысл «к какому периоду отнести массу», поэтому разбор
+    единый, и разбивка по годам/кварталам/месяцам строится из него."""
+    s = str(text or "").strip().lower().replace("ё", "е")
+    if not s:
+        return 0, 0, 0
+    m = _RE_DATE_ISO.search(s)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+        return y, ((mo - 1) // 3 + 1 if 1 <= mo <= 12 else 0), (mo if 1 <= mo <= 12 else 0)
+    m = _RE_DATE.search(s)
+    if m:
+        mo, y = int(m.group(2)), int(m.group(3))
+        if y < 100:
+            y += 2000
+        return y, ((mo - 1) // 3 + 1 if 1 <= mo <= 12 else 0), (mo if 1 <= mo <= 12 else 0)
+    m = _RE_QUARTER.search(s)
+    if m and 1 <= int(m.group(1)) <= 4:
+        q = int(m.group(1))
+        y = int(m.group(2)) if m.group(2) else 0
+        if 0 < y < 100:
+            y += 2000
+        return y, q, 0
+    rm = re.search(r"\b(iv|iii|ii|i)\s*кв", s)
+    if rm:
+        y = _RE_YEAR.search(s)
+        return (int(y.group(1)) if y else 0), _ROMAN_Q[rm.group(1)], 0
+    m = _RE_MONTH_YEAR.search(s)
+    if m and 1 <= int(m.group(1)) <= 12:
+        mo, y = int(m.group(1)), int(m.group(2))
+        return y, (mo - 1) // 3 + 1, mo
+    for stem, mo in _MONTHS.items():
+        if re.search(r"\b" + stem + r"[а-я]*\b", s):
+            y = _RE_YEAR.search(s)
+            return (int(y.group(1)) if y else 0), (mo - 1) // 3 + 1, mo
+    y = _RE_YEAR.search(s)
+    return (int(y.group(1)) if y else 0), 0, 0
+
+
+def act_period(act: WasteAct) -> tuple[int, int, int]:
+    """(год, квартал, месяц) акта: явные поля главнее, иначе разбор даты."""
+    y, q, mo = int(act.year or 0), int(act.quarter or 0), int(act.month or 0)
+    if y or q or mo:
+        if mo and not q:
+            q = (mo - 1) // 3 + 1
+        return y, q, mo
+    return parse_period(act.date)
+
+
+def period_label(act: WasteAct) -> str:
+    """«15.03.2025» / «март 2025» / «3 кв 2025» / «2025» / «без периода»."""
+    y, q, mo = act_period(act)
+    d = str(act.date or "").strip()
+    if _RE_DATE.search(d) or _RE_DATE_ISO.search(d):
+        return d                          # полная дата — показываем как есть
+    names = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль",
+             "август", "сентябрь", "октябрь", "ноябрь", "декабрь"]
+    if mo:
+        return f"{names[mo - 1]} {y or ''}".strip()
+    if q:
+        return f"{q} кв {y or ''}".strip()
+    if y:
+        return str(y)
+    return "без периода"
+
+
 def act_year_month(act: WasteAct):
-    """(год, месяц) из даты акта: ДД.ММ.ГГГГ или ISO ГГГГ-ММ-ДД.
-    (None, None) — если даты нет/не распознана."""
-    s = str(act.date or "")
-    m = _RE_DATE_ISO.search(s)          # сначала ISO — иначе «2025-02-01»
-    if m:                                # парсился бы как год 2001
-        yr, mon = int(m.group(1)), int(m.group(2))
-    else:
-        m = _RE_DATE.search(s)
-        if not m:
-            return None, None
-        mon = int(m.group(2))
-        yr = int(m.group(3))
-        if yr < 100:
-            yr += 2000
-    return yr, (mon if 1 <= mon <= 12 else None)
+    """(год, месяц) акта — из полей периода или даты; None — если нет."""
+    y, _q, mo = act_period(act)
+    return (y or None), (mo or None)
 
 
 def act_year_quarter(act: WasteAct):

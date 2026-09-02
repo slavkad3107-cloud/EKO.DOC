@@ -288,6 +288,16 @@ def _merge_org(ctx: ReportContext, data: dict, quotes: dict, src: str,
         # контрагентов (реквизиты чужих ЮЛ в документах)
         if attr == "kpp" and ctx.organization.is_individual:
             continue
+        if attr == "short_name":
+            # краткое наименование из чужого документа (контрагент в счёте)
+            # или равное полному — не принимаем: оно должно быть сокращением
+            # ИМЕННО этой организации («ИП Миних Е.А.», «ООО «Технострой»»)
+            from ecodoc.core.sanitize_records import short_name_problem
+            full = ctx.organization.name or str(org.get("name") or "")
+            prob = short_name_problem(full, val, ctx.organization.inn or str(org.get("inn") or ""))
+            if prob:
+                rep.rejected.append(Rejected("organization.short_name", val, prob, src))
+                continue
         cur = getattr(ctx.organization, attr, "")
         if cur and cur != val:
             rep.conflicts.append(Conflict(f"organization.{attr}", cur, val, src))
@@ -301,12 +311,15 @@ def _merge_org(ctx: ReportContext, data: dict, quotes: dict, src: str,
 def _merge_objects(ctx: ReportContext, data: dict, src: str, rep: ExtractionReport):
     from ecodoc.render.xmlutil import _is_nvos_code
     for o in data.get("objects") or []:
-        code = str(o.get("code") or "").strip()
-        # принимаем только реальные коды объектов НВОС (NN-NNNN-NNNNNN-Б/П/Т/Л)
-        # ИЛИ кадастровые номера участков (NN:NN:NNNNNNN:NN); шаблонные
-        # «XX-XXXX-…», «--», номера проектов и прочий мусор — мимо
-        is_cadastral = bool(re.fullmatch(r"\d{2}:\d{2}:\d{6,7}:\d+", code))
-        if not code or not (_is_nvos_code(code) or is_cadastral):
+        from ecodoc.core.nvos import normalize as _nvos_norm
+        code = _nvos_norm(str(o.get("code") or "").strip())
+        # принимаем ТОЛЬКО коды объектов НВОС (NN-NNNN-NNNNNN-Б/П/Т/Л);
+        # кадастровые номера, шифры проектов, «XX-XXXX-…» и прочее —
+        # не объекты (по замечанию пользователя вкладка ОБЪЕКТ забивалась мусором)
+        if not code or not _is_nvos_code(code):
+            if code:
+                rep.rejected.append(Rejected("objects[].code", code,
+                                             "не код объекта НВОС (формат NN-NNNN-NNNNNN-Б)", src))
             continue
         existing = next((x for x in ctx.objects if x.code == code), None)
         if existing is None:
@@ -354,18 +367,34 @@ def _merge_acts(ctx: ReportContext, data: dict, src: str, rep: ExtractionReport)
         if key in seen:
             continue
         seen.add(key)
+        from ecodoc.core.sanitize_records import license_problem
+        from ecodoc.core.waste_agg import parse_period
+        date_txt = str(act.get("date") or act.get("period") or "").strip()
+        # период — из даты или текста «3 кв 2025»/«март 2025»: по нему
+        # строятся год → квартал → месяц во вкладке и в журнале
+        y, q, mo = parse_period(date_txt)
+        lic = str(act.get("license") or "").strip()
+        clic = str(act.get("carrier_license") or "").strip()
+        carrier = str(act.get("carrier") or "").strip()
+        # «181.0» и имя перевозчика в графе лицензии — не реквизиты
+        for fld, val in (("license", lic), ("carrier_license", clic)):
+            prob = license_problem(val)
+            if prob and (re.fullmatch(r"\d+(\.\d+)?", val) or val.lower() == carrier.lower()):
+                rep.doubts.append(Rejected(f"акт {fkko}.{fld}", val, prob, src))
+                if fld == "license":
+                    lic = ""
+                else:
+                    clic = ""
         ctx.waste_acts.append(WasteAct(
             name=str(act.get("waste_name") or "").strip(), fkko_code=fkko,
             hazard_class=hazard, mass=mass,
             volume_m3=_dec(act.get("volume_m3")) or 0,
             density=_dec(act.get("density")) or 0,
             operation=str(act.get("operation") or "").strip(),
-            carrier=str(act.get("carrier") or "").strip(),
-            carrier_license=str(act.get("carrier_license") or "").strip(),
+            carrier=carrier, carrier_license=clic,
             receiver=receiver,
             receiver_inn=str(act.get("inn") or "").strip(),
-            license=str(act.get("license") or "").strip(),
-            date=str(act.get("date") or "").strip()))
+            license=lic, date=date_txt, year=y, quarter=q, month=mo))
         rep.accepted.append(Accepted(
             f"акт {fkko} ({act.get('operation','')})", f"{mass} т → {receiver}", src))
 
@@ -510,7 +539,17 @@ def _merge_passports(ctx: ReportContext, data: dict, src: str,
     Паспорта — справочные данные (наименование/класс/состав), движение
     отходов они НЕ создают (движение — только из справок-актов)."""
     from ecodoc.core.waste_agg import norm_fkko
+    from ecodoc.core.sanitize_records import passport_source_ok
     store = ctx.extra.setdefault("waste_passports", [])
+    # состав и класс отхода берём только из документов, где они установлены
+    # (паспорт, протокол КХА/биотест, ООС, ПНООЛР, инвентаризация, скан
+    # паспорта); из расчёта платы, журнала или жалобы — это не паспорт
+    if not passport_source_ok(src):
+        for p in data.get("waste_passports") or []:
+            rep.rejected.append(Rejected(
+                "паспорт отхода", f"{p.get('fkko') or '—'} {p.get('name') or ''}",
+                "источник — не паспорт/протокол/ООС/ПНООЛР (состав отсюда не берём)", src))
+        return
     for p in data.get("waste_passports") or []:
         fkko = norm_fkko(str(p.get("fkko") or ""))
         name = str(p.get("name") or "").strip()

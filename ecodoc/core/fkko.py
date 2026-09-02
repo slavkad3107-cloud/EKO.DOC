@@ -224,6 +224,15 @@ def check_context(ctx) -> list[dict]:
         row["class_mismatch"] = bool(c.ok and c.hazard
                                      and row["our_class"]
                                      and c.hazard != row["our_class"])
+        # кода нет в каталоге — почти всегда это опечатка распознавания
+        # настоящего кода (43110001515 вместо 43111001515): подбираем по
+        # наименованию, чтобы в GUI была кнопка «Заменить», а не одно замечание
+        row["suggest"] = []
+        if not c.ok or c.name_mismatch:
+            row["suggest"] = [{"code": s["code"], "code_fmt": fmt(s["code"]),
+                               "name": s["name"], "score": round(float(s["score"]), 2)}
+                              for s in suggest_by_name(getattr(w, "name", ""), 3)
+                              if s["code"] != code]
         out.append(row)
     return out
 

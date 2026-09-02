@@ -411,7 +411,18 @@ def audit_context(ctx) -> dict:
              "mass": str(a.mass), "date": a.date, "receiver": a.receiver})
 
     from ecodoc.core.sanitize_sources import audit_sources
+    from ecodoc.core import sanitize_records as recs
     out["sources"] = audit_sources(ctx)
+    out["passports"] = recs.check_passports(ctx)
+    out["objects"] = [{"code": ob.code, "name": ob.name,
+                       "problem": recs.object_problem(ob.code)} for ob in ctx.objects]
+    o = ctx.organization
+    out["organization"] = {"short_name_problem": recs.short_name_problem(o.name, o.short_name, o.inn),
+                           "short_name_suggest": recs.suggest_short_name(o.name, o.inn)}
+    out["act_licenses"] = [
+        {"index": i, "field": f, "value": getattr(a, f), "problem": recs.license_problem(getattr(a, f))}
+        for i, a in enumerate(ctx.waste_acts) for f in ("license", "carrier_license")
+        if recs.license_problem(getattr(a, f))]
     out["totals"] = {
         "sources": len(out["sources"]),
         "sources_bad": sum(1 for r in out["sources"] if not r["ok"]),
@@ -432,6 +443,18 @@ def audit_context(ctx) -> dict:
     return out
 
 
+def _looks_like_real_waste(name) -> bool:
+    """Есть ли в ФККО отход с таким наименованием (по подбору кода).
+
+    Разделяет «опечатка в коде у настоящего отхода» (оставить, предложить
+    замену) и «строка из сметы/чужой таблицы с выдуманным кодом» (убрать)."""
+    nm = str(name or "").strip()
+    if not nm:
+        return False
+    from ecodoc.core import fkko as _cat
+    return any(s["score"] >= 0.5 for s in _cat.suggest_by_name(nm, 1))
+
+
 def clean_context(ctx, drop_bad: bool = True, drop_dupes: bool = True,
                   drop_empty: bool = False) -> dict:
     """Убрать из данных то, что признано мусором. Возвращает отчёт о правках.
@@ -450,7 +473,9 @@ def clean_context(ctx, drop_bad: bool = True, drop_dupes: bool = True,
     for a in ctx.waste_acts:
         v = check_waste(a.fkko_code, a.name, a.hazard_class)
         label = f"{a.fkko_code} {a.name}".strip()[:70]
-        if drop_bad and not v.ok:
+        if drop_bad and not v.ok and not _looks_like_real_waste(a.name):
+            # акт с негодным кодом остаётся, только если наименование —
+            # настоящий отход из каталога (код чинится подсказкой ФККО)
             report["removed_acts"].append(
                 {"label": label, "reason": v.reason, "mass": str(a.mass),
                  "date": a.date})
@@ -518,7 +543,12 @@ def clean_context(ctx, drop_bad: bool = True, drop_dupes: bool = True,
         label = f"{w.fkko_code} {w.name}".strip()[:70]
         mass = sum([w.generated, w.transferred, w.placed_norm, w.placed_over,
                     w.accumulated_end, w.used, w.neutralized])
-        if drop_bad and not v.ok:
+        if drop_bad and not v.ok and not _looks_like_real_waste(w.name):
+            # негодный код + наименование, которому в ФККО ничего не
+            # соответствует («Газон обыкновенный» из сметы) — мусор;
+            # а отход с опечаткой в коде (43110001515 вместо 43111001515),
+            # чьё наименование есть в каталоге, остаётся — его чинят
+            # кнопкой «Заменить» по подсказке, а не теряют
             report["removed_wastes"].append({"label": label, "reason": v.reason,
                                              "mass": str(mass)})
             continue
@@ -557,6 +587,15 @@ def clean_context(ctx, drop_bad: bool = True, drop_dupes: bool = True,
     src_rep = clean_sources(ctx, drop_bad=drop_bad, drop_dupes=drop_dupes)
     report["removed_sources"] = src_rep["removed_sources"]
     report["merged_sources"] = src_rep["merged_sources"]
+
+    # ── объекты не формата НВОС, мусорные лицензии в актах, паспорта из
+    #    чужих документов (расчёт платы, жалоба) и их дубли ──
+    from ecodoc.core import sanitize_records as recs
+    if drop_bad:
+        report["removed_objects"] = recs.clean_objects(ctx)
+        report["fixed_licenses"] = recs.clean_act_licenses(ctx)
+    report["removed_passports"] = recs.clean_passports(
+        ctx, drop_bad_source=drop_bad, drop_dupes=drop_dupes)
 
     # движение пересчитываем из оставшихся актов: иначе очищенный перечень
     # снова наполнится мусором при первой же загрузке площадки

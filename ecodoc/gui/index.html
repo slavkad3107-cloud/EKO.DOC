@@ -92,6 +92,18 @@ pre.out{background:#0f1a14;color:#d7e8dc;border-radius:8px;padding:12px;
 a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 .hint{color:var(--mut);font-size:13px;margin:4px 0}
 .filelist{font-size:13px;color:var(--mut);margin:6px 0}
+/* подсветка сомнительных значений прямо в ячейке ввода (лицензия «181.0»,
+   код объекта не по формату) — жёлтый, чтобы не путать с ошибкой сохранения */
+table.dtbl input.badlic,table.dtbl input.badcode{background:#fff3c4}
+/* строка сверки паспортов, чей состав взят не из паспорта/протокола */
+table.dtbl tr.srcbad td{background:#fdecea}
+/* разбивка по периодам: в ячейке две подстроки — т (верх) и м³ (низ) */
+table.ptbl td{text-align:right;white-space:nowrap;padding:2px 6px;font-size:12px}
+table.ptbl td.l{text-align:left;white-space:normal}
+table.ptbl td .m3{color:var(--mut);font-size:11px}
+table.ptbl tr.sum td{background:#f4f8f5;font-weight:600}
+table.ptbl tr.all td{background:var(--acc2);font-weight:700}
+details.yr>summary{cursor:pointer;color:var(--acc);font-weight:600}
 </style>
 </head>
 <body>
@@ -230,23 +242,19 @@ a.link{color:var(--acc);cursor:pointer;text-decoration:underline;font-size:13px}
 
   <div class="tab" id="tab-waste">
     <div class="card">
-      <h2>Отходы — перечень по объекту</h2>
+      <h2>Отходы — справки-акты, паспорта, ФККО, разбивка по периодам</h2>
       <div class="row">
         <button class="b" onclick="saveCtx()">💾 Сохранить</button>
-        <button class="b sec" onclick="checkFkko()">Проверить ФККО по каталогу</button>
-        <button class="b sec" onclick="updateFkko()">Обновить каталог ФККО</button>
-        <button class="b sec" onclick="doWasteSummary()">📊 Сводная (мес/кв/год)</button>
-        <button class="b sec" onclick="doWasteTable()"
-          title="т / м³ по классам опасности с итогами — по бланку «форма таблички по отходам»">📋 Табличка (т/м³)</button>
-        <span class="spin" id="sp-waste">…</span><span class="hint" id="waste-msg"></span>
-      </div>
-      <div class="row" style="margin-top:2px">
+        <button class="b sec" onclick="refreshWasteChecks()"
+          title="Заново сверить паспорта, коды ФККО и разбивку по периодам">↻ Перепроверить</button>
         <button class="b sec" onclick="auditData()"
           title="Найти в данных мусор: не-вещества, коды вне ФККО, дубли, ПДК вместо массы">🧹 Проверить данные на мусор</button>
-        <span class="spin" id="sp-audit">…</span>
+        <span class="spin" id="sp-waste">…</span><span class="spin" id="sp-audit">…</span>
+        <span class="hint" id="waste-msg"></span>
       </div>
       <div id="auditbox"></div>
-      <div id="fkkobox"></div>
+      <!-- порядок разделов задаёт renderWasteTab: 1 акты → 2 паспорта →
+           3 ФККО (#fkkobox внутри) → 4 периоды → 5 движение → загрузка/ИИ -->
       <div id="wasteform"></div>
     </div>
   </div>
@@ -632,7 +640,9 @@ $("tabs").addEventListener("click", e => {
   if (e.target.dataset.t === "data" && ORG) loadCandidates().catch(()=>{});
   if (e.target.dataset.t === "org" && CTX) renderOrgTab();
   if (e.target.dataset.t === "obj" && CTX) renderObjTab();
-  if (e.target.dataset.t === "waste" && CTX){ renderWasteTab(); checkFkko(); }
+  // отходы: таблицы рисуются из CTX сразу, сверки (паспорта/ФККО/периоды)
+  // ходят на сервер — поэтому отдельным вызовом, не блокируя отрисовку
+  if (e.target.dataset.t === "waste" && CTX){ renderWasteTab(); refreshWasteChecks(); }
   if (e.target.dataset.t === "air" && CTX) renderAirTab();
   if (e.target.dataset.t === "water" && CTX) renderWaterTab();
   if (e.target.dataset.t === "report" && ORG){
@@ -640,6 +650,12 @@ $("tabs").addEventListener("click", e => {
     loadMissing(act).catch(()=>{});
   }
 });
+
+// программный переход на вкладку (кнопки-ссылки из карточек форм и подсказок)
+function showTab(t){
+  const b = document.querySelector(`.tabs button[data-t="${t}"]`);
+  if (b) b.click();
+}
 
 // правка любого поля формы — помечаем данные как несохранённые
 document.addEventListener("input", e => {
@@ -1116,14 +1132,70 @@ function renderOrgTab(){
   if (!CTX){ box.innerHTML = '<div class="hint">Выберите площадку слева.</div>'; return; }
   const o = CTX.organization || {};
   let h = '<div class="dsec"><h4>Реквизиты организации</h4><div class="fgrid">';
-  for (const [k, label] of ORG_FLD)
-    h += `<div class="fld"><label>${label}</label>${tinput(o[k],'organization.'+k)}</div>`;
+  for (const [k, label] of ORG_FLD){
+    if (k === "name" || k === "short_name"){
+      // полное и краткое наименования связаны: краткое должно быть похоже на
+      // полное (пользователь видел «краткое = полное» и пустые краткие в формах),
+      // поэтому у обоих полей живой пересчёт подсказки
+      h += `<div class="fld"${k==="short_name"?' style="grid-column:span 2"':''}><label>${label}</label>`+
+        `<input value="${esc(o[k])}" data-path="organization.${k}" oninput="updateShortHint()">`;
+      if (k === "short_name")
+        h += `<div class="row" style="margin:2px 0 0"><span class="hint" id="short-hint">${esc(shortNameHint(o.name, o.short_name))}</span>`+
+          `<button class="b sec" style="padding:4px 10px;font-size:13px" onclick="proposeShortName()">Предложить краткое</button>`+
+          `<span class="spin" id="sp-short">думает…</span></div>`;
+      h += `</div>`;
+    } else {
+      h += `<div class="fld"><label>${label}</label>${tinput(o[k],'organization.'+k)}</div>`;
+    }
+  }
   h += '</div><div class="row" style="margin-top:6px">'+
     '<button class="b sec" onclick="detectOktmo()">Определить ОКТМО по адресу</button>'+
     '<span class="hint" id="oktmo-msg"></span></div></div>';
   h += modUploadHtml("torg");
   h += aiTaskHtml("org", "Организация");
   box.innerHTML = h;
+}
+// ── краткое наименование: подсказка о несоответствии полному ─────────
+// организационно-правовые формы, которые в кратком наименовании сворачиваются
+// в аббревиатуру — их выбрасываем, чтобы найти «основу» полного наименования
+// (\w в JS — только латиница, поэтому окончания — через [а-яё])
+const _OPF_RE = /общество с ограниченной ответственностью|индивидуальн[а-яё]+ предпринимател[а-яё]*|(?:публичное|непубличное|закрытое|открытое)?\s*акционерное общество|товарищество[а-яё ]{0,25}|(?:^|\s)(?:ооо|ип|ао|пао|зао|оао|нао|муп|гуп|фгуп|мкп|гбу|мбу|фгбу|ано|сп|тсж|снт)(?=\s|$)/gi;
+function _normName(s){
+  return String(s||"").toLowerCase().replace(/[«»"'„“”`]/g," ").replace(/\s+/g," ").trim();
+}
+function shortNameHint(full, short){
+  const nf = _normName(full), ns = _normName(short);
+  if (!nf) return "";
+  if (!ns) return "⚠ краткое наименование пустое — в формах пойдёт полное";
+  if (nf === ns) return "⚠ краткое совпадает с полным — обычно «ООО «Ромашка»», «ИП Иванов И.И.»";
+  // основа полного = первое содержательное слово без ОПФ; его начало (5 букв —
+  // чтобы «Ромашки/Ромашка» и склонения не мешали) должно быть в кратком
+  const words = nf.replace(_OPF_RE, " ").split(/[^а-яёa-z0-9]+/).filter(w => w.length >= 3);
+  if (!words.length) return "";
+  const stem = words[0].length > 5 ? words[0].slice(0, 5) : words[0];
+  if (!ns.includes(stem))
+    return `⚠ не похоже на полное: в кратком нет «${words[0]}» — проверьте или нажмите «Предложить краткое»`;
+  return "✓ похоже на полное";
+}
+function updateShortHint(){
+  const g = k => { const el = document.querySelector(`#orgform [data-path="organization.${k}"]`); return el ? el.value : ""; };
+  if ($("short-hint")) $("short-hint").textContent = shortNameHint(g("name"), g("short_name"));
+}
+async function proposeShortName(){
+  needSite(); spin("sp-short", 1);
+  try{
+    collectDataForm();
+    // сервер берёт организацию из сохранённого контекста; текущее (возможно
+    // несохранённое) полное наименование шлём рядом — вдруг пригодится
+    const j = await post("org_short_name",
+      {org:ORG, site:SITE, name:(CTX.organization||{}).name||""}, 0);
+    const el = document.querySelector('#orgform [data-path="organization.short_name"]');
+    if (j.short_name && el){
+      el.value = j.short_name; markDirty(); updateShortHint();
+      $("org-msg").textContent = `предложено «${j.short_name}» — проверьте и нажмите «Сохранить»`;
+    } else $("org-msg").textContent = j.error || "сервер не предложил краткого наименования";
+  }catch(e){ $("org-msg").textContent = "Ошибка: " + errText(e); }
+  spin("sp-short", 0);
 }
 async function verifyOrg(){
   needSite(); spin("sp-org", 1); $("org-msg").textContent = "";
@@ -1176,12 +1248,28 @@ function renderObjTab(){
   const box = $("objform");
   if (!box) return;
   if (!CTX){ box.innerHTML = '<div class="hint">Выберите площадку слева.</div>'; return; }
-  let h = tableSection("Объекты НВОС", "objects", CTX.objects||[],
-    [["code","Код НВОС"],["name","Наименование"],["category","Категория"],
-     ["address","Адрес объекта"]]);
+  const cols = [["code","Код НВОС"],["name","Наименование"],["category","Категория"],
+     ["address","Адрес объекта"]];
+  // объектом считаем только код формата 41-0247-005048-П; кадастровые номера,
+  // ИНН и прочее, что попало сюда из распознавания, — отдельный блок «Мусор».
+  // Пустой код — свежая строка для ввода, она остаётся в основной таблице
+  const pairs = (CTX.objects||[]).map((o,i)=>({r:o, ri:i}));
+  const good = pairs.filter(p => !isTrashObj(p.r));
+  const trash = pairs.filter(p => isTrashObj(p.r));
+  let h = tablePairs("Объекты НВОС", "objects", good, cols);
   h += '<div class="hint" style="margin:-4px 0 8px">Формат кода: '+
-    '<b>40-0278-013459-П</b> (2 цифры − 4 цифры − 6 цифр − буква категории). '+
+    '<b>41-0247-005048-П</b> (2 цифры − 4 цифры − 6 цифр − буква категории П/Б/Т/Л; '+
+    'латинские буквы приводятся к русским). Кадастровые номера участков — не коды объектов. '+
     'ОКТМО/ОКАТО определяются по адресу объекта.</div>';
+  if (trash.length){
+    h += `<details class="dsec"><summary style="cursor:pointer;color:var(--err)">`+
+      `Мусор (${trash.length}) — строки с кодом не по формату объекта НВОС — удалить</summary>`+
+      '<div class="hint">Сюда попадают кадастровые номера, ИНН/ОГРН и другие числа, которые '+
+      'распознавание приняло за объект. Если это настоящий объект — исправьте код в поле.</div>'+
+      tablePairs("", "objects", trash, cols, true)+
+      `<button class="b sec" style="margin-top:6px" onclick="deleteBadObjects()">`+
+      `Удалить все (${trash.length})</button></details>`;
+  }
   h += modUploadHtml("tobj");
   h += aiTaskHtml("object", "Объект");
   box.innerHTML = h;
@@ -1396,40 +1484,102 @@ async function cleanData(){
   spin("sp-clean2",0);
 }
 
-// ── проверка кодов отходов по действующему каталогу ФККО ─────────────
+// ── 3. проверка кодов отходов по действующему каталогу ФККО ──────────
+const FKKO_TITLE = "3. Проверка ФККО по каталогу";
+let FKKO_ROWS = [];          // строки последней проверки — для кнопок «Заменить»
+function fkkoHtml(j){
+  const rows = j.rows||[];
+  let h = `<div class="dsec"><h4>${FKKO_TITLE}</h4><div class="row">`+
+    `<button class="b sec" onclick="checkFkko()">Проверить заново</button>`+
+    `<button class="b sec" onclick="updateFkko()">Обновить каталог ФККО</button>`+
+    `<span class="hint">каталог: ${j.size||0} кодов`+
+    `${j.updated ? ", обновлён " + esc(j.updated) : ""}`+
+    `${j.partial ? " (частичный — загрузите полный ФККО)" : ""}`+
+    (rows.length ? ` · неверных кодов: ${j.bad||0}, непроверенных: ${j.unverified||0}` : "")+
+    `</span></div>`;
+  if (!rows.length)
+    return h + '<div class="hint">Отходы не заданы — добавьте справки-акты выше.</div></div>';
+  const body = rows.map((r, i) => {
+    const code = String(r.code||"").replace(/\s/g, "");
+    const sugg = r.suggest||[];
+    // 11-значный код с «0» в последнем разряде (класс опасности) — это
+    // заголовок группы каталога, а не вид отхода
+    const isGroup = /^\d{11}$/.test(code) && code.endsWith("0");
+    let note = "", acts = [];
+    if (!r.ok){
+      if (isGroup)
+        note = 'это групповой заголовок каталога, а не вид отхода — выберите конкретный код'+
+          (sugg.length ? " (подсказки ниже)" : "");
+      else if (sugg.length)
+        note = `кода нет в ФККО; по наименованию подходит <b>${esc(sugg[0].code_fmt||sugg[0].code)}</b> «${esc(sugg[0].name||"")}»`;
+      else
+        note = 'кода нет в ФККО; подходящего по наименованию не нашлось — сверьте код с паспортом отхода';
+      sugg.slice(0, 3).forEach((s, k) => acts.push(
+        `<button class="b sec" style="padding:3px 8px;font-size:12px" onclick="fkkoFixIdx(${i},${k})" `+
+        `title="${esc(s.name||"")}${s.score!=null ? ` (сходство ${s.score})` : ""}">Заменить на ${esc(s.code_fmt||s.code)}</button>`+
+        (k > 0 ? ` <span class="hint">${esc(String(s.name||"").slice(0, 60))}</span>` : "")));
+    } else {
+      const cname = r.catalog_name || r.name_mismatch;
+      if (r.name_mismatch)
+        note += `наименование у нас: «${esc(r.our_name||"")}»<br>в каталоге: «${esc(cname)}»<br>`;
+      if (r.class_mismatch)
+        note += `класс у нас: ${esc(r.our_class)}, по каталогу: ${esc(r.catalog_class)}<br>`;
+      if (r.name_mismatch || r.class_mismatch)
+        acts.push(`<button class="b sec" style="padding:3px 8px;font-size:12px" onclick="fkkoTakeCatalog(${i})">Взять из каталога</button>`);
+      if (!note) note = esc(r.note || r.problem || "");
+    }
+    const mark = !r.ok ? '<span class="issue error">✖</span>'
+               : (r.name_mismatch || r.class_mismatch) ? '<span style="color:var(--warn)">⚠</span>'
+               : r.verified ? '<span style="color:var(--acc)">✓</span>'
+               : '<span class="hint">?</span>';
+    return `<tr><td>${mark}</td><td style="white-space:nowrap">${esc(r.code_fmt||r.code)}</td>`+
+      `<td>${esc(r.our_name||"")}</td>`+
+      `<td class="hint">${note}${acts.length ? '<div style="margin-top:3px">'+acts.join("<br>")+'</div>' : ""}</td></tr>`;
+  }).join("");
+  return h + '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th></th>'+
+    '<th>ФККО</th><th>Наименование у нас</th><th>Замечание / что сделать</th></tr></thead>'+
+    `<tbody>${body}</tbody></table></div></div>`;
+}
 async function checkFkko(){
-  const box = $("fkkobox");
-  if (!box || !ORG || !SITE) return;
+  if (!ORG || !SITE) return;
   spin("sp-waste", 1);
   try{
     const j = await get("fkko_check", {org:ORG, site:SITE});
-    if (!j.rows || !j.rows.length){
-      box.innerHTML = '<div class="hint">Отходы не заданы — добавьте справки-акты '+
-        'или строки движения ниже.</div>';
-    } else {
-      const rows = j.rows.map(r => {
-        const mark = !r.ok ? '<span class="issue error">✖</span>'
-                   : r.verified ? '<span style="color:var(--acc)">✓</span>'
-                   : '<span class="hint">?</span>';
-        const note = r.problem || r.note || "";
-        const extra = [];
-        if (r.name_mismatch) extra.push("в каталоге: " + esc(r.name_mismatch));
-        if (r.class_mismatch) extra.push(`класс по каталогу: ${r.catalog_class}, у нас ${r.our_class}`);
-        return `<tr><td>${mark}</td><td>${esc(r.code)}</td>`+
-          `<td>${esc(r.our_name||"")}</td>`+
-          `<td class="hint">${esc(note)}${extra.length ? "<br>"+extra.join("<br>") : ""}</td></tr>`;
-      }).join("");
-      box.innerHTML = `<div class="dsec"><h4>Проверка ФККО по каталогу</h4>`+
-        `<div class="hint">каталог: ${j.size} кодов`+
-        `${j.updated ? ", обновлён " + esc(j.updated) : ""}`+
-        `${j.partial ? " (частичный — загрузите полный ФККО)" : ""}`+
-        ` · неверных кодов: ${j.bad}, непроверенных: ${j.unverified}</div>`+
-        '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th></th>'+
-        '<th>ФККО</th><th>Наименование у нас</th><th>Замечание</th></tr></thead>'+
-        `<tbody>${rows}</tbody></table></div></div>`;
-    }
-  }catch(e){ box.innerHTML = `<div class="issue error">${esc(errText(e))}</div>`; }
+    FKKO_ROWS = j.rows||[];
+    FKKO_HTML = fkkoHtml(j);
+  }catch(e){
+    FKKO_HTML = `<div class="dsec"><h4>${FKKO_TITLE}</h4><div class="issue error">${esc(errText(e))}</div></div>`;
+  }
+  if ($("fkkobox")) $("fkkobox").innerHTML = FKKO_HTML;
   spin("sp-waste", 0);
+}
+// замена кода во всех актах/позициях (и, если заданы, наименования и класса)
+async function fkkoFix(oldCode, newCode, name, hazard){
+  needSite(); spin("sp-waste", 1);
+  try{
+    const body = {org:ORG, site:SITE, old:oldCode, new:newCode};
+    if (name) body.name = name;
+    if (hazard !== undefined && hazard !== null && hazard !== "") body.hazard = hazard;
+    const j = await post("fkko_fix", body, 0);
+    $("waste-msg").textContent = `✓ заменено позиций: ${j.replaced ?? 0}`;
+    await loadCtx();   // перечитать: сервер пересчитал движение; сверки обновит loadCtx
+  }catch(e){ $("waste-msg").textContent = "Ошибка: " + errText(e); }
+  spin("sp-waste", 0);
+}
+function fkkoFixIdx(i, k){
+  const r = FKKO_ROWS[i], s = r && (r.suggest||[])[k];
+  if (!s) return;
+  if (!confirm(`Заменить код ${r.code} («${r.our_name||""}»)\nна ${s.code_fmt||s.code} «${s.name||""}»\nво всех справках-актах и позициях движения?`)) return;
+  fkkoFix(r.code, s.code, s.name, s.hazard ?? s.hazard_class);
+}
+function fkkoTakeCatalog(i){
+  const r = FKKO_ROWS[i];
+  if (!r) return;
+  const cname = r.catalog_name || r.name_mismatch || "";
+  if (!confirm(`Для кода ${r.code} взять из каталога:\n`+
+      (cname ? `наименование «${cname}»\n` : "") +
+      (r.class_mismatch ? `класс ${r.catalog_class}\n` : "") + `?`)) return;
+  fkkoFix(r.code, r.code, cname, r.class_mismatch ? r.catalog_class : undefined);
 }
 async function updateFkko(){
   const path = prompt("Обновить каталог ФККО.\n\nОставьте пустым — попробуем "+
@@ -1591,7 +1741,11 @@ async function loadCtx(){
   $("ctx").value = JSON.stringify(CTX, null, 2);   // чистый JSON без служебных ключей
   seedWater();
   seedPollutants();
+  // данные перечитаны (другая площадка или пересчёт после сохранения) —
+  // кэш серверных сверок вкладки ОТХОДЫ устарел
+  PASS_HTML = ""; FKKO_HTML = ""; PER_DATA = null; FKKO_ROWS = [];
   renderDataForm();
+  if ($("tab-waste") && $("tab-waste").classList.contains("on")) refreshWasteChecks();
   DIRTY = false;              // только что прочитали с диска — правок нет
   updateWorkNow();
 }
@@ -1631,7 +1785,7 @@ function renderDataForm(){
     '</div>';
   h += '<div class="hint">Реквизиты — вкладка «ОРГАНИЗАЦИЯ», объект НВОС — «ОБЪЕКТ», '+
     'перечень отходов — «ОТХОДЫ», источники и вещества — «ВЫБРОСЫ» и «СБРОСЫ».</div>';
-  const badObjs = (CTX.objects||[]).filter(o=>!isGoodObjCode(o.code)).length;
+  const badObjs = (CTX.objects||[]).filter(isTrashObj).length;
   if (badObjs) h += `<div class="issue warn">⚠ Объектов с некорректным кодом: `+
     `${badObjs} — откройте вкладку «ОБЪЕКТ».</div>`;
   $("dataform").innerHTML = h;
@@ -1692,43 +1846,307 @@ function setProfileFlag(key, val){
   markDirty();
   $("data-msg").textContent = "признак изменён — не забудьте «Сохранить»";
 }
+// ═══════════════════ вкладка ОТХОДЫ ═══════════════════════════════════
+// Порядок разделов (замечание эколога): 1 справки-акты по годам → 2 сверка
+// паспортов → 3 проверка ФККО → 4 разбивка по периодам (т и м³) → 5 движение
+// (расчёт для форм, свёрнуто) → дозагрузка и окно ИИ. Разделы 2–4 ходят на
+// сервер, поэтому их HTML кэшируется (PASS_HTML/FKKO_HTML/PER_DATA): любая
+// перерисовка таблиц (добавить строку и т.п.) не дёргает сервер заново.
+let PASS_HTML = "", FKKO_HTML = "", PER_DATA = null;
+
+// ── период акта: разбор «ДД.ММ.ГГГГ» / «3 кв 2025» / «03.2025» / «март 2025» ──
+const _MSTEMS = [["янв",1],["фев",2],["мар",3],["апр",4],["ма[йя]",5],["июн",6],
+  ["июл",7],["авг",8],["сен",9],["окт",10],["ноя",11],["дек",12]];
+const _ROMAN_Q = {i:1, ii:2, iii:3, iv:4};
+function parsePeriodJS(raw){
+  let s = String(raw||"").trim().toLowerCase().replace(/[–—−]/g,"-");
+  const out = {date:"", year:0, quarter:0, month:0};
+  // в старых базах встречается буквально сохранённая подсказка поля даты
+  if (/^(дд\.мм\.гггг|без периода)$/.test(s)){ s = ""; raw = ""; }
+  if (!s) return out;
+  const qOf = mo => Math.floor((mo-1)/3)+1;
+  const y4 = (s.match(/\b(20\d{2}|19\d{2})\b/)||[])[1];
+  let m;
+  if ((m = s.match(/^(\d{1,2})[.\/-](\d{1,2})[.\/-](\d{2,4})(?:\s*г\.?)?$/))){
+    let d=+m[1], mo=+m[2], y=+m[3]; if (y < 100) y += 2000;
+    if (mo>=1 && mo<=12 && d>=1 && d<=31){
+      out.date = `${String(d).padStart(2,"0")}.${String(mo).padStart(2,"0")}.${y}`;
+      out.year = y; out.month = mo; out.quarter = qOf(mo); return out;
+    }
+  }
+  if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))){           // ISO из выгрузок
+    const y=+m[1], mo=+m[2], d=+m[3];
+    if (mo>=1 && mo<=12){
+      out.date = `${String(d).padStart(2,"0")}.${String(mo).padStart(2,"0")}.${y}`;
+      out.year = y; out.month = mo; out.quarter = qOf(mo); return out;
+    }
+  }
+  if ((m = s.match(/^(\d{1,2})[.\/-](\d{4})$/)) && +m[1]>=1 && +m[1]<=12){   // 03.2025
+    out.year = +m[2]; out.month = +m[1]; out.quarter = qOf(+m[1]); return out;
+  }
+  if ((m = s.match(/(?:^|\D)([1-4])\s*-?\s*(?:й|го|ый)?\s*кв/))){         // 3 кв 2025
+    out.quarter = +m[1]; out.year = y4 ? +y4 : 0; return out;
+  }
+  if ((m = s.match(/\b(iv|iii|ii|i)\s*кв/))){                              // III кв 2025
+    out.quarter = _ROMAN_Q[m[1]]; out.year = y4 ? +y4 : 0; return out;
+  }
+  for (const [stem, mo] of _MSTEMS)
+    if (new RegExp("(^|[^а-яё])" + stem + "[а-яё]*").test(s)){             // март 2025
+      out.month = mo; out.quarter = qOf(mo); out.year = y4 ? +y4 : 0; return out;
+    }
+  if (/^\d{4}(\s*г\.?)?$/.test(s)){ out.year = +s.slice(0,4); return out; }   // 2025
+  out.date = String(raw||"").trim();   // не разобрали — пусть сервер попробует
+  return out;
+}
+// записать разобранный период в акт (поля, которые понимает сервер)
+function applyActPeriod(act, text){
+  const p = parsePeriodJS(text);
+  act.date = p.date; act.year = p.year; act.quarter = p.quarter; act.month = p.month;
+  delete act.period_label;
+}
+// (год, квартал, месяц) акта — явные поля главнее, иначе разбор даты (как на сервере)
+function actPeriodJS(a){
+  let y = +(a.year||0), q = +(a.quarter||0), mo = +(a.month||0);
+  if (y || q || mo){ if (mo && !q) q = Math.floor((mo-1)/3)+1; return {y, q, mo}; }
+  const p = parsePeriodJS(a.date);
+  return {y:p.year, q:p.quarter, mo:p.month};
+}
+const _MON_FULL = ["январь","февраль","март","апрель","май","июнь","июль",
+  "август","сентябрь","октябрь","ноябрь","декабрь"];
+function actLabelJS(a){
+  const {y, q, mo} = actPeriodJS(a);
+  const d = String(a.date||"").trim();
+  if (mo && /^\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2,4}$/.test(d)) return d;
+  if (mo) return `${_MON_FULL[mo-1]} ${y||""}`.trim();
+  if (q) return `${q} кв ${y||""}`.trim();
+  if (y) return String(y);
+  return d;                       // нераспознанный текст показываем как есть
+}
+function actDay(a){ const m = String(a.date||"").match(/^(\d{1,2})[.\/-]/); return m ? +m[1] : 0; }
+
+// ── реквизит лицензии: «181.0» — не номер лицензии ───────────────────
+const LIC_HINT = "не похоже на номер лицензии (нет «Л», «№», скобок или дефисов — просто число); проверьте реквизит по акту";
+function looksLikeLicense(v){
+  const s = String(v||"").trim();
+  if (!s) return true;                          // пусто — не ошибка, просто нет данных
+  if (/^[\d\s.,]+$/.test(s)) return false;      // голое число вида 181.0
+  return /[ЛлLl№()\-–]/.test(s);
+}
+function checkLicInput(el){
+  const bad = !looksLikeLicense(el.value);
+  el.classList.toggle("badlic", bad);
+  el.title = bad ? LIC_HINT : "";
+}
+const _num = v => parseFloat(String(v??"0").replace(",",".").replace(/\s/g,""))||0;
+const fmt3 = v => (v ? (+v).toFixed(3) : "—");
+
+// ── 1. справки-акты, сгруппированные по годам ─────────────────────────
+const ACT_COLS = [["name","Наименование отхода"],["fkko_code","ФККО"],["hazard_class","Класс"],
+  ["mass","Масса, т"],["volume_m3","Объём, м³"],["density","Плотн., т/м³"],
+  ["period","Период"],["operation","Вид обращения"],["carrier","Перевозчик"],
+  ["carrier_license","Лиц. перевозчика"],["receiver","Приёмщик/полигон"],
+  ["license","Лиц. полигона"]];
+function actsSectionHtml(){
+  const acts = CTX.waste_acts||[];
+  const groups = {};
+  acts.forEach((a,ri)=>{
+    const p = actPeriodJS(a);
+    (groups[p.y||0] = groups[p.y||0]||[]).push({r:a, ri, p});
+  });
+  const years = Object.keys(groups).map(Number).filter(y=>y).sort((a,b)=>b-a);
+  let h = '<div class="dsec"><h4>1. Справки-акты (первичный ввод)</h4>'+
+    '<div class="hint">Один акт — одна передача отхода. «Период»: дата акта '+
+    '(15.03.2025), либо квартал и год (3 кв 2025), либо месяц и год (03.2025). '+
+    'Вид обращения: утилизация / обезвреживание / размещение / хранение. '+
+    'Из актов считаются журнал 1028, 2-ТП (отходы), кадастр, декларация и '+
+    'разбивка по периодам ниже.</div>';
+  if (!acts.length)
+    h += '<div class="hint">Актов пока нет — добавьте строку или загрузите '+
+      'справки-акты в блоке «Догрузить исходники» внизу вкладки.</div>';
+  // порядок внутри года — по периоду: месяц (или начало квартала), затем день
+  const ord = g => (g.p.mo || (g.p.q ? g.p.q*3-2 : 0)) * 100 + actDay(g.r);
+  years.forEach((y, i) => {
+    const g = groups[y].sort((a,b)=>ord(a)-ord(b));
+    const t = g.reduce((s,x)=>s+_num(x.r.mass), 0), m3 = g.reduce((s,x)=>s+_num(x.r.volume_m3), 0);
+    // прошлые годы свёрнуты — открыт только последний
+    h += `<details class="dsec yr"${i===0?" open":""}><summary>${y} год — актов ${g.length} · `+
+      `итого ${fmt3(t)} т · ${fmt3(m3)} м³</summary>`+
+      tablePairs("", "waste_acts", g, ACT_COLS, true)+`</details>`;
+  });
+  if (groups[0]){
+    const g = groups[0];
+    const t = g.reduce((s,x)=>s+_num(x.r.mass), 0);
+    h += `<details class="dsec yr" open><summary style="color:var(--warn)">Без периода — актов `+
+      `${g.length} (${fmt3(t)} т): укажите дату, квартал или месяц — иначе они не попадут `+
+      `в разбивку и годовые формы</summary>`+
+      tablePairs("", "waste_acts", g, ACT_COLS, true)+`</details>`;
+  }
+  h += `<button class="b sec" style="margin-top:6px" onclick="addRow('waste_acts')">+ акт</button></div>`;
+  return h;
+}
+
+// ── 2. паспорта отходов — сверка ──────────────────────────────────────
+const PASS_TITLE = "2. Паспорта отходов — сверка";
+const PASS_SRC_HINT = 'Состав берётся только из паспортов, протоколов КХА/биотестирования, '+
+  'ООС, ПНООЛР, инвентаризации; данные могут быть сканами — тогда нужен OCR.';
+function passportsHtml(j){
+  const rows = j.rows||[], tot = j.totals||{};
+  let h = `<div class="dsec"><h4>${PASS_TITLE}</h4>`;
+  if (!rows.length)
+    return h + '<div class="hint">Паспортов в базе нет — загрузите паспорта отходов / '+
+      'протоколы КХА (блок «Догрузить исходники» внизу, «Что это: паспорта»). '+
+      PASS_SRC_HINT + '</div></div>';
+  const badSrc = rows.filter(r => r.src_ok === false).length;
+  h += `<div class="hint">паспортов: ${rows.length} · без замечаний: ${tot.ok??"—"} · `+
+    `с замечаниями: ${tot.bad??"—"}${badSrc ? ` · <span style="color:var(--err)">не из паспорта: ${badSrc}</span>` : ""}</div>`;
+  h += '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>ФККО</th>'+
+    '<th>Наименование</th><th>Класс</th><th>Состав</th><th>Источник (файл)</th>'+
+    '<th>Сверка</th></tr></thead><tbody>';
+  for (const r of rows){
+    const probs = r.problems||[];
+    const check = probs.length
+      ? `<span style="color:var(--warn)">⚠</span> ${probs.map(esc).join("; ")}`
+      : '<span style="color:var(--acc)">✓</span>';
+    const src = r.src_ok === false
+      ? `<span style="color:var(--err)">⚠ не из паспорта/протокола</span><br>${esc(r.src||"")}`
+      : esc(r.src||"");
+    h += `<tr class="${r.src_ok === false ? "srcbad" : ""}">`+
+      `<td style="white-space:nowrap">${esc(r.fkko_fmt||r.fkko)}</td>`+
+      `<td>${esc(r.name)}${r.name_ok === false && r.catalog_name ? `<br><span class="hint">в каталоге: ${esc(r.catalog_name)}</span>` : ""}</td>`+
+      `<td>${esc(r.hazard_class)}${r.class_ok === false ? ' <span style="color:var(--warn)" title="класс не совпадает с каталогом ФККО">⚠</span>' : ""}</td>`+
+      `<td>${r.components ? `${r.components} комп.` : '<span class="hint">нет состава</span>'}</td>`+
+      `<td class="hint">${src}</td><td>${check}</td></tr>`;
+  }
+  h += '</tbody></table></div>';
+  if (badSrc)
+    h += `<div class="row" style="margin-top:6px"><button class="b sec" onclick="cleanPassports()">`+
+      `Убрать не из паспортов (${badSrc})</button><span class="spin" id="sp-pass">…</span></div>`;
+  h += `<div class="hint">${PASS_SRC_HINT}</div></div>`;
+  return h;
+}
+async function loadPassportsCheck(){
+  if (!ORG || !SITE) return;
+  try{
+    const j = await post("passports_check", {org:ORG, site:SITE}, 0);
+    PASS_HTML = passportsHtml(j);
+  }catch(e){
+    PASS_HTML = `<div class="dsec"><h4>${PASS_TITLE}</h4><div class="issue error">${esc(errText(e))}</div></div>`;
+  }
+  if ($("wp-pass")) $("wp-pass").innerHTML = PASS_HTML;
+}
+async function cleanPassports(){
+  needSite();
+  if (!confirm("Убрать из базы отходы, чей состав взят не из паспорта / протокола / "+
+      "ООС / ПНООЛР, и склеить повторы?\n\nКопия базы до очистки сохранится рядом.")) return;
+  spin("sp-pass", 1);
+  try{
+    const j = await post("clean_data", {org:ORG, site:SITE, drop_bad:true, drop_dupes:true,
+                                        only:"passports"}, 0);
+    const n = (j.removed_passports||j.removed_wastes||[]).length;
+    alert(`✓ Убрано: ${n}` + (j.backup ? `\nКопия до очистки: ${j.backup}` : ""));
+    await loadCtx();
+  }catch(e){ alert("Ошибка: " + errText(e)); }
+  if ($("sp-pass")) spin("sp-pass", 0);
+}
+
+// ── 4. разбивка по периодам (т и м³), как в бланке «таблички по отходам» ──
+let PVIEW = "quarter", PYEAR = 0;
+const PER_TITLE = "4. Разбивка по периодам (т и м³)";
+const _ROMAN = {1:"I", 2:"II", 3:"III", 4:"IV", 5:"V"};
+function setPview(v){ PVIEW = v; if ($("wp-periods")) $("wp-periods").innerHTML = periodsHtml(); }
+function setPyear(v){ PYEAR = +v; if ($("wp-periods")) $("wp-periods").innerHTML = periodsHtml(); }
+function periodsHtml(){
+  const d = PER_DATA || {}, years = (d.years||[]).map(Number), rows = d.rows||[];
+  if (!PYEAR || !years.includes(PYEAR)) PYEAR = years.length ? Math.max(...years) : 0;
+  let h = `<div class="dsec"><h4>${PER_TITLE}</h4>`+
+    '<div class="row"><label>Вид: <select onchange="setPview(this.value)">'+
+    [["month","по месяцам"],["quarter","по кварталам"],["year","по годам"]]
+      .map(([v,t])=>`<option value="${v}"${PVIEW===v?" selected":""}>${t}</option>`).join("")+
+    '</select></label>'+
+    (PVIEW !== "year" && years.length ? '<label>Год: <select onchange="setPyear(this.value)">'+
+      years.slice().sort((a,b)=>b-a).map(y=>`<option value="${y}"${y===PYEAR?" selected":""}>${y}</option>`).join("")+
+      '</select></label>' : "")+
+    '<button class="b sec" onclick="doWasteTable()" title="т / м³ по классам опасности с итогами — по бланку «форма таблички по отходам»">📋 Табличка (.xlsx)</button>'+
+    '<button class="b sec" onclick="doWasteSummary()" title="листы: месяцы / кварталы / год">📊 Сводная (.xlsx)</button>'+
+    '</div>';
+  if (!rows.length)
+    return h + '<div class="hint">Разбивка появится, когда в справках-актах будут '+
+      'массы и периоды.</div></div>';
+  // столбцы: функция «ячейка периода из строки» — чтобы один код рисовал все три вида
+  let cols;
+  const per = (r, y) => ((r.periods||{})[String(y)]) || {};
+  if (PVIEW === "month")
+    cols = _MON.map((n,i)=>({t:n, get:r=>((per(r,PYEAR).m||{})[String(i+1)])||{}}));
+  else if (PVIEW === "quarter")
+    cols = [1,2,3,4].map(q=>({t:`${q} кв.`, get:r=>((per(r,PYEAR).q||{})[String(q)])||{}}));
+  else
+    cols = years.slice().sort().map(y=>({t:String(y), get:r=>per(r,y)}));
+  const totalCol = PVIEW === "year"
+    ? {t:"Всего", get:r=>({t:r.t_total, m3:r.m3_total})}
+    : {t:`Всего ${PYEAR}`, get:r=>per(r,PYEAR)};
+  const allCols = [...cols, totalCol];
+  const cell = v => `<td><div>${fmt3(v.t)}</div><div class="m3">${fmt3(v.m3)}</div></td>`;
+  const sumRow = (list, label, cls) => {
+    const sums = allCols.map(c => list.reduce((s,r)=>{ const v=c.get(r); return {t:s.t+_num(v.t), m3:s.m3+_num(v.m3)}; }, {t:0,m3:0}));
+    return `<tr class="${cls}"><td class="l" colspan="2">${label}</td>${sums.map(cell).join("")}</tr>`;
+  };
+  h += '<div class="hint">в каждой ячейке: верхняя строка — тонны, нижняя — м³</div>'+
+    '<div style="overflow-x:auto"><table class="dtbl ptbl"><thead><tr><th>ФККО</th><th>Наименование</th>'+
+    allCols.map(c=>`<th style="text-align:right">${c.t}</th>`).join("")+'</tr></thead><tbody>';
+  // группировка по классу опасности со строками «ИТОГО N класс» — как в бланке
+  const byCls = {};
+  for (const r of rows) (byCls[+r.hazard||0] = byCls[+r.hazard||0]||[]).push(r);
+  for (const cls of Object.keys(byCls).map(Number).sort((a,b)=>a-b)){
+    const list = byCls[cls].sort((a,b)=>String(a.fkko).localeCompare(String(b.fkko)));
+    for (const r of list)
+      h += `<tr><td class="l" style="white-space:nowrap">${esc(r.fkko_fmt||r.fkko)}</td>`+
+        `<td class="l">${esc(r.name)}</td>${allCols.map(c=>cell(c.get(r))).join("")}</tr>`;
+    h += sumRow(list, `ИТОГО ${cls ? _ROMAN[cls] + " класс" : "класс не указан"}`, "sum");
+  }
+  h += sumRow(rows, "ВСЕГО", "all") + '</tbody></table></div>';
+  const np = d.no_period||{};
+  if (np.count)
+    h += `<div class="issue warn">⚠ Без периода: ${np.count} акт(ов), ${fmt3(np.t)} т / `+
+      `${fmt3(np.m3)} м³ — в разбивку не входят; проставьте период в справках-актах.</div>`;
+  return h + '</div>';
+}
+async function loadWastePeriods(){
+  if (!ORG || !SITE) return;
+  try{
+    PER_DATA = await post("waste_periods", {org:ORG, site:SITE}, 0);
+    if ($("wp-periods")) $("wp-periods").innerHTML = periodsHtml();
+  }catch(e){
+    if ($("wp-periods")) $("wp-periods").innerHTML =
+      `<div class="dsec"><h4>${PER_TITLE}</h4><div class="issue error">${esc(errText(e))}</div></div>`;
+  }
+}
+// все три серверные сверки вкладки разом (вход во вкладку, кнопка «Перепроверить»,
+// после сохранения/очистки)
+function refreshWasteChecks(){
+  if (!ORG || !SITE) return;
+  checkFkko().catch(()=>{});
+  loadPassportsCheck().catch(()=>{});
+  loadWastePeriods().catch(()=>{});
+}
+
 function renderWasteTab(){
   if (!$("wasteform") || !CTX) return;
   let h = "";
-  // ── 1. ОТХОДЫ ──────────────────────────────────────────────
-  // h += DET("1. Отходы", true);
-  h += tableSection("Справки-акты (первичный ввод)", "waste_acts", CTX.waste_acts||[],
-    [["name","Наименование отхода"],["fkko_code","ФККО"],["hazard_class","Класс",,"num"],
-     ["mass","Масса, т",,"num"],["volume_m3","Объём, м³",,"num"],
-     ["density","Плотн., т/м³",,"num"],["date","Дата (ДД.ММ.ГГГГ)"],
-     ["operation","Вид обращения"],["carrier","Перевозчик"],
-     ["carrier_license","Лиц. перевозчика"],["receiver","Приёмщик/полигон"],
-     ["license","Лиц. полигона"]]);
-  h += modUploadHtml("tw");
-  h += aiTaskHtml("waste", "Отходы");
-  h += '<div class="hint" style="margin:-4px 0 8px">Вид обращения: '+
-    'утилизация / обезвреживание / размещение / хранение. Из актов '+
-    'рассчитываются журнал 1028, 2-ТП (отходы), кадастр, раздел отходов декларации '+
-    '(движение ниже заполнится автоматически).</div>';
-  // паспорта отходов (из загрузки «паспорта») — справочник по ФККО
-  const wpass = (CTX.extra||{}).waste_passports||[];
-  if (wpass.length){
-    h += `<details class="dsec"><summary style="cursor:pointer;color:var(--acc)">`+
-      `Паспорта отходов (${wpass.length})</summary>`+
-      '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>ФККО</th>'+
-      '<th>Наименование</th><th>Класс</th><th>Состав</th><th>Из файла</th></tr></thead><tbody>'+
-      wpass.map(p=>`<tr><td>${esc(p.fkko)}</td><td>${esc(p.name)}</td>`+
-        `<td>${esc(p.hazard_class)}</td>`+
-        `<td>${esc((p.components||[]).map(c=>c.name+(c.percent?` ${c.percent}%`:"")).join("; "))}</td>`+
-        `<td class="hint">${esc(p._src||"")}</td></tr>`).join("")+
-      '</tbody></table></div></details>';
-  }
-  h += qbreakHtml();                       // разбивка по кварталам/годам
-  // движение: нулевые строки — в свёрнутый блок (не мозолят глаза)
-  const wcols = [["fkko_code","ФККО"],["name","Наименование"],["hazard_class","Класс",,"num"],
-     ["generated","Образовано, т",,"num"],["transferred","Передано, т",,"num"],
-     ["placed_norm","Размещено (лимит), т",,"num"],["placed_over","Размещено (сверх), т",,"num"],
-     ["k_st","Кст",,"num"]];
+  const wait = t => `<div class="dsec"><h4>${t}</h4><div class="hint">проверка…</div></div>`;
+  // 1. справки-акты по годам
+  h += actsSectionHtml();
+  // 2. сверка паспортов (сервер) — из кэша или заглушка до ответа
+  h += `<div id="wp-pass">${PASS_HTML || wait(PASS_TITLE)}</div>`;
+  // 3. проверка ФККО по каталогу (сервер)
+  h += `<div id="fkkobox">${FKKO_HTML || wait(FKKO_TITLE)}</div>`;
+  // 4. разбивка по периодам (сервер)
+  h += `<div id="wp-periods">${PER_DATA ? periodsHtml() : wait(PER_TITLE)}</div>`;
+  // 5. движение — расчётный слой для форм, свёрнут: править руками нужно
+  // только когда актов нет вовсе
+  const wcols = [["fkko_code","ФККО"],["name","Наименование"],["hazard_class","Класс"],
+     ["generated","Образовано, т"],["transferred","Передано, т"],
+     ["placed_norm","Размещено (лимит), т"],["placed_over","Размещено (сверх), т"],
+     ["k_st","Кст"]];
   // «нулевая» = есть код/имя, но нет ни одной массы (мусор авто-добавления);
   // свежая пустая строка (ещё без кода) остаётся на виду для ввода
   const isZero = w => !hasMassJS(w) &&
@@ -1736,19 +2154,25 @@ function renderWasteTab(){
   const wpairs = (CTX.wastes||[]).map((w,i)=>({r:w, ri:i}));
   const filled = wpairs.filter(p=>!isZero(p.r));
   const zeros  = wpairs.filter(p=>isZero(p.r));
-  h += tablePairs("Движение (из актов или вручную)", "wastes", filled, wcols);
+  h += `<details class="dsec"><summary style="cursor:pointer;color:var(--acc)">`+
+    `5. Движение отходов за год (расчёт для форм) — позиций: ${filled.length}`+
+    `${zeros.length ? `, без масс: ${zeros.length}` : ""}</summary>`+
+    '<div class="hint">Считается из справок-актов автоматически и идёт в журнал 1028, '+
+    '2-ТП, кадастр, декларацию. Править вручную — только если актов нет.</div>'+
+    tablePairs("", "wastes", filled, wcols, true)+
+    `<button class="b sec" style="margin-top:6px" onclick="addRow('wastes')">+ позиция</button>`;
   if (zeros.length){
     h += `<details class="dsec"><summary style="cursor:pointer;color:var(--mut)">`+
-      `Позиции без масс — ${zeros.length} шт. (скрыты) — показать</summary>`;
-    h += tablePairs("", "wastes", zeros, wcols);
-    h += `<button class="b sec" onclick="deleteZeroWastes()">Удалить все позиции без масс</button>`;
-    
+      `Позиции без масс — ${zeros.length} шт. (скрыты) — показать</summary>`+
+      tablePairs("", "wastes", zeros, wcols, true)+
+      `<button class="b sec" style="margin-top:6px" onclick="deleteZeroWastes()">Удалить все позиции без масс</button></details>`;
   }
-  h += '<div class="hint" style="margin:2px 0 8px">Кст — стимулирующий коэффициент '+
+  h += '<div class="hint" style="margin:6px 0 2px">Кст — стимулирующий коэффициент '+
     'к плате за размещение (пусто = 1; 0,3 — отходы IV–V кл. от утилизации/обезвреживания '+
-    'в пределах лимита; 0 — утилизация в собственном производстве).</div>';
-  
-
+    'в пределах лимита; 0 — утилизация в собственном производстве).</div></details>';
+  // дозагрузка исходников и окно ИИ — в самом низу
+  h += modUploadHtml("tw");
+  h += aiTaskHtml("waste", "Отходы");
   $("wasteform").innerHTML = h;
 }
 
@@ -1804,18 +2228,45 @@ const _WMASS = ["accumulated_start","accumulated_start_nakopl","generated","rece
 function hasMassJS(w){
   return _WMASS.some(f => parseFloat(String(w[f]??"0").replace(",","."))||0);
 }
+// код объекта НВОС: буква категории набирается и латиницей (P/B/T/L с
+// англ. раскладки) — приводим к кириллице, тире любых видов — к дефису
+const _LAT2CYR = {P:"П", B:"Б", T:"Т", L:"Л"};
+function normObjCode(code){
+  return String(code||"").trim().toUpperCase().replace(/[–—−]/g, "-")
+    .replace(/\s+/g, "").replace(/[PBTL]/g, ch => _LAT2CYR[ch]);
+}
 function isGoodObjCode(code){
-  const c = String(code||"").trim();
-  return /^\d{2}-\d{4}-\d{5,7}-[А-ЯA-ZЁ]$/u.test(c) ||   // код объекта НВОС
-         /^\d{2}:\d{2}:\d{6,7}:\d+$/.test(c);            // кадастровый номер
+  // ТОЛЬКО формат 41-0247-005048-П; кадастровые номера и всё прочее — не объекты
+  return /^\d{2}-\d{4}-\d{6}-[ПБТЛ]$/.test(normObjCode(code));
+}
+// «мусор» = код есть, но не по формату (пустой код — строка для ввода, не мусор)
+function isTrashObj(o){
+  const c = String((o||{}).code||"").trim();
+  return !!c && !isGoodObjCode(c);
+}
+// ввод кода объекта: нормализуем на месте и подсвечиваем, если не по формату
+function checkObjCodeInput(el){
+  const v = normObjCode(el.value);
+  if (v !== el.value.trim()) el.value = v;
+  const bad = !!v && !isGoodObjCode(v);
+  el.classList.toggle("badcode", bad);
+  el.title = bad ? "не похоже на код объекта НВОС (формат 41-0247-005048-П)" : "";
+}
+const OBJ_CATS = ["I","II","III","IV"];
+// категория из данных бывает «3», «III категория», «iii» — приводим к I..IV
+function normObjCat(v){
+  const s = String(v||"").trim().toUpperCase().replace(/КАТЕГОРИЯ|КАТ\.?/g,"").trim();
+  const m = {"1":"I","2":"II","3":"III","4":"IV","I":"I","II":"II","III":"III","IV":"IV"};
+  return m[s] || "";
 }
 function deleteBadObjects(){
   collectDataForm();
   const before = (CTX.objects||[]).length;
-  CTX.objects = (CTX.objects||[]).filter(o=>isGoodObjCode(o.code));
+  CTX.objects = (CTX.objects||[]).filter(o=>!isTrashObj(o));
   renderDataForm();
-  $("data-msg").textContent =
-    `Удалено ${before-CTX.objects.length} объектов с некорректным кодом — нажмите «Сохранить».`;
+  const msg = `Удалено ${before-CTX.objects.length} строк с кодом не по формату — нажмите «Сохранить».`;
+  $("data-msg").textContent = msg;
+  if ($("obj-msg")) $("obj-msg").textContent = msg;
 }
 function deleteZeroWastes(){
   collectDataForm();
@@ -1863,37 +2314,8 @@ function _breakStub(kind, hint){
   return `<details class="dsec"><summary style="cursor:pointer;color:var(--acc)">`+
     `Разбивка по периодам (${kind})</summary><div class="hint">${hint}</div></details>`;
 }
-const _QHINT = 'Разбивка появится, когда в таблице «Справки-акты» будут строки '+
-  'с датой и массой — по датам актов массы разложатся по месяцам/кварталам/годам.';
-// отходы: фактическая разбивка из ДАТ актов
-function qbreakHtml(){
-  const acts = CTX.waste_acts||[];
-  if (!acts.length) return _breakStub("из дат актов", _QHINT);
-  const by = {}; let noDate = 0;
-  for (const a of acts){
-    const s = String(a.date||"");
-    let y=0, m=0, mm;
-    if ((mm = s.match(/\b(\d{4})-(\d{1,2})-\d{1,2}\b/)))      { y=+mm[1]; m=+mm[2]; }
-    else if ((mm = s.match(/\b\d{1,2}[.\/-](\d{1,2})[.\/-](\d{2,4})\b/)))
-      { m=+mm[1]; y=+mm[2]; if(y<100) y+=2000; }
-    const mass = parseFloat(String(a.mass??"0").replace(",","."))||0;
-    if (!y || m<1 || m>12){ noDate += mass; continue; }
-    const b = (by[y] = by[y]||{label:y, months:{}, quarters:{}, total:0});
-    b.months[m] = (b.months[m]||0) + mass;
-    const q = Math.floor((m-1)/3)+1;
-    b.quarters[q] = (b.quarters[q]||0) + mass;
-    b.total += mass;
-  }
-  const rows = Object.keys(by).sort().map(y=>by[y]);
-  if (noDate) rows.push({label:"без даты", months:{}, quarters:{}, total:noDate});
-  if (!rows.length) return _breakStub("из дат актов", _QHINT);
-  return `<details class="dsec"${QOPEN.w?" open":""} ontoggle="QOPEN.w=this.open">`+
-    `<summary style="cursor:pointer;color:var(--acc)">Разбивка по периодам `+
-    `(из дат актов)</summary><div class="row">Вид: ${_qselect()}</div>`+
-    _breakTable(rows, "т")+
-    '<div class="hint">Фактически — по датам актов; «без даты» входит в год '+
-    'целиком (проставьте даты для точной разбивки).</div></details>';
-}
+// (разбивка по отходам считается на сервере — раздел 4 вкладки ОТХОДЫ,
+//  waste_periods; здесь остались только воздух/вода равными долями)
 // воздух/вода: расчётная разбивка годовых масс равными долями
 function pbreakHtml(list, unit, openKey){
   const rows = (list||[]).filter(p=>p.name||p.code).map(p=>{
@@ -1914,15 +2336,16 @@ function pbreakHtml(list, unit, openKey){
     '<div class="hint">Расчётно, равными долями от годовой массы (для авансовых '+
     'платежей — ¼ года); фактическая помесячная разбивка — по данным учёта.</div></details>';
 }
-// таблица по парам {r,ri} — сохраняет исходные индексы data-path
-function tablePairs(title, key, pairs, cols){
-  let h = `<div class="dsec">${title?`<h4>${title}</h4>`:""}<div style="overflow-x:auto">`+
-    `<table class="dtbl" data-key="${key}"><thead><tr>`+
+// таблица по парам {r,ri} — сохраняет исходные индексы data-path;
+// bare=true — без рамки .dsec (когда таблица вложена в свой блок/details)
+function tablePairs(title, key, pairs, cols, bare){
+  let h = (bare ? "" : `<div class="dsec">`) + (title?`<h4>${title}</h4>`:"") +
+    `<div style="overflow-x:auto"><table class="dtbl" data-key="${key}"><thead><tr>`+
     cols.map(c=>`<th>${c[1]}</th>`).join('')+'<th></th></tr></thead><tbody>';
   for (const p of pairs) h += rowHtml(key, p.r, cols, p.ri);
   h += `</tbody></table></div>`+
     (title?`<button class="b sec" style="margin-top:6px" onclick="addRow('${key}')">+ строка</button>`:"")+
-    `</div>`;
+    (bare ? "" : `</div>`);
   return h;
 }
 function tableSection(title, key, rows, cols){
@@ -1949,6 +2372,31 @@ function rowHtml(key, r, cols, ri){
     } else if ((key==="wastes" || key==="waste_acts") && f==="name"){
       h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" `+
         `list="waste-list" onchange="fillWaste(this)"></td>`;
+    } else if (key==="waste_acts" && f==="period"){
+      // «Период» — одно поле вместо даты: дата / квартал+год / месяц+год;
+      // разбирается в collectDataForm в date+year+quarter+month
+      h += `<td><input value="${esc(actLabelJS(r))}" data-path="${key}[${ri}].period_label" `+
+        `placeholder="15.03.2025 · 3 кв 2025 · 03.2025" style="min-width:110px" `+
+        `title="дата акта ДД.ММ.ГГГГ, либо квартал и год («3 кв 2025»), либо месяц и год («03.2025»)"></td>`;
+    } else if (key==="waste_acts" && (f==="license" || f==="carrier_license")){
+      const bad = !looksLikeLicense(r[f]);
+      h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" `+
+        `class="${bad?'badlic':''}" oninput="checkLicInput(this)" `+
+        `title="${bad?LIC_HINT:''}"></td>`;
+    } else if (key==="objects" && f==="code"){
+      const bad = isTrashObj(r);
+      h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" `+
+        `class="${bad?'badcode':''}" onchange="checkObjCodeInput(this)" `+
+        `placeholder="41-0247-005048-П" style="min-width:150px" `+
+        `title="${bad?'не похоже на код объекта НВОС (формат 41-0247-005048-П)':''}"></td>`;
+    } else if (key==="objects" && f==="category"){
+      // категория — только I..IV; нераспознанное значение показываем как есть,
+      // чтобы не потерять его молча
+      const cur = normObjCat(r[f]), raw = String(r[f]||"").trim();
+      h += `<td><select data-path="${key}[${ri}].${f}"><option value="">—</option>`+
+        OBJ_CATS.map(c=>`<option value="${c}"${cur===c?' selected':''}>${c}</option>`).join('')+
+        (raw && !cur ? `<option value="${esc(raw)}" selected>${esc(raw)} (?)</option>` : "")+
+        `</select></td>`;
     } else {
       h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}"></td>`;
     }
@@ -1985,7 +2433,10 @@ function collectDataForm(){
     if (m){
       const [,key,i,f] = m;
       (CTX[key] = CTX[key]||[])[+i] = CTX[key][+i]||{};
-      CTX[key][+i][f] = el.value;
+      // «Период» акта — виртуальное поле: раскладываем в date/year/quarter/month
+      // (сервер понимает именно их), само period_label в базу не пишем
+      if (key === "waste_acts" && f === "period_label") applyActPeriod(CTX[key][+i], el.value);
+      else CTX[key][+i][f] = el.value;
     } else {
       const [sec,f] = p.split(".");
       CTX[sec] = CTX[sec]||{};
@@ -2059,7 +2510,10 @@ async function openWs(){
 const FORM_MEDIUM = {
   "waste-movement":"waste", "cadastre-spb":"waste", "2tp-waste":"waste",
   "waste-report-iii":"waste", "2tp-air":"air", "2tp-water":"water",
-  "declaration-nvos":"common", "pek":"common"};
+  "declaration-nvos":"common", "pek":"common",
+  // ДВОС подаётся в РПН раз в 7 лет — по замечанию эколога это отчётность
+  // (сервер отдаёт domain "reporting"), карточка — в «Отчётность → Общая»
+  "dvos":"common"};
 // формы разработки — по средам (модули вкладки «Разработка»)
 const DEV_MEDIUM = {
   "pnoolr":"waste", "hazard-class":"waste",
@@ -2073,16 +2527,32 @@ function renderForms(){
   for (const f of META.forms){
     const dev = f.domain === "development";
     const card = document.createElement("div"); card.className = "form-card";
-    const btns = f.implemented
-      ? `<button class="b sec" onclick="doValidate('${f.code}')">Проверить</button>
+    let title = f.title, extra = "";
+    let btns;
+    if (f.code === "hazard-class"){
+      // не генератор формы, а расчёт: калькулятор во вкладке «Сервис» и
+      // оформление расчёта по составу из загруженного паспорта
+      title = "Расчёт класса опасности отхода (пр. МПР № 158 от 31.03.2025)";
+      btns = `<button class="b sec" onclick="gotoHazardCalc()" title="калькулятор K = Σ(Ci/Wi) во вкладке «Сервис»">Калькулятор</button>
+        <button class="b" onclick="hazardFromPassport()" title="состав из паспорта/протокола КХА → расчёт .docx">Оформить расчёт по паспорту…</button>`;
+      extra = `<div id="hc-panel"></div>`;
+    } else if (f.implemented){
+      btns = `<button class="b sec" onclick="doValidate('${f.code}')">Проверить</button>
          <button class="b" onclick="doGenerate('${f.code}')">Сгенерировать</button>`
-         + (dev ? "" : ` <button class="b sec" onclick="doSubmit('${f.code}')" title="XML + МЧД + чек-лист для загрузки в ЛКПП">Пакет к подаче</button>`)
-      : f.devdoc
-      ? `<button class="b" onclick="doDevDoc('${f.code}')">Сгенерировать (.docx)</button>`
-      : '<span class="hint">каркас — генерация в следующих версиях</span>';
-    card.innerHTML = `<div class="t">${f.title}</div>
-      <div class="c">${f.code}</div><div class="row">${btns}</div>
+         + (dev ? "" : ` <button class="b sec" onclick="doSubmit('${f.code}')" title="XML + МЧД + чек-лист для загрузки в ЛКПП">Пакет к подаче</button>`);
+    } else if (f.devdoc){
+      btns = `<button class="b" onclick="doDevDoc('${f.code}')">Сгенерировать (.docx)</button>`;
+    } else {
+      // без генератора: вместо «каркас» — что делать (подсказка из title после « — »)
+      const hint = String(f.title||"").includes(" — ")
+        ? f.title.split(" — ").slice(1).join(" — ") : f.title;
+      btns = `<span class="hint">нет автогенерации: ${esc(hint)}</span>`;
+    }
+    card.innerHTML = `<div class="t">${title}</div>
+      <div class="c">${f.code}</div><div class="row">${btns}</div>${extra}
       <div id="iss-${f.code}"></div>`;
+    // разработка → DEV_MEDIUM (инвентаризация отходов, расчёт класса — в
+    // «Разработка → Отходы»), отчётность → FORM_MEDIUM
     const target = dev ? ("forms-dev-" + (DEV_MEDIUM[f.code] || "common"))
                        : ("forms-" + (FORM_MEDIUM[f.code] || "common"));
     ($(target) || $("forms-common")).appendChild(card);
@@ -2671,6 +3141,95 @@ async function doHazard(save){
   }catch(e){ show("out-hz", "Ошибка: " + e.message); } spin("sp-hz",0); }
 addHzRow({name:"Нефтепродукты", ci:"50000", wi:"100"});
 addHzRow({name:"Песок (диоксид кремния)", ci:"950000", wi:"1000000"});
+
+// ── карточка «Расчёт класса опасности» (Разработка → Отходы) ──────────
+// калькулятор живёт во вкладке «Сервис» — карточка ведёт к нему и умеет
+// брать состав из загруженного паспорта (проценты → Ci мг/кг)
+function gotoHazardCalc(){
+  showTab("svc");
+  const card = $("hztbl") && $("hztbl").closest(".card");
+  if (card) card.scrollIntoView({behavior:"smooth", block:"start"});
+}
+let HC_PASS = [];
+const WI_HINT = 'Wi — коэффициент степени опасности компонента: берётся из приложения к '+
+  'приказу МПР № 158 (таблица показателей) или из БДО (банк данных об отходах); '+
+  'без Wi класс не считается.';
+function hazardFromPassport(){
+  const box = $("hc-panel");
+  if (!box) return;
+  if (!CTX){ box.innerHTML = '<div class="hint">Сначала выберите площадку слева.</div>'; return; }
+  HC_PASS = ((CTX.extra||{}).waste_passports||[]).filter(p => (p.components||[]).length);
+  if (!HC_PASS.length){
+    box.innerHTML = '<div class="hint">Паспортов с составом в базе нет — загрузите паспорта '+
+      'отходов или протоколы КХА во вкладке «ОТХОДЫ» (блок «Догрузить исходники»).</div>';
+    return;
+  }
+  box.innerHTML = '<div class="row" style="margin-top:6px"><label>Паспорт: '+
+    `<select id="hc-sel" onchange="hcRenderComps()" style="max-width:520px">`+
+    HC_PASS.map((p,i)=>`<option value="${i}">${esc(p.fkko||"без кода")} — `+
+      `${esc(String(p.name||"").slice(0,70))} (${p.components.length} комп.)</option>`).join("")+
+    '</select></label></div><div id="hc-comps"></div>';
+  hcRenderComps();
+}
+function hcRenderComps(){
+  const p = HC_PASS[+($("hc-sel")||{}).value] || HC_PASS[0];
+  if (!p) return;
+  // Ci в мг/кг: 100 % = 1 000 000 мг/кг → 1 % = 10 000 мг/кг
+  const rows = (p.components||[]).map((c,i)=>{
+    const pct = _num(c.percent), ci = c.ci != null ? _num(c.ci) : Math.round(pct*10000);
+    return `<tr><td><input data-c="name" value="${esc(c.name)}"></td>`+
+      `<td style="text-align:right">${pct ? pct : '<span class="hint">—</span>'}</td>`+
+      `<td><input data-c="ci" value="${ci||""}" inputmode="decimal"></td>`+
+      `<td><input data-c="wi" value="${esc(c.wi||"")}" inputmode="decimal" `+
+      `placeholder="[требуется]" title="${esc(WI_HINT)}"></td></tr>`;
+  }).join("");
+  $("hc-comps").innerHTML =
+    '<div style="overflow-x:auto"><table class="dtbl" id="hc-tbl"><thead><tr><th>Компонент</th>'+
+    '<th>%, по паспорту</th><th>Ci, мг/кг</th><th>Wi</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    `<div class="hint">${WI_HINT}</div>`+
+    '<div class="row"><button class="b" onclick="hcSave()">Оформить расчёт (.docx)</button>'+
+    '<button class="b sec" onclick="hcToCalc()" title="перенести состав в калькулятор вкладки «Сервис»">В калькулятор</button>'+
+    '<span class="spin" id="sp-hc">…</span></div>'+
+    '<div class="out" id="hc-out" style="display:none;white-space:pre-wrap"></div>';
+}
+function hcComps(){
+  return [...$("hc-tbl").querySelectorAll("tbody tr")].map(tr=>{
+    const g = s => _num(tr.querySelector(`[data-c="${s}"]`).value);
+    return {name: tr.querySelector('[data-c="name"]').value.trim(), ci: g("ci"), wi: g("wi")};
+  }).filter(c => c.name);
+}
+async function hcSave(){
+  needSite();
+  const p = HC_PASS[+($("hc-sel")||{}).value] || HC_PASS[0];
+  const comps = hcComps();
+  if (!comps.length){ alert("Нет компонентов"); return; }
+  const noWi = comps.filter(c => !(c.wi > 0));
+  if (noWi.length){
+    show("hc-out", `⚠ Не задан Wi у: ${noWi.map(c=>c.name).join(", ")}.\n${WI_HINT}`);
+    return;
+  }
+  spin("sp-hc", 1);
+  try{
+    const j = await post("hazard_class", {org:ORG, site:SITE, save:1,
+      waste_name:p.name||"", fkko:p.fkko||"", basis:`паспорт отхода${p._src ? " ("+p._src+")" : ""}`,
+      components:comps}, 0);
+    let t = `K = Σ(Ci/Wi) = ${(+j.k_total).toPrecision(4)}\nКЛАСС ОПАСНОСТИ: ${j.hazard_class}`;
+    if (j.hazard_class === 5) t += "\n⚠ V класс требует подтверждения биотестированием.";
+    if ((j.warnings||[]).length) t += "\n" + j.warnings.map(w=>"⚠ "+w).join("\n");
+    if (j.path){ t += "\nДокумент: " + j.path; post("open", {path:j.path}).catch(()=>{}); }
+    show("hc-out", t);
+  }catch(e){ show("hc-out", "Ошибка: " + errText(e)); }
+  spin("sp-hc", 0);
+}
+function hcToCalc(){
+  const p = HC_PASS[+($("hc-sel")||{}).value] || HC_PASS[0];
+  const comps = hcComps();
+  if (!comps.length){ alert("Нет компонентов"); return; }
+  $("hztbl").querySelector("tbody").innerHTML = "";
+  for (const c of comps) addHzRow({name:c.name, ci:String(c.ci||""), wi:c.wi ? String(c.wi) : ""});
+  if (p){ $("hz-name").value = p.name||""; $("hz-fkko").value = p.fkko||""; }
+  gotoHazardCalc();
+}
 // калькулятор грунта: СанПиН + критерии № 158
 const SOIL_NORMS_JS = {"свинец":130,"кадмий":2,"цинк":220,"медь":132,
   "никель":80,"мышьяк":10,"ртуть":2.1,"бенз(а)пирен":0.02,"нефтепродукты":1000};
