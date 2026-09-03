@@ -1539,9 +1539,30 @@ def _startup_ai_check():
 STARTUP_NOTES: dict = {}
 
 
+def _startup_code_check():
+    """Тот ли код запущен, из папки которого стартовали.
+
+    После переноса .venv между версиями её editable-установка указывала на
+    СТАРУЮ папку релиза, и ecodoc.exe тихо запускал код v0.42/0.52 из
+    папки v0.59 — пользователь тестировал не то, что выложено. Сравниваем
+    папку импортированного пакета с текущей и говорим об этом плашкой."""
+    try:
+        import ecodoc
+        code_dir = Path(ecodoc.__file__).resolve().parent.parent
+        here = Path.cwd().resolve()
+        if (here / "ecodoc" / "__init__.py").exists() and code_dir != here:
+            STARTUP_NOTES["code"] = (f"⚠ запущен код из другой папки: {code_dir} "
+                                     f"(а не {here}) — запускайте через ЭКО.DOC.bat "
+                                     f"или выполните в .venv: pip install -e . --no-deps")
+            print(STARTUP_NOTES["code"])
+    except Exception:
+        pass
+
+
 def _startup_forms_check():
     """Проверка форм и справочников при запуске (требование ТЗ:
     «проверять на наличие новых форм при запуске приложения»)."""
+    _startup_code_check()
     try:
         from ecodoc.core import fkko, forms_registry
         n = fkko.sync_from_forms()             # свежий ФККО из «Форм» — в базу
