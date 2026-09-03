@@ -837,6 +837,28 @@ def api_fkko_fix(params, body):
     return {"replaced": n, "old": old, "new": new}
 
 
+def api_intake_map(params, body):
+    """ЗАГРУЗКА: по каждому файлу — что взято, в какой раздел, с какого листа."""
+    from ecodoc.intake import insight
+    org, site = body["org"], body["site"]
+    return insight.intake_map(workspace.load_context(org, site),
+                              workspace.site_dir(org, site), org, site)
+
+
+def api_data_issues(params, body):
+    """Единая проверка данных по категориям с файлом/листом/подсказкой."""
+    from ecodoc.intake import insight
+    org, site = body["org"], body["site"]
+    return insight.data_issues(workspace.load_context(org, site),
+                               workspace.site_dir(org, site), org, site)
+
+
+def api_form_gaps(params, body):
+    """Чего не хватает каждой форме и как это закрыть."""
+    from ecodoc.intake import insight
+    return insight.form_gaps(workspace.load_context(body["org"], body["site"]))
+
+
 def api_waste_periods(params, body):
     """Разбивка отходов по годам/кварталам/месяцам в т и м³ (из актов)."""
     from ecodoc.core import waste_periods
@@ -1416,6 +1438,8 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "org_short_name": api_org_short_name,
                "passports_check": api_passports_check,
                "fkko_fix": api_fkko_fix, "waste_periods": api_waste_periods,
+               "intake_map": api_intake_map, "data_issues": api_data_issues,
+               "form_gaps": api_form_gaps,
                "settings": api_settings, "cleanup": api_cleanup,
                "storage": api_storage,
                "ai_health": api_ai_health, "ai_task": api_ai_task,
