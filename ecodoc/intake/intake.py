@@ -88,13 +88,16 @@ def _save_registry(att_dir: Path, reg: list) -> None:
 
 
 def _register_one(att_dir: Path, src: Path, by_sha: dict, names: set,
-                  reg: list, today: str) -> tuple[str, bool]:
+                  reg: list, today: str, batch: str = "",
+                  excluded: dict | None = None) -> tuple[str, bool]:
     """Зарегистрировать один файл, обновляя переданные индексы в памяти.
 
     Реестр НЕ пишется на диск (это делает вызывающий один раз на батч —
     иначе на 10000 файлов было бы O(n²) перезаписей).
     """
     digest = _sha1(src)
+    if excluded and digest in excluded:
+        return "", False                       # исключён пользователем (forget)
     if digest in by_sha:
         return by_sha[digest], False           # такой файл уже принят
     name = src.name
@@ -106,7 +109,10 @@ def _register_one(att_dir: Path, src: Path, by_sha: dict, names: set,
     shutil.copy2(src, att_dir / name)
     by_sha[digest] = name
     names.add(name)
-    reg.append({"file": name, "sha1": digest, "received": today})
+    row = {"file": name, "sha1": digest, "received": today}
+    if batch:
+        row["batch"] = batch
+    reg.append(row)
     return name, True
 
 
@@ -240,19 +246,26 @@ def _extract_archive(src: Path, tmpdir: Path, log: list[str],
     return out
 
 
-def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
+def store(files: list[str], org: str, site: str,
+          batch: str = "") -> tuple[list[str], list[str]]:
     """Сохранить файлы в attachments площадки (без анализа).
+
+    batch — метка партии (одна на нажатие «Принять»): по ней ЗАГРУЗКА
+    показывает файлы именно этой папки, а не всё, что когда-либо грузили.
 
     Архивы (zip; rar/7z при наличии 7-Zip) распаковываются, документы из
     них принимаются как обычные файлы с префиксом «имя-архива__».
     Возвращает (имена сохранённых файлов, строки лога).
     """
+    from ecodoc.intake import sources
     att = workspace.site_dir(org, site) / "attachments"
     att.mkdir(parents=True, exist_ok=True)
     names, lines = [], []
     tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_arc_"))
     budget = _Budget()
     today = date.today().isoformat()
+    excluded = sources.excluded(workspace.site_dir(org, site))
+    skipped_excl = 0
     try:
         queue: list[Path] = []
         for f in files:
@@ -275,12 +288,19 @@ def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
                     continue
                 try:
                     name, _is_new = _register_one(att, src, by_sha, reg_names,
-                                                  reg, today)
+                                                  reg, today, batch=batch,
+                                                  excluded=excluded)
+                    if not name:
+                        skipped_excl += 1
+                        lines.append(f"⊘ {src.name}: удалён пользователем ранее — "
+                                     f"не принят (снять исключение можно в ЗАГРУЗКЕ)")
+                        continue
                     names.append(name)
                 except OSError as e:
                     lines.append(f"✖ не сохранён {src.name}: {e}")
             _save_registry(att, reg)               # запись реестра — один раз
-        lines.append(f"Принято файлов: {len(names)}")
+        lines.append(f"Принято файлов: {len(names)}"
+                     + (f", исключённых пропущено: {skipped_excl}" if skipped_excl else ""))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     return names, lines
@@ -288,15 +308,21 @@ def store(files: list[str], org: str, site: str) -> tuple[list[str], list[str]]:
 
 def analyze_stored(names: list[str], org: str, site: str,
                    use_ai: bool = False, forms: list[str] | None = None,
-                   ocr: bool = True, scope: str = "all") -> str:
-    """Проанализировать уже сохранённые в attachments файлы (по именам)."""
+                   ocr: bool = True, scope: str = "all",
+                   struct: dict | None = None) -> str:
+    """Проанализировать уже сохранённые в attachments файлы (по именам).
+
+    struct — если передан словарь, в него складывается тот же отчёт в
+    структурном виде (по разделам базы) для GUI."""
     att = workspace.site_dir(org, site) / "attachments"
     with _busy_site(org, site):
         ctx = workspace.load_context(org, site)
         paths = [att / n for n in names if (att / n).exists()]
+        if struct is not None:
+            struct["files_total"] = len(paths)
         return _analyze(paths, ctx, org=org, site=site, use_ai=use_ai,
                         forms=forms, ocr=ocr, scope=scope,
-                        lines=[f"Файлов к анализу: {len(paths)}"])
+                        lines=[f"Файлов к анализу: {len(paths)}"], struct=struct)
 
 
 def run(files: list[str], org: str = "", site: str = "",
@@ -341,8 +367,9 @@ def _err_reason(msg: str, p: Path) -> str:
 def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
              use_ai: bool, forms: list[str] | None, ocr: bool,
              lines: list[str], keep_sources: bool = False,
-             scope: str = "all") -> str:
+             scope: str = "all", struct: dict | None = None) -> str:
     in_workspace = bool(org and site)
+    st: dict = struct if struct is not None else {}
     # 2. извлечение текста ПАРАЛЛЕЛЬНО (OCR сканов — узкое место; Tesseract
     #    работает как подпроцесс и отпускает GIL, поэтому потоки реально
     #    ускоряют). Разбор в контекст — потом, последовательно (потокобезопасно).
@@ -366,6 +393,7 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
             else:
                 p, msg = err
                 unread.setdefault(_err_reason(msg, p), []).append(p.name)
+    st["unread"] = {reason: list(files_) for reason, files_ in unread.items()}
     if unread:
         total = sum(len(v) for v in unread.values())
         lines.append(f"── Не прочитано файлов: {total} (по причинам) ──")
@@ -384,6 +412,7 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
         except Exception as e:                   # не должен рушить весь пакет
             parse_errors += 1
             lines.append(f"✖ ошибка разбора {doc.path.name}: {e}")
+    st["parse_errors"] = parse_errors
     if parse_errors:
         lines.append(f"(разбор пропущен для {parse_errors} файл(ов) из-за ошибок)")
     if docs:
@@ -391,6 +420,13 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
         lines.append("")
         try:
             lines.append(classify.render(docs))
+            st["files"] = []
+            for d in docs:
+                c = classify.classify(d)
+                st["files"].append({"file": d.path.name, "doc_type": c.doc_type,
+                                    "data": c.data, "forms": list(c.forms),
+                                    "kind": getattr(c, "kind", ""),
+                                    "project": bool(getattr(c, "project", False))})
         except Exception as e:
             lines.append(f"✖ распределение не выполнено: {e}")
     lines.append("")
@@ -405,12 +441,16 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
         ai_failed = rep.failed_files
         lines.append("")
         lines.append(rep.render())
+        st["ai"] = rep.sections()
+        st["model"] = {"used": rep.used_model, "configured": rep.configured}
+        st["ai_errors"] = list(rep.errors)[:20]
 
     # 3.5 СНИМКИ ЛИСТОВ-ИСТОЧНИКОВ — строго до удаления исходников (шаг 5):
     #     сохраняем картинку только тех листов, где что-то нашлось.
     if in_workspace and docs:
         lines += _snap_sources(docs, rep, ctx, org, site)
-        lines += _finish_candidates(sink, ctx, org, site)
+        _stamp_batches(stored, org, site)
+        lines += _finish_candidates(sink, ctx, org, site, struct=st)
 
     # 4. контроль полноты: чего не хватает и что донести
     target_forms = forms or list(requirements.REQUIREMENTS)
@@ -421,13 +461,16 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     for f in unknown:
         lines.append(f"  ✖ неизвестная форма «{f}» — список: python -m ecodoc list")
     need_docs: list[str] = []
+    st["forms"] = []
     for form in target_forms:
         missing, docs_hint = requirements.check(ctx, form)
+        st["forms"].append({"form": form, "missing": list(missing), "ok": not missing})
         if missing:
             lines.append(f"  ○ {form}: не хватает — {', '.join(missing)}")
             need_docs.extend(docs_hint)
         else:
             lines.append(f"  ✓ {form}: данных достаточно, можно генерировать")
+    st["need_docs"] = list(dict.fromkeys(need_docs))
     if need_docs:
         lines.append("")
         lines.append("── Какие документы ещё нужны ──")
@@ -452,6 +495,9 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
             analyzed = [p.name for p in stored if p.name not in skip]
             n = _purge_sources(workspace.site_dir(org, site) / "attachments",
                                analyzed)
+            st["deleted"] = n
+            st["kept_ai_failed"] = sorted(ai_failed)
+            st["kept_unread"] = sorted(unread_names)
             if n:
                 lines.append(f"Исходные файлы не сохранены (обработано и удалено: {n}) — "
                              "данные извлечены в базу context.json.")
@@ -470,11 +516,13 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     return "\n".join(lines)
 
 
-def _finish_candidates(sink, ctx: ReportContext, org: str, site: str) -> list[str]:
+def _finish_candidates(sink, ctx: ReportContext, org: str, site: str,
+                       struct: dict | None = None) -> list[str]:
     """Свести находки: бесспорное записать в базу, спорное вынести на выбор."""
     from ecodoc.intake import crosscheck, sources
     if sink is None or sink.store is None:
         return []
+    st: dict = struct if struct is not None else {}
     site_dir = workspace.site_dir(org, site)
     # проставить кандидатам sha1 документа — по нему открывается скан листа
     sha_by_file = {rec.get("file"): sha
@@ -486,6 +534,17 @@ def _finish_candidates(sink, ctx: ReportContext, org: str, site: str) -> list[st
     applied = crosscheck.auto_apply(ctx, sink.store, groups)
     sink.store.save()
     questions = [g for g in groups if g.is_question]
+    try:
+        from ecodoc.intake.insight import _section_of
+        st["candidates"] = {
+            "total": len(sink.store.items), "applied": len(applied),
+            "questions": [{"key": g.key, "label": g.label, "hint": g.hint,
+                           "section": _section_of(g.key),
+                           "values": [{"value": v.get("value"), "docs": list(v.get("docs") or [])[:3]}
+                                      for v in g.values[:4]]}
+                          for g in questions[:60]]}
+    except Exception:
+        pass
     out = ["", "── Найденные данные ──",
            f"  всего значений: {len(sink.store.items)}; "
            f"принято автоматически: {len(applied)}; "
@@ -496,18 +555,165 @@ def _finish_candidates(sink, ctx: ReportContext, org: str, site: str) -> list[st
         out.append(f"  ⚖ {g.label}: {variants}"
                    + (f" — {g.hint}" if g.hint else ""))
     if len(questions) > 5:
-        out.append(f"  … ещё {len(questions) - 5} — вкладка «Данные»")
+        out.append(f"  … ещё {len(questions) - 5} — вкладка ЗАГРУЗКА → «что взять в базу»")
     gaps = crosscheck.lab_gaps(ctx)
+    st["lab_gaps"] = list(gaps)
     if gaps:
         out.append("── Протоколы по классу опасности ──")
         out += [f"  ⚠ {g}" for g in gaps[:5]]
     return out
 
 
+def _stamp_batches(stored: list[Path], org: str, site: str) -> None:
+    """Пометить в реестре источников партию и дату приёма каждого файла.
+
+    Реестр attachments (intake.json) после анализа вычищается, а эколог хочет
+    видеть в ЗАГРУЗКЕ именно «что пришло из ЭТОЙ папки» — метка партии живёт
+    в sources.json и переживает чистку."""
+    from ecodoc.intake import sources
+    site_dir = workspace.site_dir(org, site)
+    reg, _s, _n = _load_registry(site_dir / "attachments")
+    rows = {r.get("file"): r for r in reg}
+    for p in stored:
+        r = rows.get(p.name)
+        if not r or not r.get("sha1"):
+            continue
+        sources.remember(site_dir, r["sha1"], file=p.name,
+                         received=str(r.get("received") or ""),
+                         batch=str(r.get("batch") or ""))
+
+
+def _src_file(label) -> str:
+    """«имя.pdf (лист 3)» → «имя.pdf»."""
+    return str(label or "").split(" (лист")[0].strip()
+
+
+def forget(org: str, site: str, file: str) -> dict:
+    """Удалить файл из приёма и всё, что из него взято.
+
+    Требование эколога: «удалять файл, чтобы данные из него не грузились».
+    Убираем: сам файл и строку реестра; кандидатов из него (принятое
+    откатывается, если не подтверждено другим файлом); акты/протоколы/
+    паспорта/источники выбросов, извлечённые «целиком»; провенанс; снимки
+    листов. Документ заносится в исключённые (по sha1) — повторная загрузка
+    того же файла не примется, пока исключение не снято."""
+    from ecodoc.core.waste_agg import apply_acts
+    from ecodoc.intake import candidates, sources
+    from ecodoc.intake.candidates import ACCEPTED, MANUAL, act_key, parse_key
+    from ecodoc.parsers import page_image
+
+    site_dir = workspace.site_dir(org, site)
+    att = site_dir / "attachments"
+    res = {"file": file, "removed_file": False, "candidates": 0, "acts": 0,
+           "fields": 0, "extras": 0, "objects": 0, "images": 0, "sha": ""}
+    with _busy_site(org, site):
+        sha = ""
+        with _ATT_LOCK:
+            reg, _by_sha, _names = _load_registry(att)
+            for row in reg:
+                if row.get("file") == file:
+                    sha = str(row.get("sha1") or "")
+            keep = [r for r in reg if r.get("file") != file]
+            if len(keep) != len(reg):
+                _save_registry(att, keep)
+            p = att / file
+            if (p.is_file() and file != "intake.json"
+                    and not file.startswith("приём_")):
+                p.unlink()
+                res["removed_file"] = True
+        sha = sha or sources.sha_by_name(site_dir, file)
+        res["sha"] = sha
+        ctx = workspace.load_context(org, site)
+
+        # кандидаты из этого файла: откатить принятое, записи удалить
+        store = candidates.Store(site_dir)
+        mine = [c for c in store.items
+                if c.file == file or (sha and c.doc and c.doc == sha)]
+        mine_ids = {id(c) for c in mine}
+        others = [c for c in store.items if id(c) not in mine_ids]
+        for c in mine:
+            if c.state not in (ACCEPTED, MANUAL):
+                continue
+            if any(o.key == c.key and o.state in (ACCEPTED, MANUAL) for o in others):
+                continue                    # подтверждено другим документом
+            coll, _sel, attr = parse_key(c.key)
+            if coll == "waste_acts":
+                want = c.key.rsplit(".", 1)[0]
+                before = len(ctx.waste_acts)
+                ctx.waste_acts = [a for a in ctx.waste_acts
+                                  if act_key(a.fkko_code, a.date, a.receiver, a.mass) != want]
+                res["acts"] += before - len(ctx.waste_acts)
+                continue
+            cur = candidates.read(ctx, c.key)
+            if cur is None:
+                continue
+            if candidates._norm_value(c.key, cur) != candidates._norm_value(c.key, c.value):
+                continue                    # в базе уже другое значение
+            blank = "0" if attr in (candidates._DEC_ATTRS | candidates._INT_ATTRS) else ""
+            if candidates.write(ctx, c.key, blank):
+                res["fields"] += 1
+        store.items = others
+        res["candidates"] = len(mine)
+        store.save()
+
+        # извлечённое целиком (акты, протоколы, паспорта, источники выбросов)
+        if isinstance(ctx.extra, dict):
+            for key in ("disposal_acts", "lab_results", "waste_passports",
+                        "emission_sources"):
+                items = ctx.extra.get(key)
+                if not isinstance(items, list):
+                    continue
+                kept = [it for it in items
+                        if not (isinstance(it, dict)
+                                and _src_file(it.get("_src")) == file)]
+                res["extras"] += len(items) - len(kept)
+                ctx.extra[key] = kept
+            seen = ctx.extra.get("fkko_seen")
+            if isinstance(seen, list):
+                ctx.extra["fkko_seen"] = [s for s in seen if not
+                                          (isinstance(s, dict) and s.get("src") == file)]
+
+        # провенанс: поля, найденные в этом файле, и его листы
+        prov = ctx.provenance if isinstance(ctx.provenance, dict) else {}
+        pages = prov.get("_pages")
+        if isinstance(pages, dict):
+            pages.pop(file, None)
+        for k in list(prov.keys()):
+            v = prov[k]
+            if v == file or (isinstance(v, dict) and _src_file(v.get("src")) == file):
+                del prov[k]
+        objs = prov.get("objects")
+        if isinstance(objs, list):
+            gone = {o.get("code") for o in objs if isinstance(o, dict) and o.get("src") == file}
+            still = {o.get("code") for o in objs if isinstance(o, dict) and o.get("src") != file}
+            prov["objects"] = [o for o in objs if not (isinstance(o, dict) and o.get("src") == file)]
+            drop = gone - still
+            if drop:
+                before = len(ctx.objects)
+                ctx.objects = [o for o in ctx.objects if o.code not in drop]
+                res["objects"] = before - len(ctx.objects)
+
+        # снимки листов и реестр источников: документ исключается насовсем
+        if sha:
+            rec = sources.doc_by_sha(site_dir, sha) or {}
+            pdir = page_image.pages_dir(site_dir)
+            for name in (rec.get("images") or {}).values():
+                try:
+                    (pdir / name).unlink()
+                    res["images"] += 1
+                except OSError:
+                    pass
+            sources.exclude(site_dir, sha, file)
+
+        apply_acts(ctx)                     # движение — из оставшихся актов
+        workspace.save_context(org, site, ctx)
+    return res
+
+
 def _snap_sources(docs, rep, ctx: ReportContext, org: str, site: str) -> list[str]:
     """Снять картинки листов, на которых ИИ что-то нашёл, и записать паспорта
     документов в sources.json. Исходники на этом шаге ещё не удалены."""
-    from ecodoc.intake import sources
+    from ecodoc.intake import classify, sources
     from ecodoc.parsers import page_image
 
     site_dir = workspace.site_dir(org, site)
@@ -531,10 +737,12 @@ def _snap_sources(docs, rep, ctx: ReportContext, org: str, site: str) -> list[st
             snapped += len(images)
         if note:
             notes.append(note)
+        # класс документа (oos/pnoolr/passport/act…) — по нему сверка
+        # отходов понимает, откуда пришло значение
         sources.remember(site_dir, sha, file=name, method=doc.method,
                          page_kind=getattr(doc, "page_kind", "page"),
                          pages_total=len(getattr(doc, "pages", []) or []),
-                         images=images,
+                         images=images, doc_type=classify.classify(doc).kind,
                          size=doc.path.stat().st_size if doc.path.exists() else 0)
     out = []
     if snapped:

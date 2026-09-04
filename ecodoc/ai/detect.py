@@ -224,6 +224,12 @@ def ensure_configured() -> AIConfig:
     from ecodoc.ai.config import load_config
     from ecodoc.ai.health import fresh, pick_best
     cfg = load_config()
+    det = cfg.detected if isinstance(cfg.detected, dict) else {}
+    # выбор, сделанный руками в «Сервис → Выбор ИИ», автопроверка «здоровья»
+    # моделей не перебивает: раньше в углу стояла одна модель, а анализ шёл
+    # другой — pick_best молча переписывал конфиг при каждом приёме
+    if cfg.provider and det.get("picked_by") == "user":
+        return cfg
     checked = fresh()
     if checked:
         best, _ = pick_best(checked)

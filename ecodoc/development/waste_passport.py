@@ -210,11 +210,19 @@ def _details(ctx: ReportContext, w: WasteFlow) -> dict:
     extra = ctx.extra if isinstance(ctx.extra, dict) else {}
     d = dict((extra.get("waste_details") or {}).get(w.fkko_code) or {})
     code = norm_fkko(w.fkko_code or "")
-    if not d.get("components"):
-        for p in extra.get("waste_passports") or []:
-            if code and norm_fkko(str(p.get("fkko") or "")) == code:
-                d.setdefault("components", p.get("components") or [])
-                break
+    # справочник из ИИ-разбора (паспорта, протоколы, ООС/ПНООЛР): состав,
+    # происхождение и агрегатное состояние — дозаполняют только пустое
+    for p in extra.get("waste_passports") or []:
+        if not (code and isinstance(p, dict)
+                and norm_fkko(str(p.get("fkko") or "")) == code):
+            continue
+        if not d.get("components") and p.get("components"):
+            d["components"] = p.get("components") or []
+        if not d.get("origin") and p.get("origin"):
+            d["origin"] = str(p["origin"])
+        if not d.get(_AGG) and p.get("aggregate_state"):
+            d[_AGG] = str(p["aggregate_state"])
+        break
     lab = lab_result_for(ctx, w, kinds=("КХА", "хим", "морф"))
     if lab:
         # как в принятых паспортах ТЕХНОСТРОЙ: состав = результаты протокола

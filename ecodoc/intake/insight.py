@@ -57,6 +57,8 @@ def intake_map(ctx: ReportContext, site_dir: Path, org: str = "", site: str = ""
         return by_file.setdefault(file, {
             "file": file, "doc": doc or sources.sha_by_name(site_dir, file) or "",
             "method": rec.get("method", ""), "pages_total": rec.get("pages_total", 0),
+            "kind": rec.get("doc_type", ""),
+            "batch": rec.get("batch", ""), "received": rec.get("received", ""),
             "status": "nodata", "reason": "", "taken": [], "doubts": [], "rejected": []})
 
     for sha, rec in docs.items():
@@ -71,16 +73,23 @@ def intake_map(ctx: ReportContext, site_dir: Path, org: str = "", site: str = ""
         if c.state in (ACCEPTED, MANUAL):
             d["taken"].append(item)
         elif c.state == REJECTED:
-            d["rejected"].append({**item, "reason": "отклонено пользователем"})
+            d["rejected"].append({**item, "reason": getattr(c, "reason", "") or
+                                  "отклонено пользователем"})
         else:                                   # NEW — ждёт решения / сомнение
             d["doubts"].append({**item, "reason": "не подтверждено — выберите значение "
-                                                  "во вкладке ОБЪЕКТ → «что взять в базу»"})
+                                                  "во вкладке ЗАГРУЗКА → «что взять в базу»"})
     # файлы, оставшиеся в приёме (не прочитаны / ИИ не разобрал)
     att = Path(site_dir) / "attachments"
     if att.is_dir():
+        from ecodoc.intake.intake import _load_registry
+        reg, _s, _n = _load_registry(att)
+        rows = {r.get("file"): r for r in reg}
         for p in att.iterdir():
             if p.is_file() and not p.name.startswith("приём_") and p.name != "intake.json":
                 d = slot(p.name)
+                row = rows.get(p.name) or {}
+                d["batch"] = d.get("batch") or str(row.get("batch") or "")
+                d["received"] = d.get("received") or str(row.get("received") or "")
                 d["status"] = "unread"
                 d["reason"] = "файл не разобран: не прочитался или ИИ не ответил — " \
                               "«Повторить анализ» или заведите данные вручную"
@@ -100,7 +109,12 @@ def intake_map(ctx: ReportContext, site_dir: Path, org: str = "", site: str = ""
     order = {"unread": 0, "partial": 1, "doubt": 2, "nodata": 3, "ok": 4}
     out = sorted(by_file.values(),
                  key=lambda d: (order[d["status"]], -len(d["taken"]), d["file"]))
-    return {"docs": out,
+    batches = sorted({d["batch"] for d in out if d.get("batch")}, reverse=True)
+    excluded = [{"sha": sha, **(rec or {})}
+                for sha, rec in (sources.excluded(site_dir) or {}).items()]
+    return {"docs": out, "batches": batches[:30],
+            "last_batch": batches[0] if batches else "",
+            "excluded": excluded,
             "totals": {"ok": sum(1 for d in out if d["status"] == "ok"),
                        "partial": sum(1 for d in out if d["status"] == "partial"),
                        "unread": sum(1 for d in out if d["status"] == "unread"),

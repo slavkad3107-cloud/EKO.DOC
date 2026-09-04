@@ -17,7 +17,8 @@ def test_conflicts_grouped_in_render():
                                       "ИП Миних", f"ДС№{i}.doc"))
     rep.conflicts.append(Conflict("organization.phone", "8(911)", "+7921", "ДОГ.pdf"))
     out = rep.render()
-    assert out.count("КОНФЛИКТ organization.name") == 1
+    # подпись теперь человеческая («РАСХОЖДЕНИЕ организация: наименование»)
+    assert out.count("РАСХОЖДЕНИЕ организация: наименование") == 1
     assert "в 8 документах" in out
     assert "в документе ДОГ.pdf" in out          # одиночный — по-старому
 

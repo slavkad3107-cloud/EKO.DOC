@@ -49,6 +49,7 @@ class Candidate:
     unit: str = ""               # единица из документа («кг», «т», «м3»)
     state: str = NEW
     seen: int = 1
+    reason: str = ""             # почему отклонено программой (реквизиты чужой организации и т.п.)
 
     @property
     def id(self) -> str:
@@ -346,12 +347,14 @@ class Sink:
 
     def add(self, key: str, value, *, label: str = "", doc: str = "", file: str = "",
             page: int = 0, exact: bool = False, quote: str = "",
-            method: str = "ai", model: str = "", unit: str = "") -> None:
+            method: str = "ai", model: str = "", unit: str = "",
+            state: str = NEW, reason: str = "") -> None:
         if self.store is None or not key or value in (None, ""):
             return
         c = Candidate(key=key, value=str(value), label=label or key, doc=doc,
                       file=file, page=page, exact=exact, quote=quote,
-                      method=method, model=model, unit=unit)
+                      method=method, model=model, unit=unit,
+                      state=state, reason=reason)
         self.added.append(self.store.add(c))
 
     def flush(self) -> int:

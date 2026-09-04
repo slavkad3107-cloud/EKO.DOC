@@ -240,7 +240,8 @@ def api_intake_upload(params, body):
     tmpdir = Path(tempfile.mkdtemp(prefix="ecodoc_upload_"))
     try:
         paths = _decode_to_tmp(body.get("files", []), tmpdir)
-        names, log = intake.store(paths, body["org"], body["site"])
+        names, log = intake.store(paths, body["org"], body["site"],
+                                  batch=str(body.get("batch") or ""))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     return {"stored": names, "log": log}
@@ -251,12 +252,36 @@ def api_intake_run(params, body):
     from ecodoc.intake import intake
     if intake.is_busy(body["org"], body["site"]):
         return {"error": "Приём по этой площадке уже идёт — дождитесь окончания."}
+    struct: dict = {}
     report = intake.analyze_stored(body.get("names", []),
                                    body["org"], body["site"],
                                    use_ai=bool(body.get("ai")),
-                                   scope=body.get("scope", "all"))
+                                   scope=body.get("scope", "all"),
+                                   struct=struct)
     _save_report(body["org"], body["site"], report)
-    return {"report": report}
+    return {"report": report, "sections": struct}
+
+
+def api_intake_forget(params, body):
+    """Удалить файл из приёма вместе с тем, что из него взято (ЗАГРУЗКА)."""
+    from ecodoc.intake import intake
+    if intake.is_busy(body["org"], body["site"]):
+        return {"error": "Идёт приём по этой площадке — дождитесь окончания."}
+    name = Path(str(body.get("file") or "").replace("\\", "/")).name
+    if not name:
+        return {"error": "не указан файл"}
+    return intake.forget(body["org"], body["site"], name)
+
+
+def api_intake_unexclude(params, body):
+    """Снять исключение с документа (после «удалить файл»), чтобы его можно
+    было загрузить заново."""
+    from ecodoc.intake import sources
+    sha = str(body.get("sha") or "").lower()
+    if not _SHA_RE.match(sha):
+        return {"error": "неверный идентификатор документа"}
+    ok = sources.unexclude(workspace.site_dir(body["org"], body["site"]), sha)
+    return {"ok": ok}
 
 
 def _get_form(code: str):
@@ -346,7 +371,7 @@ def api_generate(params, body):
             else f"ЧЕРНОВИК_{body['form']}_год-не-указан")
     if not year:
         out["draft"] = ("Отчётный год не указан — выпущен ЧЕРНОВИК. Заполните "
-                        "год во вкладке ДАННЫЕ и сгенерируйте заново.")
+                        "год во вкладке ОТЧЁТНОСТЬ и сгенерируйте заново.")
     _keep_previous(out_dir, stem, out)
     if getattr(report, "has_xml", True):
         out["xml"] = str(report.render_xml(out_dir / f"{stem}.xml"))
@@ -653,6 +678,18 @@ def api_devdoc(params, body):
         if not made:
             return {"error": "Нет отходов I–IV класса — паспорта не требуются."}
         return {"path": str(made[0].parent), "files": [p.name for p in made]}
+    elif kind == "waste-composition":
+        # справка о составе по ООС/ПНООЛР — проект для протокола КХА
+        from ecodoc.development import waste_composition
+        made = waste_composition.generate(
+            ctx, out_dir / "состав_отходов",
+            site_dir=workspace.site_dir(body["org"], body["site"]))
+        if not made:
+            return {"error": "Нет отходов с компонентным составом — загрузите "
+                             "ООС/ПНООЛР или протоколы КХА.",
+                    "gaps": waste_composition.gaps(ctx)}
+        return {"path": str(made[0].parent), "files": [p.name for p in made],
+                "gaps": waste_composition.gaps(ctx)}
     else:
         return {"error": f"неизвестный документ: {kind}"}
     return {"path": str(path)}
@@ -802,6 +839,15 @@ def api_passports_check(params, body):
                        "bad_source": sum(1 for r in rows if not r["src_ok"])}}
 
 
+def api_waste_crosscheck(params, body):
+    """Сверка отходов по источникам: ООС/ПНООЛР ↔ паспорта ↔ протоколы ↔ акты
+    (по каждому ФККО — что говорит каждый документ и где расхождения)."""
+    from ecodoc.core import waste_crosscheck
+    org, site = body["org"], body["site"]
+    return waste_crosscheck.build(workspace.load_context(org, site),
+                                  workspace.site_dir(org, site))
+
+
 def api_fkko_fix(params, body):
     """Заменить код ФККО (и при желании наименование/класс) во всех записях."""
     from ecodoc.core import fkko
@@ -845,12 +891,26 @@ def api_intake_map(params, body):
                               workspace.site_dir(org, site), org, site)
 
 
+_ISSUES_CACHE: dict = {}
+
+
 def api_data_issues(params, body):
-    """Единая проверка данных по категориям с файлом/листом/подсказкой."""
+    """Единая проверка данных по категориям с файлом/листом/подсказкой.
+
+    На большой базе (600 файлов) считается 8–10 с — кэшируем по отпечаткам
+    context.json / candidates.json / sources.json: пока данные не менялись,
+    вкладка открывается мгновенно."""
     from ecodoc.intake import insight
     org, site = body["org"], body["site"]
-    return insight.data_issues(workspace.load_context(org, site),
-                               workspace.site_dir(org, site), org, site)
+    sd = workspace.site_dir(org, site)
+    stamp = tuple(_ctx_version(sd / n) for n in ("context.json", "candidates.json",
+                                                  "sources.json"))
+    hit = _ISSUES_CACHE.get((org, site))
+    if hit and hit[0] == stamp and not body.get("refresh"):
+        return hit[1]
+    out = insight.data_issues(workspace.load_context(org, site), sd, org, site)
+    _ISSUES_CACHE[(org, site)] = (stamp, out)
+    return out
 
 
 def api_form_gaps(params, body):
@@ -920,6 +980,7 @@ def api_ai_save(params, body):
     # выбор сделан руками — авто-переход на бесплатное облако больше не нужен
     det = cfg.detected if isinstance(cfg.detected, dict) else {}
     det["free_migrated"] = True
+    det["picked_by"] = "user"      # автопроверка моделей этот выбор не перебивает
     cfg.detected = det
     save_config(cfg)
     return {"ok": True, "text": detect.describe(load_config())}
@@ -1414,7 +1475,9 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "sources": api_sources, "candidates": api_candidates,
               "fkko_check": api_fkko_check,
               "forms_registry": api_forms_registry}
-POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
+POST_ROUTES = {"intake_forget": api_intake_forget,
+               "intake_unexclude": api_intake_unexclude,
+               "org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add, "site_del": api_site_del,
                "org_del": api_org_del,
                "context_save": api_context_save, "intake": api_intake,
@@ -1437,6 +1500,7 @@ POST_ROUTES = {"org_add": api_org_add, "org_lookup": api_org_lookup,
                "audit_data": api_audit_data, "clean_data": api_clean_data,
                "org_short_name": api_org_short_name,
                "passports_check": api_passports_check,
+               "waste_crosscheck": api_waste_crosscheck,
                "fkko_fix": api_fkko_fix, "waste_periods": api_waste_periods,
                "intake_map": api_intake_map, "data_issues": api_data_issues,
                "form_gaps": api_form_gaps,

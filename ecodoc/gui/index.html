@@ -53,7 +53,9 @@ aside h3{font-size:13px;color:var(--mut);text-transform:uppercase;
 .trash:hover{opacity:1 !important}
 .site.sel .trash{color:#ffd7d3}
 .addrow{display:flex;gap:6px;margin-top:8px}
-main{flex:1;padding:14px 18px;max-width:1100px}
+/* min-width:0 — иначе широкие таблицы (карта приёма, сверки) распирают страницу
+   вместо прокрутки внутри своих overflow-x:auto обёрток */
+main{flex:1;padding:14px 18px;max-width:1100px;min-width:0}
 .tabs{display:flex;gap:4px;border-bottom:2px solid var(--line);margin-bottom:14px;
   flex-wrap:wrap}
 .tabs button{border:0;background:none;padding:9px 14px;font-size:14px;
@@ -126,6 +128,32 @@ table.ptbl tr.wrow.sel td{outline:2px solid var(--acc);outline-offset:-2px}
 table.ptbl td.cell:hover{background:#e8f5ee}
 details.per>summary{cursor:pointer;color:var(--acc);font-weight:600;font-size:13px}
 details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left:8px}
+/* глобальный тост: результат сохранения виден с любой вкладки */
+#toasts{position:fixed;right:18px;bottom:18px;z-index:1000;display:flex;flex-direction:column;gap:8px;max-width:420px}
+.toast{padding:10px 14px;border-radius:8px;color:#fff;font-size:14px;box-shadow:0 4px 14px rgba(0,0,0,.25);
+  animation:tin .2s ease-out;white-space:pre-wrap}
+.toast.ok{background:var(--acc)} .toast.err{background:var(--err)} .toast.warn{background:var(--warn)}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+/* зона перетаскивания файлов/папок в ЗАГРУЗКЕ */
+.drop{border:2px dashed var(--line);border-radius:10px;padding:14px;text-align:center;color:var(--mut);
+  font-size:14px;margin:6px 0 8px;transition:background .15s,border-color .15s}
+.drop.over{background:var(--acc2);border-color:var(--acc);color:var(--acc)}
+/* маршрут работы (ЗАГРУЗКА, вверху) */
+.route{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px;color:var(--mut);margin:0 0 10px;
+  padding:8px 12px;background:var(--acc2);border-radius:8px}
+.route b{color:var(--acc)}
+/* отчёт приёма по разделам */
+.rep-head{font-size:14px;margin:8px 0}
+.rep-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:8px;margin:6px 0}
+.rep-card{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--panel)}
+.rep-card .t{font-weight:600;font-size:14px;margin-bottom:4px}
+.rep-card .nums{font-size:12px;color:var(--mut);margin-bottom:4px}
+.rep-card details{margin:2px 0} .rep-card summary{cursor:pointer;font-size:13px}
+.rep-card li{font-size:12px;margin:2px 0}
+.rep-card ul{margin:2px 0 4px 16px;padding:0;max-height:260px;overflow:auto}
+.rep-bad{color:var(--err)} .rep-warn{color:var(--warn)} .rep-ok{color:var(--acc)}
+/* подвкладки ОБЪЕКТА показываются/скрываются, не перерисовываются */
+.osub{display:block}.osub.off{display:none}
 </style>
 </head>
 <body>
@@ -163,9 +191,6 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
     <button data-t="intake" class="on">ЗАГРУЗКА</button>
     <button data-t="org">ОРГАНИЗАЦИЯ</button>
     <button data-t="obj">ОБЪЕКТ</button>
-    <button data-t="waste">ОТХОДЫ</button>
-    <button data-t="air">ВЫБРОСЫ</button>
-    <button data-t="water">СБРОСЫ</button>
     <button data-t="report">Отчётность</button>
     <button data-t="dev">Разработка</button>
     <button data-t="cal">Календарь</button>
@@ -174,8 +199,15 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
   </div>
 
   <div class="tab on" id="tab-intake">
+    <div class="route">
+      <span><b>1)</b> загрузите документы</span>
+      <span>→ <b>2)</b> проверьте «что откуда взято», решите «что взять в базу» и закройте «Проверку данных»</span>
+      <span>→ <b>3)</b> <a class="link" onclick="showTab('obj')">ОБЪЕКТ</a> — чистовые данные (объекты, отходы, выбросы, сбросы)</span>
+      <span>→ <b>4)</b> <a class="link" onclick="showTab('report')">Отчётность</a> / <a class="link" onclick="showTab('dev')">Разработка</a></span>
+    </div>
     <div class="card">
       <h2>Загрузить документы (pdf/doc/xls/jpg/xml и архивы zip/rar/7z — распакуются)</h2>
+      <div class="drop" id="dropzone">⤓ Перетащите сюда файлы или папки целиком (можно несколько)</div>
       <div class="row">
         <label class="b sec" style="display:inline-block">Файлы…
           <input type="file" id="files" multiple style="display:none"></label>
@@ -184,6 +216,7 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
         <label>Что загружаем:
           <select id="intake-scope">
             <option value="all">авто (все данные)</option>
+            <option value="waste">отходы: ООС/ПНООЛР/паспорта/протоколы/акты</option>
             <option value="org">реквизиты (ЕГРЮЛ/карточка/объекты НВОС)</option>
             <option value="acts">справки-акты на отходы</option>
             <option value="passports">паспорта отходов (ФККО/класс/состав)</option>
@@ -207,8 +240,17 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
       <div class="hint">Каждый файл будет распределён: что это за документ,
         какие данные из него можно взять и для каких форм; в конце — чего не хватает.</div>
       <div class="filelist" id="filelist"></div>
-      <div id="srcbox"></div>
+      <!-- отчёт приёма по разделам (sections) либо текстом (старый сервер) -->
+      <div id="repbox"></div>
       <pre class="out" id="out-intake" style="display:none"></pre>
+    </div>
+    <!-- всё про приём живёт здесь: карта «что откуда взято», кандидаты
+         «что взять в базу», единая «Проверка данных» (перенесены из ОБЪЕКТА) -->
+    <div class="card">
+      <h2>Что откуда взято, что взять в базу, проверка данных</h2>
+      <div id="srcbox"><div class="hint">выберите площадку слева — появится карта приёма</div></div>
+      <div id="candbox"></div>
+      <div id="issuesbox"></div>
     </div>
   </div>
 
@@ -228,83 +270,90 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
 
   <div class="tab" id="tab-obj">
     <div class="card">
-      <h2>Объект — код НВОС, отчётный год, проверка данных</h2>
-      <div class="row">
-        <button class="b" onclick="saveCtx()">💾 Сохранить</button>
-        <button class="b sec" onclick="loadCtx()">Перечитать</button>
-        <button class="b sec" onclick="checkObjects()">Проверить код и определить ОКТМО/ОКАТО</button>
-        <button class="b sec" onclick="deleteBadObjects()">Удалить некорректные</button>
-        <button class="b sec" onclick="openWs()">Открыть папку площадки</button>
-        <span class="spin" id="sp-obj">проверка…</span>
-        <span class="spin" id="sp-data">…</span>
-        <span class="hint" id="obj-msg"></span>
-        <span id="data-msg" class="hint"></span>
+      <h2>Объект — чистовые данные: объекты НВОС, отходы, выбросы, сбросы</h2>
+      <!-- подвкладки: содержимое всех четырёх отрисовано сразу (renderDataForm),
+           переключение только показывает/скрывает — правки в полях не теряются -->
+      <div class="row" style="gap:4px">
+        <button class="b mtab on" id="ot-obj" onclick="showObjSub('obj')">Объект</button>
+        <button class="b mtab" id="ot-waste" onclick="showObjSub('waste')">Отходы</button>
+        <button class="b mtab" id="ot-air" onclick="showObjSub('air')">Выбросы</button>
+        <button class="b mtab" id="ot-water" onclick="showObjSub('water')">Сбросы</button>
       </div>
-      <!-- единая ПРОВЕРКА ДАННЫХ (data_issues) — свёрнутая карточка с числом
-           проблем; по замечанию эколога кнопки «проверить на мусор» в разделах
-           убраны, проверка одна на весь объект -->
-      <div id="issuesbox"></div>
-      <div id="objcheck"></div>
-      <!-- таблица объектов; год и признаки — сразу под ней (renderDataForm) -->
-      <div id="objform"></div>
-      <div id="dataform"></div>
-      <!-- бывшая вкладка ДАННЫЕ: кандидаты «что взять в базу», вопросы -->
-      <div id="candbox"></div>
-      <div id="objextra"></div>
-      <details style="margin-top:12px">
-        <summary style="cursor:pointer;color:var(--mut)">Расширенно: все поля в формате JSON (для опытных)</summary>
-        <div class="hint">Правьте, только если знаете формат. После правки нажмите «Применить JSON».</div>
-        <textarea id="ctx" spellcheck="false" style="min-height:220px"></textarea>
-        <button class="b sec" onclick="applyRawJson()">Применить JSON</button>
-      </details>
-    </div>
-  </div>
 
-  <div class="tab" id="tab-waste">
-    <div class="card">
-      <h2>Отходы — ФККО и паспорта, справки-акты по периодам</h2>
-      <div class="row">
-        <button class="b" onclick="saveCtx()">💾 Сохранить</button>
-        <button class="b sec" onclick="refreshWasteChecks()"
-          title="Заново сверить паспорта, коды ФККО, разбивку по периодам и проблемы исходников">↻ Перепроверить</button>
-        <span class="spin" id="sp-waste">…</span>
-        <span class="hint" id="waste-msg"></span>
+      <div class="osub" id="osub-obj">
+        <div class="row">
+          <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+          <button class="b sec" onclick="loadCtx()">Перечитать</button>
+          <button class="b sec" onclick="checkObjects()">Проверить код и определить ОКТМО/ОКАТО</button>
+          <button class="b sec" onclick="deleteBadObjects()">Удалить некорректные</button>
+          <button class="b sec" onclick="openWs()">Открыть папку площадки</button>
+          <span class="spin" id="sp-obj">проверка…</span>
+          <span class="spin" id="sp-data">…</span>
+          <span class="hint" id="obj-msg"></span>
+          <span id="data-msg" class="hint"></span>
+        </div>
+        <div id="objcheck"></div>
+        <!-- таблица объектов; признаки организации — под ней (renderDataForm) -->
+        <div id="objform"></div>
+        <div id="dataform"></div>
+        <div id="objextra"></div>
+        <details style="margin-top:12px">
+          <summary style="cursor:pointer;color:var(--mut)">Расширенно: все поля в формате JSON (для опытных)</summary>
+          <div class="hint">Правьте, только если знаете формат. После правки нажмите «Применить JSON».</div>
+          <textarea id="ctx" spellcheck="false" style="min-height:220px"></textarea>
+          <button class="b sec" onclick="applyRawJson()">Применить JSON</button>
+        </details>
       </div>
-      <!-- порядок разделов задаёт renderWasteTab: 1 ФККО/паспорта/каталог →
-           2 справки-акты по периодам → 3 проблемы исходников → загрузка/ИИ.
-           Движение отходов показывается в Отчётность → Отходы -->
-      <div id="wasteform"></div>
-    </div>
-  </div>
 
-  <div class="tab" id="tab-air">
-    <div class="card">
-      <h2>Выбросы — источники и вещества</h2>
-      <div class="row">
-        <button class="b" onclick="saveCtx()">💾 Сохранить</button>
-        <span class="spin" id="sp-air">…</span><span class="hint" id="air-msg"></span>
+      <div class="osub off" id="osub-waste">
+        <h3 style="margin:8px 0 6px;color:var(--acc)">Отходы — ФККО и паспорта, справки-акты по периодам</h3>
+        <div class="row">
+          <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+          <button class="b sec" onclick="refreshWasteChecks()"
+            title="Заново сверить паспорта, коды ФККО, разбивку по периодам и проблемы исходников">↻ Перепроверить</button>
+          <span class="spin" id="sp-waste">…</span>
+          <span class="hint" id="waste-msg"></span>
+        </div>
+        <!-- порядок разделов задаёт renderWasteTab: 1 ФККО/паспорта/каталог (+ сверка
+             по источникам) → 2 справки-акты по периодам → 3 проблемы исходников →
+             загрузка/ИИ. Движение отходов показывается в Отчётность → Отходы -->
+        <div id="wasteform"></div>
       </div>
-      <div id="airform"></div>
-    </div>
-  </div>
 
-  <div class="tab" id="tab-water">
-    <div class="card">
-      <h2>Сбросы и водопользование</h2>
-      <div class="row">
-        <button class="b" onclick="saveCtx()">💾 Сохранить</button>
-        <span class="spin" id="sp-water">…</span><span class="hint" id="water-msg"></span>
+      <div class="osub off" id="osub-air">
+        <h3 style="margin:8px 0 6px;color:var(--acc)">Выбросы — источники и вещества</h3>
+        <div class="row">
+          <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+          <span class="spin" id="sp-air">…</span><span class="hint" id="air-msg"></span>
+        </div>
+        <div id="airform"></div>
       </div>
-      <div class="hint">В этой таблице должны быть ВЕЩЕСТВА (взвешенные вещества,
-        БПК, нефтепродукты…). Виды стоков — «ливневые», «хоз-бытовые» — это потоки
-        водоотведения: им место в блоке объёмов ниже, а не в перечне веществ.</div>
-      <div id="waterform"></div>
+
+      <div class="osub off" id="osub-water">
+        <h3 style="margin:8px 0 6px;color:var(--acc)">Сбросы и водопользование</h3>
+        <div class="row">
+          <button class="b" onclick="saveCtx()">💾 Сохранить</button>
+          <span class="spin" id="sp-water">…</span><span class="hint" id="water-msg"></span>
+        </div>
+        <div class="hint">В этой таблице должны быть ВЕЩЕСТВА (взвешенные вещества,
+          БПК, нефтепродукты…). Виды стоков — «ливневые», «хоз-бытовые» — это потоки
+          водоотведения: им место в блоке объёмов ниже, а не в перечне веществ.</div>
+        <div id="waterform"></div>
+      </div>
     </div>
   </div>
 
   <div class="tab" id="tab-report">
     <div class="card">
       <h2>Отчётность — модули (XML для ЛКПП + печать)</h2>
+      <!-- отчётный год — параметр отчётности, а не объекта (замечание эколога);
+           контейнер yearform входит в boxes collectDataForm — иначе год не сохранится -->
+      <div class="row" id="yearform" style="margin:0 0 8px;padding:6px 10px;border:1px solid var(--line);border-radius:8px">
+        <label>Отчётный год:
+          <input type="number" data-path="period.year" id="year-inp" style="width:110px" placeholder="2025" inputmode="numeric"></label>
+        <button class="b sm" onclick="saveCtx()">💾 Сохранить</button>
+        <span class="hint" id="year-hint">обязателен для всех форм — без года формы выпускаются черновиками</span>
+      </div>
       <div class="row" style="gap:4px">
         <button class="b mtab on" id="mt-rc" onclick="showMod('rep','rc')">Общая</button>
         <button class="b mtab" id="mt-rw" onclick="showMod('rep','rw')">Отходы</button>
@@ -613,9 +662,24 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
   </div>
 </main>
 </div>
+<div id="toasts"></div>
 
 <script>
 let ORG = "", SITE = "", META = null;
+
+// ── глобальный тост: результат сохранения/удаления виден с любой вкладки ──
+// (раньше «Сохранить» из ОРГАНИЗАЦИИ писал ошибку в #data-msg на ОБЪЕКТЕ —
+// пользователь её не видел и генерировал формы по старым реквизитам)
+function notify(text, kind, ms){
+  const box = document.getElementById("toasts");
+  if (!box) return;
+  const t = document.createElement("div");
+  t.className = "toast " + (kind === "err" ? "err" : kind === "warn" ? "warn" : "ok");
+  t.textContent = text;
+  t.onclick = () => t.remove();
+  box.appendChild(t);
+  setTimeout(() => t.remove(), ms || (kind === "err" ? 6000 : 4000));
+}
 
 const $ = id => document.getElementById(id);
 // timeoutMs=0 — без таймаута (долгие операции: ИИ-интейк, сторож, генерация)
@@ -653,19 +717,17 @@ $("tabs").addEventListener("click", e => {
   e.target.classList.add("on");
   $("tab-" + e.target.dataset.t).classList.add("on");
   if (e.target.dataset.t === "svc" && !AICONF) loadAiPanel();
-  if (e.target.dataset.t === "intake" && ORG) loadSources().catch(()=>{});
-  if (e.target.dataset.t === "org" && CTX) renderOrgTab();
-  // ОБЪЕКТ вобрал бывшую вкладку ДАННЫЕ: кандидаты «что взять в базу» и
-  // единая ПРОВЕРКА данных — оба ходят на сервер, рисуем без ожидания
-  if (e.target.dataset.t === "obj" && CTX){
-    renderObjTab(); renderDataForm();
-    loadCandidates().catch(()=>{}); loadIssues().catch(()=>{});
+  // ЗАГРУЗКА = всё про приём: карта «что откуда взято», кандидаты «что взять
+  // в базу», единая ПРОВЕРКА данных — все ходят на сервер, рисуем без ожидания
+  if (e.target.dataset.t === "intake" && ORG){
+    loadSources().catch(()=>{});
+    if (CTX){ loadCandidates().catch(()=>{}); if (!ISSUES) loadIssues().catch(()=>{}); }
   }
-  // отходы: таблицы рисуются из CTX сразу, сверки (паспорта/ФККО/периоды)
-  // ходят на сервер — поэтому отдельным вызовом, не блокируя отрисовку
-  if (e.target.dataset.t === "waste" && CTX){ renderWasteTab(); refreshWasteChecks(); }
-  if (e.target.dataset.t === "air" && CTX){ renderAirTab(); if (!ISSUES) loadIssues().catch(()=>{}); }
-  if (e.target.dataset.t === "water" && CTX){ renderWaterTab(); if (!ISSUES) loadIssues().catch(()=>{}); }
+  if (e.target.dataset.t === "org" && CTX) renderOrgTab();
+  // ОБЪЕКТ: формы всех подвкладок уже нарисованы loadCtx → renderDataForm;
+  // здесь только серверные сверки активной подвкладки (без перерисовки —
+  // правки в полях не теряются)
+  if (e.target.dataset.t === "obj" && CTX) objSubChecks(objSub());
   if ((e.target.dataset.t === "report" || e.target.dataset.t === "dev") && ORG){
     const grp = e.target.dataset.t === "report" ? "rep" : "dev";
     const act = MODS[grp].find(m => $("mt-"+m) && $("mt-"+m).classList.contains("on")) || MODS[grp][0];
@@ -673,10 +735,37 @@ $("tabs").addEventListener("click", e => {
   }
 });
 
-// программный переход на вкладку (кнопки-ссылки из карточек форм и подсказок)
+// программный переход на вкладку (кнопки-ссылки из карточек форм и подсказок).
+// Бывшие верхние вкладки ОТХОДЫ/ВЫБРОСЫ/СБРОСЫ стали подвкладками ОБЪЕКТА —
+// старые вызовы showTab('waste'|'air'|'water') открывают ОБЪЕКТ и нужную подвкладку
+const OBJ_SUBS = ["obj", "waste", "air", "water"];
 function showTab(t){
-  const b = document.querySelector(`.tabs button[data-t="${t}"]`);
+  // бывшая вкладка ДАННЫЕ слита с ОБЪЕКТОМ (год — в Отчётности)
+  if (t === "data") t = "obj";
+  const sub = OBJ_SUBS.includes(t) && t !== "obj" ? t : "";
+  const b = document.querySelector(`.tabs button[data-t="${sub ? "obj" : t}"]`);
   if (b) b.click();
+  if (sub) showObjSub(sub);
+}
+// текущая подвкладка ОБЪЕКТА
+function objSub(){
+  return OBJ_SUBS.find(k => $("ot-"+k) && $("ot-"+k).classList.contains("on")) || "obj";
+}
+// переключение подвкладки: только показать/скрыть (содержимое не перерисовывается)
+function showObjSub(key){
+  for (const k of OBJ_SUBS){
+    if ($("osub-"+k)) $("osub-"+k).classList.toggle("off", k !== key);
+    if ($("ot-"+k)) $("ot-"+k).classList.toggle("on", k === key);
+  }
+  if (CTX) objSubChecks(key);
+}
+// серверные сверки подвкладки — один раз, пока кэш пуст (кнопка «Перепроверить»
+// и loadCtx сбрасывают кэш и запрашивают заново)
+function objSubChecks(key){
+  if (!ORG || !SITE) return;
+  if (key === "waste"){
+    if (!FKKO_META && !FKKO_ERR && !PER_DATA && !PER_ERR) refreshWasteChecks();
+  } else if (!ISSUES && !ISSUES_ERR) loadIssues().catch(()=>{});
 }
 
 // правка любого поля формы — помечаем данные как несохранённые
@@ -769,7 +858,11 @@ function onSelect(){
       el.appendChild(a);
     }
     // площадка выбрана при открытой ЗАГРУЗКЕ — сразу показать «что откуда взято»
-    if ($("tab-intake").classList.contains("on")) loadSources().catch(()=>{});
+    // и «что взять в базу» (проверку данных запросил loadCtx)
+    if ($("tab-intake").classList.contains("on")){
+      loadSources().catch(()=>{});
+      loadCandidates().catch(()=>{});
+    }
   }).catch(e=>{
     // НЕ оставлять на экране данные предыдущей площадки: «Сохранить»
     // записал бы их в чужой context.json
@@ -845,8 +938,54 @@ function filterFiles(all){
   }
   return ok;
 }
+// файлы, перетащенные в зону drop (папки обходятся рекурсивно) — тот же
+// список File, что и из полей выбора
+let DROPPED = [];
 function pickedFiles(){
-  return filterFiles([...$("files").files, ...$("folder").files]);
+  return filterFiles([...$("files").files, ...$("folder").files, ...DROPPED]);
+}
+// DataTransferItem → File[] (webkitGetAsEntry даёт обход папок)
+function readEntry(entry){
+  return new Promise(res => {
+    if (!entry) return res([]);
+    if (entry.isFile) return entry.file(f => res([f]), () => res([]));
+    if (!entry.isDirectory) return res([]);
+    const reader = entry.createReader(), all = [];
+    const step = () => reader.readEntries(async ents => {
+      if (!ents.length){ res(all); return; }
+      for (const e of ents) all.push(...await readEntry(e));
+      step();                        // readEntries отдаёт порциями — читаем до пустой
+    }, () => res(all));
+    step();
+  });
+}
+async function dropFiles(dt){
+  const items = [...(dt.items || [])];
+  let out = [];
+  const entries = items.map(it => it.webkitGetAsEntry ? it.webkitGetAsEntry() : null);
+  if (entries.some(Boolean)){
+    for (const en of entries) out.push(...await readEntry(en));
+  } else out = [...(dt.files || [])];
+  // повторное перетаскивание того же файла не задваивает
+  const seen = new Set(DROPPED.map(f => f.name + "|" + f.size));
+  for (const f of out) if (!seen.has(f.name + "|" + f.size)){ DROPPED.push(f); seen.add(f.name + "|" + f.size); }
+  showPicked();
+}
+{
+  const dz = $("dropzone");
+  if (dz){
+    ["dragenter","dragover"].forEach(ev => dz.addEventListener(ev, e => {
+      e.preventDefault(); e.stopPropagation(); dz.classList.add("over"); }));
+    ["dragleave","dragend"].forEach(ev => dz.addEventListener(ev, e => {
+      e.preventDefault(); dz.classList.remove("over"); }));
+    dz.addEventListener("drop", e => {
+      e.preventDefault(); e.stopPropagation(); dz.classList.remove("over");
+      dropFiles(e.dataTransfer).catch(err => alert("Не удалось прочитать перетащенное: " + errText(err)));
+    });
+    // бросили мимо зоны — браузер не должен открыть файл вместо программы
+    document.addEventListener("dragover", e => e.preventDefault());
+    document.addEventListener("drop", e => e.preventDefault());
+  }
 }
 function skippedSummary(){
   // дедуп + группировка по причине; .sig — отдельной строкой с пояснением
@@ -873,6 +1012,9 @@ function showPicked(){
   if (SKIPPED.length) t += `\nПропущено: ${SKIPPED.length} — ` +
       SKIPPED.slice(0,8).join(" · ") + (SKIPPED.length>8 ? " …" : "");
   $("filelist").textContent = t;
+  if ($("dropzone")) $("dropzone").textContent = ok.length
+    ? `К приёму: ${ok.length} файл(ов) — можно добавить ещё (перетащите) или нажать «Принять»`
+    : "⤓ Перетащите сюда файлы или папки целиком (можно несколько)";
 }
 $("files").addEventListener("change", showPicked);
 $("folder").addEventListener("change", showPicked);
@@ -925,7 +1067,7 @@ function renderReport(text, boxId){
   }
 }
 let INTAKE_STOP = false, INTAKE_PAUSE = false;
-async function uploadBatch(batch){
+async function uploadBatch(batch, batchId){
   // закодировать и отправить одну партию; вернуть массив имён (stored)
   const files = [];
   for (const f of batch){
@@ -935,9 +1077,144 @@ async function uploadBatch(batch){
   if(!files.length) return [];
   // 10 минут: в партии могут быть архивы — сервер их распаковывает прямо
   // при загрузке (7-Zip, до 300 МБ), 120 с не хватало → партия целиком
-  // помечалась «сетевым сбоем», хотя сервер продолжал работать
-  const j = await post("intake_upload", {org:ORG, site:SITE, files}, 600000);
+  // помечалась «сетевым сбоем», хотя сервер продолжал работать.
+  // batch — метка загрузки (ГГГГММДДЧЧММСС): сервер пишет её в реестр, по ней
+  // фильтр «Последняя загрузка» в карте «что откуда взято»
+  const j = await post("intake_upload", {org:ORG, site:SITE, files, batch: batchId || ""}, 600000);
   return j.stored || [];
+}
+// ── отчёт приёма по разделам (sections из intake_run) ──────────────────
+// Анализ идёт чанками по 40 файлов — sections чанков сливаются: списки
+// конкатенируются, итоговые (forms, need_docs, candidates, model) — из последнего
+const AI_SECS = ["Организация", "Объект", "Отходы", "Выбросы", "Сбросы", "Прочее"];
+const AI_LISTS = ["accepted", "conflicts", "rejected", "doubts"];
+function mergeSections(acc, s){
+  if (!s || typeof s !== "object" || !Object.keys(s).length) return acc;
+  acc = acc || {files_total:0, unread:{}, files:[], ai:{}, ai_errors:[], lab_gaps:[],
+                deleted:0, kept_ai_failed:[], kept_unread:[], parse_errors:0};
+  acc.files_total += +s.files_total || 0;
+  acc.parse_errors += +s.parse_errors || 0;
+  acc.deleted += +s.deleted || 0;
+  for (const [reason, files] of Object.entries(s.unread || {}))
+    (acc.unread[reason] = acc.unread[reason] || []).push(...(files || []));
+  acc.files.push(...(s.files || []));
+  for (const [sec, d] of Object.entries(s.ai || {})){
+    const a = acc.ai[sec] = acc.ai[sec] || {accepted:[], conflicts:[], rejected:[], doubts:[]};
+    for (const k of AI_LISTS) a[k].push(...((d || {})[k] || []));
+  }
+  acc.ai_errors.push(...(s.ai_errors || []));
+  acc.lab_gaps.push(...(s.lab_gaps || []));
+  acc.kept_ai_failed.push(...(s.kept_ai_failed || []));
+  acc.kept_unread.push(...(s.kept_unread || []));
+  for (const k of ["model", "candidates", "forms", "need_docs"]) if (s[k] !== undefined) acc[k] = s[k];
+  return acc;
+}
+function renderIntakeSections(S, text, boxId){
+  const box = $("repbox");
+  if (!S || !box){ if (box) box.innerHTML = ""; renderReport(text || "", boxId); return; }
+  const li = arr => arr.map(x => `<li>${x}</li>`).join("");
+  const src = x => (x.src ? ` <span class="hint">[${esc(x.src)}]</span>` : "") +
+                   (x.quote ? ` <span class="hint">«${esc(String(x.quote).slice(0,140))}»</span>` : "");
+  const unreadN = Object.values(S.unread || {}).reduce((n, l) => n + l.length, 0);
+  const total = S.files_total || ((S.files || []).length + unreadN);
+  const model = S.model || {};
+  let h = `<div class="rep-head"><b>Файлов: ${total}</b> · прочитано ${(S.files||[]).length} · `+
+    `${unreadN ? `<span class="rep-bad">не прочитано ${unreadN}</span>` : "не прочитано 0"}`+
+    (S.parse_errors ? ` · <span class="rep-warn">ошибок разбора ${S.parse_errors}</span>` : "")+
+    (model.used ? ` · Модель: <b>${esc(model.used)}</b>` : (S.ai ? "" : " · без ИИ"))+
+    (model.used && model.configured && model.used !== model.configured
+      ? ` <span class="rep-bad">— в настройках выбрана ${esc(model.configured)}: не ответила, сработала запасная</span>` : "")+
+    ((S.ai_errors||[]).length ? `<details><summary class="rep-warn">ошибки ИИ: ${S.ai_errors.length}</summary><ul>${li(S.ai_errors.map(esc))}</ul></details>` : "")+
+    `</div>`;
+  // карточки по разделам ИИ
+  const secs = AI_SECS.filter(k => S.ai && S.ai[k]).concat(Object.keys(S.ai||{}).filter(k => !AI_SECS.includes(k)));
+  if (secs.length){
+    h += '<div class="rep-grid">';
+    for (const sec of secs){
+      const d = S.ai[sec] || {}, a = d.accepted||[], c = d.conflicts||[], r = d.rejected||[], q = d.doubts||[];
+      h += `<div class="rep-card"><div class="t">${esc(sec)}</div>`+
+        `<div class="nums"><span class="rep-ok">принято ${a.length}</span> · <span class="${c.length?"rep-bad":""}">расхождения ${c.length}</span> · `+
+        `отклонено ${r.length} · <span class="${q.length?"rep-warn":""}">проверьте ${q.length}</span></div>`;
+      if (a.length) h += `<details><summary>принято (${a.length})</summary><ul>${li(a.map(x =>
+        `${esc(x.field)} = <b>${esc(x.value)}</b>${src(x)}`))}</ul></details>`;
+      if (c.length) h += `<details open><summary class="rep-bad">расхождения (${c.length})</summary><ul>${li(c.map(x =>
+        `${esc(x.field)}: <span class="rep-bad">в базе ${esc(x.current)}, в файле ${esc(x.proposed)}</span>${x.src ? ` <span class="hint">[${esc(x.src)}]</span>` : ""}`))}</ul></details>`;
+      if (r.length) h += `<details><summary>отклонено (${r.length})</summary><ul>${li(r.map(x =>
+        `${esc(x.field)}: ${esc(x.value)} — <span class="hint">${esc(x.reason)}</span>${x.src ? ` <span class="hint">[${esc(x.src)}]</span>` : ""}`))}</ul></details>`;
+      if (q.length) h += `<details><summary class="rep-warn">проверьте (${q.length})</summary><ul>${li(q.map(x =>
+        `${esc(x.field)}: ${esc(x.value)} — <span class="hint">${esc(x.reason)}</span>${x.src ? ` <span class="hint">[${esc(x.src)}]</span>` : ""}`))}</ul></details>`;
+      h += `</div>`;
+    }
+    h += '</div>';
+  }
+  h += '<div class="rep-grid">';
+  // не прочитано — по причинам
+  if (unreadN){
+    h += `<div class="rep-card"><div class="t rep-bad">Не прочитано: ${unreadN}</div>`;
+    for (const [reason, files] of Object.entries(S.unread).sort((x,y)=>y[1].length-x[1].length))
+      h += `<details><summary>${esc(reason)} (${files.length})</summary><ul>${li(files.map(esc))}</ul></details>`;
+    h += `</div>`;
+  }
+  // что взять в базу
+  const cand = S.candidates;
+  if (cand){
+    const qs = cand.questions || [];
+    h += `<div class="rep-card"><div class="t">Что взять в базу</div><div class="nums">значений ${cand.total||0} · записано бесспорных ${cand.applied||0} · `+
+      `<span class="${qs.length?"rep-warn":""}">требуют выбора ${qs.length}</span></div>`;
+    if (qs.length){
+      const bySec = {};
+      for (const g of qs) (bySec[g.section||"Прочее"] = bySec[g.section||"Прочее"] || []).push(g);
+      for (const [sec, list] of Object.entries(bySec))
+        h += `<details><summary>${esc(sec)} (${list.length})</summary><ul>${li(list.map(g =>
+          `${esc(g.label||g.key)}: ${(g.values||[]).map(v => `<b>${esc(v.value)}</b> <span class="hint">(${(v.docs||[]).map(esc).join(", ")})</span>`).join(" / ")}`))}</ul></details>`;
+      h += `<div class="hint">решения — в блоке «Найденные данные» ниже на этой вкладке</div>`;
+    }
+    h += `</div>`;
+  }
+  // полнота по формам
+  if ((S.forms||[]).length){
+    const bad = S.forms.filter(f => !f.ok);
+    h += `<div class="rep-card"><div class="t">Полнота по формам</div><div class="nums">готовы ${S.forms.length - bad.length} из ${S.forms.length}</div><ul>`+
+      li(S.forms.map(f => f.ok ? `<span class="rep-ok">✓</span> ${esc(f.form)}`
+        : `○ ${esc(f.form)} — <span class="hint">не хватает: ${(f.missing||[]).map(esc).join(", ")}</span>`))+`</ul></div>`;
+  }
+  if ((S.need_docs||[]).length)
+    h += `<div class="rep-card"><div class="t">Какие документы ещё нужны</div><ul>${li(S.need_docs.map(esc))}</ul></div>`;
+  if ((S.lab_gaps||[]).length)
+    h += `<div class="rep-card"><div class="t rep-warn">Протоколы по классу опасности</div><ul>${li(S.lab_gaps.map(esc))}</ul></div>`;
+  if ((S.files||[]).length)
+    h += `<div class="rep-card"><div class="t">Распознанные документы: ${S.files.length}</div><details><summary>список</summary><ul>${li(S.files.map(f =>
+      `${esc(f.file)} — <span class="hint">${esc(f.doc_type||"")}${f.data ? " · " + esc(f.data) : ""}${(f.forms||[]).length ? " · для: " + esc(f.forms.join(", ")) : ""}</span>`))}</ul></details></div>`;
+  const kept = [...(S.kept_ai_failed||[]), ...(S.kept_unread||[])];
+  if (S.deleted || kept.length)
+    h += `<div class="rep-card"><div class="t">Исходники</div><div class="nums">разобрано и удалено из приёма: ${S.deleted||0}`+
+      (kept.length ? ` · оставлено в приёме: ${kept.length}` : "")+`</div>`+
+      (kept.length ? `<details><summary>оставлены (ИИ не ответил / не прочитались)</summary><ul>${li(kept.map(esc))}</ul></details>` : "")+`</div>`;
+  h += '</div>';
+  box.innerHTML = h;
+  // текст отчёта целиком — внизу, свёрнут
+  if (text){
+    const det = document.createElement("details");
+    det.innerHTML = '<summary class="hint" style="cursor:pointer">Текст отчёта целиком</summary>';
+    box.appendChild(det);
+    const pre = document.createElement("pre"); pre.className = "out"; pre.id = "rep-full";
+    det.appendChild(pre);
+    renderReport(text, "rep-full");
+    $(boxId || "out-intake").style.display = "none";
+  }
+}
+// шапка ИИ: перечитать настройку (без перерисовки карточек форм) и показать,
+// чем реально шёл последний анализ, если это не та модель, что настроена
+async function refreshAiBox(model){
+  try{
+    const m = await get("meta", {});
+    if (META) META.ai = m.ai;
+    const conf = m.ai && m.ai.provider ? `${m.ai.provider}/${m.ai.model}` : "не настроен";
+    const used = (model && model.used) || "";
+    $("aibox").textContent = (used && conf !== used && !conf.endsWith("/" + used))
+      ? `ИИ: настроено ${conf} · последний анализ: ${used}`
+      : (m.ai && m.ai.provider ? `ИИ: ${conf}` : "ИИ: не настроен (Сервис → Найти ИИ)");
+  }catch(_){}
 }
 async function runIntake(cfg){
   // общий конвейер приёма: cfg = {files, scope, useAi, list, out, btn, spin}
@@ -951,6 +1228,8 @@ async function runIntake(cfg){
   spin(cfg.spin, 1);
   const stored = [];
   let failedBatches = 0, failedFiles = 0, lastUpErr = "";
+  // метка загрузки — общая для всех партий этого приёма (ГГГГММДДЧЧММСС)
+  const batch = new Date().toISOString().replace(/[-:T]/g,"").slice(0,14);
   try{
     const batches = makeBatches(fs);
     for (let i = 0; i < batches.length && !INTAKE_STOP; i++){
@@ -963,7 +1242,7 @@ async function runIntake(cfg){
       let ok = false;
       for (let attempt = 1; attempt <= 3 && !ok; attempt++){
         try{
-          const names = await uploadBatch(batches[i]);
+          const names = await uploadBatch(batches[i], batch);
           stored.push(...names); ok = true;
         }catch(e){
           if (attempt === 3){
@@ -981,7 +1260,7 @@ async function runIntake(cfg){
     // Анализ — чанками с прогрессом. Контекст накапливается на сервере,
     // поэтому последний отчёт содержит итоговую полноту по всем файлам.
     const CH = 40;   // извлечение и ИИ идут параллельно на сервере
-    let rep = "", analyzed = 0, analyzeFail = 0;
+    let rep = "", analyzed = 0, analyzeFail = 0, lastAnErr = "", sections = null;
     for (let k = 0; k < stored.length && !INTAKE_STOP; k += CH){
       await waitResume(cfg.list);
       if (INTAKE_STOP) break;
@@ -993,20 +1272,28 @@ async function runIntake(cfg){
         const j = await post("intake_run", {org:ORG, site:SITE, names:chunk,
           ai:cfg.useAi, scope: cfg.scope}, 0);
         rep = j.report; analyzed += chunk.length;
-      }catch(e){ analyzeFail += chunk.length; }
+        sections = mergeSections(sections, j.sections);
+      }catch(e){ analyzeFail += chunk.length; lastAnErr = errText(e); }
     }
     if (INTAKE_STOP){ $(cfg.list).textContent =
       `Остановлено. Загружено ${stored.length}, проанализировано ${analyzed}.`; return; }
     if (failedFiles) rep = `⚠ Не загрузилось ${failedFiles} файл(ов) из ` +
       `${failedBatches} партий — повторите приём этих файлов (уже принятые ` +
       `повторно не задвоятся).\n  Причина: ${lastUpErr || "неизвестна"}\n\n` + rep;
-    if (analyzeFail) rep = `⚠ Анализ не завершён для ${analyzeFail} файл(ов).\n` + rep;
+    if (analyzeFail) rep = `⚠ Анализ не завершён для ${analyzeFail} файл(ов)` +
+      (lastAnErr ? ` — ${lastAnErr}` : "") + `.\n` + rep;
     if (SKIPPED.length) rep += "\n── Пропущено при загрузке ──\n" + skippedSummary();
-    renderReport(rep, cfg.out);
+    // главная вкладка — отчёт по разделам (repbox); модули — прежний текст
+    if (cfg.out === "out-intake") renderIntakeSections(sections, rep, cfg.out);
+    else renderReport(rep, cfg.out);
+    if (analyzeFail) notify(`Анализ не завершён для ${analyzeFail} файл(ов): ${lastAnErr || "сбой"}`, "err");
     $(cfg.list).textContent = `✓ Принято ${stored.length} файл(ов).`;
     loadCtx().catch(()=>{});
     loadSources().catch(()=>{});          // таблица «что откуда взято»
     loadCandidates().catch(()=>{});       // что взять в базу (кросс-сверка)
+    ISSUES = null; loadIssues().catch(()=>{});   // единая проверка данных
+    // шапка ИИ должна показывать, что реально настроено и чем шёл анализ
+    loadAiPanel().then(() => refreshAiBox(sections && sections.model)).catch(()=>{});
     return stored.length;
   }catch(e){
     show(cfg.out, "Ошибка: " + errText(e) +
@@ -1031,10 +1318,12 @@ async function doIntake(){
     list:"filelist", out:"out-intake", btn:"btn-intake", spin:"sp-intake"});
   if (n){
     $("filelist").innerHTML = `✓ Принято ${n} файл(ов). ` +
-      `Ниже — что из какого файла взято. Дальше: <a class="link" onclick="showTab('obj')">` +
-      `«ОБЪЕКТ» — проверка данных и что взять в базу</a>, затем <a class="link" ` +
+      `Ниже — отчёт приёма; под ним — что из какого файла взято, что взять в базу ` +
+      `и «Проверка данных». Дальше: <a class="link" onclick="showTab('obj')">` +
+      `«ОБЪЕКТ» — чистовые данные</a>, затем <a class="link" ` +
       `onclick="showTab('report')">«Отчётность»</a>.`;
-    $("files").value = ""; $("folder").value = "";
+    $("files").value = ""; $("folder").value = ""; DROPPED = [];
+    if ($("dropzone")) $("dropzone").textContent = "⤓ Перетащите сюда файлы или папки целиком (можно несколько)";
   }
 }
 async function doModIntake(mod){
@@ -1084,10 +1373,11 @@ async function doIntakeUrl(){
       $("filelist").textContent = `Скачано: ${j.file}. Анализирую…`;
       const r = await post("intake_run", {org:ORG, site:SITE, names:j.stored,
         ai:$("useai").checked, scope:$("intake-scope").value}, 0);
-      renderReport(r.report, "out-intake");
+      renderIntakeSections(mergeSections(null, r.sections), r.report, "out-intake");
       $("filelist").textContent = `✓ Принято по ссылке: ${j.file}`;
       $("intake-url").value = "";
       loadCtx().catch(()=>{}); loadSources().catch(()=>{});
+      loadCandidates().catch(()=>{}); ISSUES = null; loadIssues().catch(()=>{});
     }
   }catch(e){ show("out-intake", "Ошибка: " + errText(e)); }
   spin("sp-url", 0);
@@ -1097,7 +1387,9 @@ async function doIntakeUrl(){
 // непонятен: не видно, взято ли что-то из файла и КУДА. Теперь по файлу —
 // статус, бейджи разделов с числом значений, раскрытие строки со списком
 // «раздел · поле · значение · лист» и ссылкой на снимок листа.
-let IMAP = null, IMAP_FILTER = "all";
+// IMAP_FILTER: "last" — последняя загрузка (по умолчанию, если сервер отдал
+// last_batch), "all", и прежние по статусу
+let IMAP = null, IMAP_FILTER = "";
 const IM_STATUS = {
   ok:      ["✓", "взято",            "st-ok"],
   partial: ["◐", "частично",         "st-partial"],
@@ -1127,14 +1419,27 @@ async function loadSources(){
   }
   renderIntakeMap();
 }
+// метка партии ГГГГММДДЧЧММСС → «04.09.2026 14:05»
+function batchLabel(b){
+  const m = String(b||"").match(/^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})/);
+  return m ? `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}` : String(b||"");
+}
 function renderIntakeMap(){
   const box = $("srcbox");
   if (!box) return;
   const j = IMAP || {};
   const docs = j.docs || [], t = j.totals || {};
-  if (!docs.length){ box.innerHTML = ""; return; }
+  const excluded = j.excluded || [];
+  if (!docs.length && !excluded.length){
+    box.innerHTML = '<div class="hint">Документов в приёме пока нет — загрузите их выше.</div>'; return;
+  }
+  const lastB = j.last_batch || "";
+  if (!IMAP_FILTER) IMAP_FILTER = lastB ? "last" : "all";
+  if (IMAP_FILTER === "last" && !lastB) IMAP_FILTER = "all";
+  const lastN = docs.filter(d => d.batch && d.batch === lastB).length;
   const shown = docs.filter(d =>
     IMAP_FILTER === "all" ? true :
+    IMAP_FILTER === "last" ? d.batch === lastB :
     IMAP_FILTER === "unread" ? (d.status === "unread" || d.status === "partial") :
     IMAP_FILTER === "doubt" ? (d.doubts||[]).length > 0 :
     IMAP_FILTER === "nodata" ? d.status === "nodata" : true);
@@ -1142,7 +1447,9 @@ function renderIntakeMap(){
     `<td class="hint">${esc(x.section||"")}</td><td>${esc(x.label||"")}</td>`+
     `<td><b>${esc(String(x.value ?? "")).slice(0, 120)}</b>`+
     (doubt && x.reason ? `<div class="hint">${esc(x.reason)}</div>` : "")+`</td>`+
-    `<td>${pageLink(x.image, x.page)}</td></tr>`;
+    `<td>${pageLink(x.image, x.page)}</td><td></td></tr>`;
+  // «когда»: дата приёма из реестра (received) либо метка партии
+  const when = d => d.received ? esc(String(d.received).slice(0, 16)) : (d.batch ? batchLabel(d.batch) : "");
   let rows = "";
   shown.forEach((d, i) => {
     const [mark, word, cls] = IM_STATUS[d.status] || IM_STATUS.nodata;
@@ -1154,35 +1461,90 @@ function renderIntakeMap(){
     // (tbody внутри tbody браузер не допускает)
     rows += `<tbody><tr class="imrow" onclick="toggleImapRow(${i})">`+
       `<td class="${cls}" style="white-space:nowrap" title="${esc(word)}">${mark} ${word}</td>`+
-      `<td>${esc(d.file)}<div class="hint">${d.pages_total ? d.pages_total + " л. · " : ""}${esc(d.method||"")}</div></td>`+
+      `<td style="min-width:260px">${esc(d.file)}<div class="hint">${d.pages_total ? d.pages_total + " л. · " : ""}${esc(d.method||"")}</div></td>`+
+      `<td class="hint" style="white-space:nowrap" title="${esc(d.batch ? "партия " + batchLabel(d.batch) : "")}">${when(d)}</td>`+
       `<td>${badges}${nd ? `<span class="sbadge doubt">сомнения ${nd}</span>` : ""}`+
       (!(d.taken||[]).length && !nd ? '<span class="hint">—</span>' : "")+`</td>`+
-      `<td>`+
+      `<td style="min-width:220px">`+
       (canRetry ? `<button class="b sec sm" onclick="event.stopPropagation();retryIntake('${esc(d.file)}', this)">↻ Повторить анализ</button>` : "")+
       (d.reason ? `<div class="hint" style="font-size:12px">${esc(d.reason)}</div>` : "")+
-      `</td></tr></tbody>`;
+      `</td>`+
+      `<td style="white-space:nowrap"><button class="b sec sm" style="color:var(--err);border-color:var(--err)" `+
+      `title="убрать файл из приёма вместе с тем, что из него взято; документ больше не примется" `+
+      `onclick="event.stopPropagation();forgetIntake('${esc(d.file)}', this)">🗑 Удалить файл и его данные</button></td>`+
+      `</tr></tbody>`;
     const det = [...(d.taken||[]).map(x => item(x, false)), ...(d.doubts||[]).map(x => item(x, true))];
     rows += `<tbody id="imdet-${i}" style="display:none">`+
-      (det.length ? `<tr class="imdet"><td></td><th>раздел</th><th>поле</th><th>значение</th><th>лист</th></tr>` + det.join("")
-                  : `<tr class="imdet"><td></td><td colspan="4" class="hint">из этого файла в базу ничего не взято</td></tr>`)+
+      (det.length ? `<tr class="imdet"><td></td><th>раздел</th><th>поле</th><th>значение</th><th>лист</th><td></td></tr>` + det.join("")
+                  : `<tr class="imdet"><td></td><td colspan="5" class="hint">из этого файла в базу ничего не взято</td></tr>`)+
       `</tbody>`;
   });
   const fbtn = (v, label) => `<button class="b ${IMAP_FILTER===v?"":"sec"} sm" onclick="setImapFilter('${v}')">${label}</button>`;
+  // исключённые документы (после «удалить файл»): повторно не примутся, пока не вернуть
+  let exh = "";
+  if (excluded.length){
+    exh = `<details class="dsec"><summary style="cursor:pointer;color:var(--mut)">`+
+      `Исключённые документы (повторно не загрузятся) — ${excluded.length}</summary>`+
+      `<div class="hint">Файлы, удалённые кнопкой «Удалить файл и его данные». При новой загрузке они `+
+      `пропускаются. «Вернуть» снимает исключение — документ можно будет загрузить заново.</div>`+
+      `<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>Файл</th><th>Когда исключён</th><th></th></tr></thead><tbody>`+
+      excluded.map(x => `<tr><td>${esc(x.file||x.sha||"")}</td><td class="hint">${esc(x.when||"")}</td>`+
+        `<td><button class="b sec sm" onclick="unexcludeIntake('${esc(x.sha)}', this)">Вернуть</button></td></tr>`).join("")+
+      `</tbody></table></div></details>`;
+  }
   box.innerHTML = `<details class="dsec" open><summary style="cursor:pointer;color:var(--acc)">`+
     `Что откуда взято — файлов ${docs.length}: взято из ${t.ok||0}`+
     `${t.partial ? `, частично ${t.partial}` : ""}, не прочитано ${t.unread||0}, `+
     `без данных ${t.nodata||0} · значений в базе ${t.taken||0}, сомнений ${t.doubts||0}</summary>`+
-    `<div class="row" style="margin:6px 0">${fbtn("all","все")} ${fbtn("unread","только не прочитанные")} `+
+    `<div class="row" style="margin:6px 0">`+
+    (lastB ? fbtn("last", `Последняя загрузка (${lastN}) · ${batchLabel(lastB)}`) + " " : "")+
+    `${fbtn("all","Все файлы")} ${fbtn("unread","только не прочитанные")} `+
     `${fbtn("doubt","только с сомнениями")} ${fbtn("nodata","без данных")}`+
-    `<span class="hint">клик по строке — список значений и лист-источник (📄 — снимок листа)</span></div>`+
+    `<span class="hint">показано ${shown.length} из ${docs.length} · клик по строке — список значений и лист-источник (📄 — снимок листа)</span></div>`+
     `<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>Статус</th>`+
-    `<th>Файл</th><th>Что взято и куда</th><th>Причина / действие</th></tr></thead>`+
+    `<th>Файл</th><th>Когда</th><th>Что взято и куда</th><th>Причина / действие</th><th></th></tr></thead>`+
     rows + `</table></div>`+
     (!shown.length ? '<div class="hint">по выбранному фильтру файлов нет</div>' : "")+
     `<div class="hint">Разобранные исходники удалены, сохранены снимки листов, на которых `+
     `нашлись данные. Не прочитанные файлы остались в приёме — «Повторить анализ» `+
-    `прогонит их заново (с ИИ). Сомнительные значения ждут решения во вкладке `+
-    `«ОБЪЕКТ» → «Найденные данные».</div></details>`;
+    `прогонит их заново (с ИИ). Сомнительные значения ждут решения ниже — `+
+    `«Найденные данные» и «Проверка данных».</div>` + exh + `</details>`;
+}
+// удалить файл из приёма вместе с тем, что из него взято (intake_forget)
+async function forgetIntake(file, btn){
+  needSite();
+  if (!confirm(`Удалить «${file}»?\n\nБудут удалены файл, его кандидаты, акты/поля/протоколы, `+
+      `взятые только из него, и снимки листов; документ больше не примется `+
+      `(вернуть можно в блоке «Исключённые документы»).`)) return;
+  if (btn){ btn.disabled = true; btn.textContent = "удаляю…"; }
+  try{
+    const j = await post("intake_forget", {org:ORG, site:SITE, file}, 0);
+    if (j.error){ notify("Не удалено: " + j.error, "err"); if (btn){ btn.disabled = false; btn.textContent = "🗑 Удалить файл и его данные"; } return; }
+    notify(`Удалено: кандидатов ${j.candidates||0}, актов ${j.acts||0}, полей ${j.fields||0}, `+
+      `записей ${(j.extras||0) + (j.objects||0)}, снимков ${j.images||0}`+
+      (j.removed_file ? "" : " (самого файла в приёме уже не было)"));
+    await loadSources();
+    loadCandidates().catch(()=>{});
+    await loadCtx().catch(()=>{});
+    ISSUES = null; loadIssues().catch(()=>{});
+  }catch(e){
+    notify("Не удалено: " + errText(e), "err");
+    if (btn){ btn.disabled = false; btn.textContent = "🗑 Удалить файл и его данные"; }
+  }
+}
+// снять исключение (intake_unexclude) — документ снова можно загрузить
+async function unexcludeIntake(sha, btn){
+  needSite();
+  if (btn){ btn.disabled = true; btn.textContent = "…"; }
+  try{
+    const j = await post("intake_unexclude", {org:ORG, site:SITE, sha}, 0);
+    if (j.error){ notify("Не вернулось: " + j.error, "err"); }
+    else notify(j.ok === false ? "Документа в списке исключённых уже нет" : "Исключение снято — документ можно загрузить заново", j.ok === false ? "warn" : "ok");
+    await loadSources();
+  }catch(e){
+    notify("Не вернулось: " + errText(e), "err");
+    if (btn){ btn.disabled = false; btn.textContent = "Вернуть"; }
+  }
 }
 // повторный анализ одного файла из приёма (intake_run по имени)
 async function retryIntake(file, btn){
@@ -1190,10 +1552,10 @@ async function retryIntake(file, btn){
   if (btn){ btn.disabled = true; btn.textContent = "анализ…"; }
   try{
     const j = await post("intake_run", {org:ORG, site:SITE, names:[file], ai:true, scope:"all"}, 0);
-    if (j.report) renderReport(j.report, "out-intake");
+    if (j.report) renderIntakeSections(mergeSections(null, j.sections), j.report, "out-intake");
     await loadCtx().catch(()=>{});
     await loadSources();
-    loadCandidates().catch(()=>{});
+    loadCandidates().catch(()=>{}); ISSUES = null; loadIssues().catch(()=>{});
   }catch(e){
     alert("Повторный анализ не удался: " + errText(e));
     if (btn){ btn.disabled = false; btn.textContent = "↻ Повторить анализ"; }
@@ -1567,7 +1929,7 @@ function issueFixHtml(it, id){
     return `<div class="fixrow">` + (opts.length
       ? opts.slice(0,3).map(o => `<button class="b sec sm" title="${esc(o.label||"")}" `+
           `onclick="issueReplace('${esc(f.key||it.value||"")}','${esc(o.value)}','${esc(o.label||"")}',this)">Заменить на ${esc(o.label||o.value).slice(0,40)}</button>`).join("")
-      : `<span class="hint">подходящего кода в каталоге не нашлось — исправьте код во вкладке «ОТХОДЫ»</span> <a class="link" onclick="showTab('waste')">перейти</a>`)+
+      : `<span class="hint">подходящего кода в каталоге не нашлось — исправьте код в «ОБЪЕКТ → Отходы»</span> <a class="link" onclick="showTab('waste')">перейти</a>`)+
       `</div>`;
   if (f.type === "decide")
     return `<div class="fixrow">` + opts.map(o =>
@@ -1900,8 +2262,73 @@ function fkkoBlockHtml(){
     '<th>Наименование</th><th>Класс</th><th>Паспорт</th><th>Каталог ФККО</th><th></th></tr></thead>'+
     `<tbody>${rows}</tbody></table></div>`;
   h += `<div class="row" style="margin-top:6px"><button class="b sec sm" onclick="addRow('wastes')">+ отход</button>`+
-    `<span class="hint">${PASS_SRC_HINT}</span></div></div>`;
+    `<span class="hint">${PASS_SRC_HINT}</span></div>`;
+  // сверка по источникам — своя карточка внутри блока 1 (кэш XCHK, кнопка «Сверить»)
+  h += `<div id="wp-xcheck">${xcheckHtml()}</div></div>`;
   return h;
+}
+
+// ── сверка отходов по источникам: ООС/ПНООЛР ↔ паспорт ↔ протокол ↔ акты ──
+// По каждому ФККО — что говорит каждый документ (файлы, наименования, классы,
+// норматив ООС и факт по актам) и замечания сервера (waste_crosscheck).
+let XCHK = null, XCHK_ERR = "", XCHK_BUSY = false;
+const XCHK_COLS = [["oos","ООС"],["pnoolr","ПНООЛР"],["passport","паспорт"],["protocol","протокол"],["act","акты"]];
+const XCHK_OTHER = {journal:"журнал", inventory_waste:"инвентаризация", other:"прочее"};
+function xcheckHtml(){
+  let h = '<div class="dsec" style="margin-top:8px"><h4>Сверка по источникам: ООС / ПНООЛР / паспорт / протокол / справки-акты</h4>'+
+    '<div class="row"><button class="b sec sm" onclick="loadWasteCrosscheck()"'+(XCHK_BUSY ? " disabled" : "")+'>'+
+    (XCHK_BUSY ? "сверяю…" : (XCHK ? "↻ Сверить заново" : "Сверить"))+'</button>'+
+    '<span class="hint">по каждому коду ФККО — в каких документах он есть, норматив образования по ООС/ПНООЛР и факт по актам, расхождения наименований и классов</span></div>';
+  if (XCHK_ERR) h += `<div class="issue error">сверка не удалась: ${esc(XCHK_ERR)}</div>`;
+  if (!XCHK) return h + '</div>';
+  const rows = XCHK.rows || [], t = XCHK.totals || {};
+  if (XCHK.no_oos)
+    h += '<div class="issue warning" style="background:#fff8e1;padding:6px 8px;border-radius:6px">⚠ ООС/ПНООЛР не загружен — '+
+      '<a class="link" onclick="showTab(\'intake\')">загрузите в ЗАГРУЗКЕ</a> с категорией «отходы: ООС/ПНООЛР/паспорта/протоколы/акты»</div>';
+  h += `<div class="hint" style="margin:4px 0">кодов ФККО: <b>${t.fkko ?? rows.length}</b> · с замечаниями: `+
+    `<b class="${t.with_issues ? "rep-bad" : "rep-ok"}">${t.with_issues||0}</b> · только в ООС/ПНООЛР (без актов): ${t.oos_only||0} · только в актах (нет в проекте): ${t.acts_only||0}</div>`;
+  if (!rows.length) return h + '<div class="hint">отходов для сверки нет — нет ни позиций, ни актов, ни паспортов</div></div>';
+  const cell = s => {
+    if (!s) return '<td style="text-align:center" class="hint">—</td>';
+    const files = (s.files||[]), names = (s.names||[]), cls = (s.classes||[]);
+    const title = [files.length ? "файлы: " + files.join("; ") : "", names.length ? "наименования: " + names.join(" | ") : "",
+                   cls.length ? "классы: " + cls.join(", ") : ""].filter(Boolean).join("\n");
+    return `<td style="text-align:center" title="${esc(title)}"><span class="st-ok">✓</span>`+
+      (files.length > 1 ? `<span class="hint"> ×${files.length}</span>` : "")+`</td>`;
+  };
+  const other = r => Object.entries(r.sources||{}).filter(([k]) => XCHK_OTHER[k]).map(([k, s]) =>
+    `<span class="sbadge" title="${esc((s.files||[]).join("; "))}">${XCHK_OTHER[k]}</span>`).join("");
+  const num = v => (v === null || v === undefined || v === "") ? '<span class="hint">—</span>' : esc(fmt3(_num(v)));
+  h += '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>ФККО</th><th>Наименование</th><th>Класс</th>'+
+    XCHK_COLS.map(c => `<th style="text-align:center">${c[1]}</th>`).join("")+
+    '<th title="норматив образования по ООС/ПНООЛР">Норматив ООС, т/год</th><th title="сумма масс по справкам-актам">Факт по актам, т</th><th>Замечания</th></tr></thead><tbody>';
+  for (const r of rows){
+    const src = r.sources || {};
+    const normT = XCHK_COLS.slice(0,2).map(c => src[c[0]] && src[c[0]].norm_t).find(v => v !== null && v !== undefined);
+    const factT = src.act ? src.act.fact_t : undefined;
+    const iss = r.issues || [];
+    h += `<tr class="${iss.length ? "doubtrow" : ""}"><td style="white-space:nowrap">${esc(r.fkko_fmt||fmtFkkoJS(r.fkko))}</td>`+
+      `<td style="min-width:240px">${esc(r.name||"")}${other(r) ? `<div>${other(r)}</div>` : ""}</td><td style="text-align:center">${esc(r.hazard_class||"")}</td>`+
+      XCHK_COLS.map(c => cell(src[c[0]])).join("")+
+      `<td style="text-align:right">${num(normT)}</td><td style="text-align:right">${num(factT)}</td>`+
+      `<td>${iss.length ? iss.map(x => `<div class="issue error">${esc(x)}</div>`).join("") : '<span class="st-ok">✓</span>'}</td></tr>`;
+  }
+  h += '</tbody></table></div><div class="hint">✓ — код есть в документах этого вида (наведите — список файлов). '+
+    'Замечания красным: расхождения наименований/классов между документами, отход без паспорта/протокола, есть в ООС, но нет в актах, и наоборот.</div>';
+  return h + '</div>';
+}
+function redrawXcheck(){ if ($("wp-xcheck")) $("wp-xcheck").innerHTML = xcheckHtml(); }
+async function loadWasteCrosscheck(){
+  needSite();
+  if (XCHK_BUSY) return;
+  XCHK_BUSY = true; XCHK_ERR = ""; redrawXcheck();
+  try{
+    const j = await post("waste_crosscheck", {org:ORG, site:SITE}, 0);
+    if (j.error){ XCHK_ERR = j.error; }
+    else { XCHK = j; }
+  }catch(e){ XCHK_ERR = errText(e); }
+  XCHK_BUSY = false;
+  redrawXcheck();
 }
 
 // ── найденные данные: что взять в базу (кросс-сверка между документами) ──
@@ -2053,10 +2480,12 @@ async function loadCtx(){
   // кэш серверных сверок (ФККО/паспорта/периоды/проверка данных) устарел
   PASS_ROWS = null; PASS_ERR = ""; FKKO_ROWS = []; FKKO_META = null; FKKO_ERR = "";
   PER_DATA = null; PER_ERR = ""; ISSUES = null; ISSUES_ERR = ""; GAPS = null;
+  XCHK = null; XCHK_ERR = "";
   renderDataForm();
   const onTab = t => $("tab-"+t) && $("tab-"+t).classList.contains("on");
-  if (onTab("waste")) refreshWasteChecks();
-  else if (onTab("obj") || onTab("air") || onTab("water")) loadIssues().catch(()=>{});
+  // ОТХОДЫ/ВЫБРОСЫ/СБРОСЫ — подвкладки ОБЪЕКТА: сверки только для активной
+  if (onTab("obj")) objSubChecks(objSub());
+  else if (onTab("intake")) loadIssues().catch(()=>{});
   DIRTY = false;              // только что прочитали с диска — правок нет
   updateWorkNow();
 }
@@ -2071,13 +2500,18 @@ function renderDataForm(){
   // параметр объекта/периода (замечание эколога), плюс признаки организации
   renderOrgTab(); renderObjTab(); renderWasteTab(); renderAirTab(); renderWaterTab();
   renderCommonFields(); renderMovementReport();
+  // отчётный год живёт в Отчётности (#yearform, статичное поле data-path=period.year):
+  // здесь только подставить значение и подсветить, если пусто
   const noYear = !per.year;
-  let h = '<div class="dsec"'+(noYear?' style="border-color:var(--err)"':'')+
-    '><h4>Отчётный год'+(noYear?' — не заполнен, без него не выпустить ни одну форму':'')+
-    '</h4><div class="fgrid">'+
-    `<div class="fld"><label>Год (обязателен для всех форм)</label>${tinput(per.year||'','period.year','напр. 2025',true)}</div>`+
-    `</div>`+(noYear?'<div class="issue error">✖ Заполните год и нажмите «Сохранить» — '+
-      'иначе формы выпускаются черновиками.</div>':'')+`</div>`;
+  if ($("year-inp")) $("year-inp").value = per.year || "";
+  if ($("year-hint")){
+    $("year-hint").textContent = noYear
+      ? "✖ не заполнен — без года ни одна форма не выпускается (черновики); впишите и нажмите «Сохранить»"
+      : "обязателен для всех форм";
+    $("year-hint").style.color = noYear ? "var(--err)" : "";
+  }
+  if ($("yearform")) $("yearform").style.borderColor = noYear ? "var(--err)" : "";
+  let h = "";
   // профиль: то, что нельзя вывести из данных, но от чего зависят обязанности
   const prof = (CTX.extra||{}).profile || {};
   h += '<div class="dsec"><h4>Признаки организации (влияют на календарь и состав отчётности)</h4>'+
@@ -2095,8 +2529,8 @@ function renderDataForm(){
     'производитель / импортёр товаров и упаковки (РОП) <span class="hint">— декларация о товарах, '+
     'отчёт о нормативах утилизации, экологический сбор (15 апреля)</span></label>'+
     '</div>';
-  h += '<div class="hint">Реквизиты — вкладка «ОРГАНИЗАЦИЯ», '+
-    'перечень отходов — «ОТХОДЫ», источники и вещества — «ВЫБРОСЫ» и «СБРОСЫ».</div>';
+  h += '<div class="hint">Реквизиты — вкладка «ОРГАНИЗАЦИЯ»; перечень отходов, источники и '+
+    'вещества — подвкладки «Отходы», «Выбросы», «Сбросы» выше; отчётный год — во вкладке «Отчётность».</div>';
   $("dataform").innerHTML = h;
 }
 
@@ -2750,7 +3184,8 @@ function collectDataForm(){
   // move-rw (движение в Отчётности, редактируемое по кнопке) — первым: у него
   // с таблицей ФККО общие поля wastes[i].fkko_code/name/hazard_class, а при
   // совпадении путей побеждает контейнер, собранный позже — вкладка ОТХОДЫ
-  const boxes = ["move-rw", "dataform", "orgform", "objform",
+  // yearform — отчётный год во вкладке Отчётность (без него год не сохранится)
+  const boxes = ["move-rw", "yearform", "dataform", "orgform", "objform",
                  "wasteform", "airform", "waterform"].map($).filter(Boolean);
   boxes.forEach(box => box.querySelectorAll("[data-path]").forEach(el=>{
     const p = el.dataset.path;
@@ -2790,16 +3225,27 @@ async function saveCtx(){
     if (CTX.period) CTX.period.quarter = null;   // формы годовые; квартал убран из UI
     const r = await post("context_save",
       {org:ORG, site:SITE, context:CTX, version:CTX_VERSION});
-    if (r && r.conflict){
-      $("data-msg").textContent = "⚠ " + r.error;
-      alert(r.error);
+    // любая ошибка сервера (конфликт версий, идёт приём, битые данные) —
+    // красный тост + alert, «Сохранено» НЕ пишем, правки остаются на экране
+    if (!r || r.error){
+      const msg = (r && r.error) || "сервер не подтвердил сохранение";
+      $("data-msg").textContent = "⚠ " + msg;
+      notify("Не сохранено: " + msg, "err", 8000);
+      alert(msg);
       spin("sp-data",0);
-      return;                       // свои правки в форме сохраняем на экране
+      return;
     }
     // перечитать: сервер пересчитал движение из справок-актов
     await loadCtx();
     $("data-msg").textContent = "Сохранено ✓ (движение пересчитано из актов)";
-  }catch(e){ $("data-msg").textContent = "Ошибка: " + e.message; }
+    notify("Сохранено ✓ (движение отходов пересчитано из актов)");
+  }catch(e){
+    // post() бросает при {error} в ответе — конфликт версий приходит сюда же
+    const msg = errText(e);
+    $("data-msg").textContent = "⚠ Не сохранено: " + msg;
+    notify("Не сохранено: " + msg, "err", 8000);
+    alert("Не сохранено: " + msg);
+  }
   spin("sp-data",0);
 }
 function applyRawJson(){
@@ -2882,7 +3328,54 @@ function renderForms(){
                        : ("forms-" + (FORM_MEDIUM[f.code] || "common"));
     ($(target) || $("forms-common")).appendChild(card);
   }
+  // Разработка → Отходы: справки о составе отходов для паспортов (devdoc
+  // waste-composition — не форма реестра, поэтому карточка своя)
+  if ($("forms-dev-waste") && !$("wc-card")){
+    const card = document.createElement("div"); card.className = "form-card"; card.id = "wc-card";
+    card.innerHTML = `<div class="t">Состав отходов для паспортов — справки-протоколы по данным ООС/ПНООЛР</div>
+      <div class="c">waste-composition · по каждому отходу с компонентным составом — справка (.docx) в папке «состав_отходов»</div>
+      <div class="row"><button class="b" onclick="doWasteComposition(this)" title="состав из ООС/ПНООЛР/протоколов КХА → справка о составе для паспорта отхода">Сформировать (.docx)</button>
+        <span class="spin" id="sp-wc">формирую…</span></div>
+      <div id="wc-out"></div>`;
+    $("forms-dev-waste").appendChild(card);
+  }
   seedModUploads();
+}
+// справки о составе отходов: {path, files:[], gaps:[]} либо {error, gaps}
+async function doWasteComposition(btn){
+  needSite();
+  const box = $("wc-out");
+  if (btn) btn.disabled = true;
+  spin("sp-wc", 1); spin("sp-dev", 1);
+  try{
+    const j = await post("devdoc", {org:ORG, site:SITE, kind:"waste-composition"}, 0);
+    renderWasteComposition(j);
+  }catch(e){
+    // сервер отдал {error, gaps} — post() бросил, но остальной ответ есть в e.data
+    renderWasteComposition({error: errText(e), gaps: (e.data && e.data.gaps) || []});
+  }
+  if (btn) btn.disabled = false;
+  spin("sp-wc", 0); spin("sp-dev", 0);
+}
+function renderWasteComposition(j){
+  const box = $("wc-out");
+  if (!box) return;
+  let h = "";
+  if (j.error) h += `<div class="issue error">✖ ${esc(j.error)}</div>`;
+  if (j.path){
+    h += `<div class="issue" style="color:var(--acc)">✓ Папка: ${esc(j.path)} `+
+      `<button class="b sec sm" onclick="post('open',{path:${JSON.stringify(String(j.path)).replace(/"/g,"&quot;")}}).catch(e=>alert(errText(e)))">Открыть папку</button></div>`;
+    if ((j.files||[]).length)
+      h += `<div class="hint">файлов: ${j.files.length}</div><ul style="margin:2px 0 4px 18px;padding:0;font-size:13px">`+
+        j.files.map(f => `<li>${esc(f)}</li>`).join("")+`</ul>`;
+  }
+  if ((j.gaps||[]).length)
+    h += `<details class="dsec" open><summary style="cursor:pointer;color:var(--warn)">Чего не хватает (${j.gaps.length})</summary><ul style="margin:2px 0 4px 18px;padding:0;font-size:13px">`+
+      j.gaps.map(g => `<li class="issue warning">${esc(g)}</li>`).join("")+`</ul></details>`;
+  box.innerHTML = h;
+  show("out-dev", (j.error ? "Ошибка: " + j.error + "\n" : "") + (j.path ? "Документы: " + j.path + "\n" +
+    (j.files||[]).map(f => "  • " + f).join("\n") : "") +
+    ((j.gaps||[]).length ? "\n\nЧего не хватает:\n" + j.gaps.map(g => "  • " + g).join("\n") : ""));
 }
 
 // ── модули Отчётности/Разработки: загрузка своих документов + «чего не хватает» ──
@@ -2890,12 +3383,14 @@ const MODS = {rep:["rc","rw","ra","rv"], dev:["dw","da","dv","dc"]};
 const MOD_SCOPES = {   // категории загрузки в каждом модуле
   rc:[["org","реквизиты: ЕГРЮЛ / карточка / объекты НВОС"],
       ["other","прочее (акты/протоколы в базу целиком)"], ["all","авто (все данные)"]],
-  rw:[["acts","справки-акты на отходы (движение по датам)"],
+  rw:[["waste","отходы: ООС/ПНООЛР/паспорта/протоколы/акты"],
+      ["acts","справки-акты на отходы (движение по датам)"],
       ["passports","паспорта отходов (ФККО/класс/состав)"], ["all","авто (все данные)"]],
   ra:[["air","воздух: ООС / НДВ / инвентаризация (вещества, источники)"],
       ["all","авто (все данные)"]],
   rv:[["water","вода: НДС / водхоз (вещества)"], ["all","авто (все данные)"]],
-  dw:[["passports","паспорта отходов (ФККО/класс/состав)"],
+  dw:[["waste","отходы: ООС/ПНООЛР/паспорта/протоколы/акты"],
+      ["passports","паспорта отходов (ФККО/класс/состав)"],
       ["acts","справки-акты на отходы"]],
   da:[["air","воздух: ООС / НДВ / инвентаризация (вещества, источники)"]],
   dv:[["water","вода: НДС / водхоз (вещества)"]],
@@ -2904,7 +3399,8 @@ const MOD_SCOPES = {   // категории загрузки в каждом м
         ["all","авто (все данные)"]],
   tobj:[["org","карточка объекта НВОС / свидетельство о постановке"],
         ["all","авто (все данные)"]],
-  tw:[["acts","справки-акты на отходы (движение по датам)"],
+  tw:[["waste","отходы: ООС/ПНООЛР/паспорта/протоколы/акты"],
+      ["acts","справки-акты на отходы (движение по датам)"],
       ["passports","паспорта отходов (ФККО/класс/состав)"], ["all","авто (все данные)"]],
   ta:[["air","воздух: ООС / НДВ / инвентаризация (вещества, источники)"],
       ["all","авто (все данные)"]],
@@ -2987,11 +3483,17 @@ function gapFixHtml(m, id){
       (f.tab ? ` <a class="link" onclick="showTab('${esc(f.tab)}')">во вкладку</a>` : "")+`</div>`;
   }
   if (f.type === "tab")
-    return `<a class="link" onclick="showTab('${esc(f.tab||"obj")}')">заполнить во вкладке «${esc(TAB_NAMES[f.tab]||f.tab||"")}»</a>`;
+    return `<a class="link" onclick="showTab('${esc(f.tab||"obj")}')">заполнить во вкладке «${esc(tabLabel(f.tab))}»</a>`;
   return "";
 }
-const TAB_NAMES = {intake:"ЗАГРУЗКА", org:"ОРГАНИЗАЦИЯ", obj:"ОБЪЕКТ", waste:"ОТХОДЫ",
-                   air:"ВЫБРОСЫ", water:"СБРОСЫ", report:"Отчётность", dev:"Разработка"};
+// верхние вкладки; ОТХОДЫ/ВЫБРОСЫ/СБРОСЫ/ДАННЫЕ — теперь подвкладки ОБЪЕКТА
+const TAB_NAMES = {intake:"ЗАГРУЗКА", org:"ОРГАНИЗАЦИЯ", obj:"ОБЪЕКТ", report:"Отчётность", dev:"Разработка"};
+const OBJ_SUB_NAMES = {waste:"Отходы", air:"Выбросы", water:"Сбросы"};
+function tabLabel(t){
+  if (t === "data") t = "obj";
+  if (OBJ_SUB_NAMES[t]) return `ОБЪЕКТ → ${OBJ_SUB_NAMES[t]}`;
+  return TAB_NAMES[t] || t || "";
+}
 function renderGaps(mod){
   const box = $("miss-"+mod);
   if (!box) return;

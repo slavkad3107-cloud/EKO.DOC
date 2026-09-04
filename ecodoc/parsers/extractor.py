@@ -131,7 +131,7 @@ def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
                      "page": page_of_value(doc, code)})
                 _note_page(ctx, doc, f"objects[{code}].code", code)
 
-    if scope not in ("all", "acts", "passports"):
+    if scope not in ("all", "acts", "passports", "waste"):
         return
 
     # коды ФККО -> ПОДСКАЗКИ (extra.fkko_seen), а НЕ позиции движения.

@@ -43,6 +43,8 @@ SYSTEM = """Ты — ассистент инженера-эколога РФ. И
                     "mass_t":"", "volume_m3":"", "density":"т/м3", "hazard_class":1-5,
                     "operation":"утилизация|обезвреживание|размещение|хранение|обработка"}],
  "waste_passports": [{"fkko":"11 цифр", "name":"", "hazard_class":1-5,
+                      "origin":"происхождение/технологический процесс",
+                      "aggregate_state":"агрегатное состояние и физическая форма",
                       "components":[{"name":"компонент состава", "percent":""}]}],
  "emission_sources": [{"number":"№ источника", "name":"", "kind":"организованный|неорганизованный",
                        "pollutants":[{"code":"", "name":"", "g_s":"г/с", "t_year":"т/год"}]}],
@@ -78,7 +80,17 @@ SYSTEM = """Ты — ассистент инженера-эколога РФ. И
 нормативный ВЫБРОС/СБРОС в тоннах за год. В таблицах перечней веществ
 рядом стоят колонки «ПДК», «ОБУВ», «класс опасности», «г/с» — их в массу
 не бери. Если в строке есть только ПДК и нет массы за год — пропусти
-вещество, оставив его без масс, но не подставляй ПДК."""
+вещество, оставив его без масс, но не подставляй ПДК.
+
+ПРОЕКТНАЯ ДОКУМЕНТАЦИЯ. В разделе ООС/ПМООС, ПНООЛР, инвентаризации есть
+таблица характеристики отходов: код ФККО, наименование, класс опасности,
+агрегатное состояние, компонентный состав в % — каждую её строку клади в
+waste_passports с components (name, percent), origin и aggregate_state;
+норматив образования (т/год) — в wastes.generated. Реквизиты проектной
+организации, заказчика, экспертов, подписантов проекта в organization НЕ
+клади: organization — только для документа самой организации (устав,
+ЕГРЮЛ, карточка предприятия, свидетельство НВОС, декларация, договор с её
+стороны)."""
 
 
 @dataclass
@@ -119,6 +131,7 @@ class ExtractionReport:
     doubts: list = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     used_model: str = ""
+    configured: str = ""       # что выбрано в настройках (если ответила другая — скажем)
     # файлы, которые ИИ НЕ проанализировал (провайдер упал/не настроен) —
     # intake не удаляет их исходники, чтобы анализ можно было повторить
     failed_files: set = field(default_factory=set)
@@ -130,7 +143,11 @@ class ExtractionReport:
     def render(self) -> str:
         lines = ["── ИИ-анализ: что принято и откуда взято ──"]
         if self.used_model:
-            lines.append(f"Модель: {self.used_model}")
+            line = f"Модель: {self.used_model}"
+            if self.configured and self.configured != self.used_model:
+                line += (f" (в настройках выбрана {self.configured} — она не "
+                         f"ответила, сработала запасная)")
+            lines.append(line)
         for a in self.accepted:
             q = f'  ← «{a.quote[:90]}»' if a.quote else ""
             lines.append(f"  ✓ {a.field} = {a.value}   [{a.src}]{q}")
@@ -148,8 +165,9 @@ class ExtractionReport:
             else:
                 sample = ", ".join(srcs[:2]) + (", …" if len(srcs) > 2 else "")
                 where = f"в {len(srcs)} документах ({sample})"
-            lines.append(f"  ⚠ КОНФЛИКТ {fld}: в контексте «{cur}», "
-                         f"{where} — «{prop}» (не применено)")
+            lines.append(f"  ⚠ РАСХОЖДЕНИЕ {human_field(fld)}: в базе «{cur}», "
+                         f"{where} — «{prop}» (в базу не записано — решите, "
+                         f"какое верно)")
         # не пущенное в базу — показываем всегда: пользователь должен видеть,
         # что программа отбросила и почему (а не гадать, куда делись строки)
         if self.rejected:
@@ -186,6 +204,74 @@ class ExtractionReport:
             else:
                 lines.append(f"  ✖ {msg}")
         return "\n".join(lines)
+
+    def sections(self) -> dict:
+        """Тот же отчёт, но разложенный по разделам базы — Организация /
+        Объект / Отходы / Выбросы / Сбросы / Прочее (для GUI: эколог попросил
+        «разделить по отходам/воздух/сброс», а не сплошной текст)."""
+        out: dict = {}
+
+        def bucket(name):
+            return out.setdefault(name, {"accepted": [], "conflicts": [],
+                                         "rejected": [], "doubts": []})
+        for a in self.accepted:
+            bucket(section_of_field(a.field))["accepted"].append(
+                {"field": human_field(a.field), "value": str(a.value)[:200],
+                 "src": a.src, "quote": (a.quote or "")[:120]})
+        for c in self.conflicts:
+            bucket(section_of_field(c.field))["conflicts"].append(
+                {"field": human_field(c.field), "current": str(c.current)[:120],
+                 "proposed": str(c.proposed)[:120], "src": c.src})
+        for r in self.rejected:
+            bucket(section_of_field(r.field))["rejected"].append(
+                {"field": human_field(r.field), "value": str(r.value)[:160],
+                 "reason": r.reason, "src": r.src})
+        for d in self.doubts:
+            bucket(section_of_field(d.field))["doubts"].append(
+                {"field": human_field(d.field), "value": str(d.value)[:160],
+                 "reason": d.reason, "src": d.src})
+        return out
+
+
+_ATTR_HUMAN = {"mass_norm": "масса в пределах норматива, т/год",
+               "mass_limit": "масса в пределах лимита (ВСВ/ВСС), т/год",
+               "mass_over": "масса сверх лимита, т/год",
+               "generated": "образовано, т", "transferred": "передано, т",
+               "used": "утилизировано, т", "neutralized": "обезврежено, т",
+               "name": "наименование", "short_name": "краткое наименование",
+               "inn": "ИНН", "kpp": "КПП", "ogrn": "ОГРН", "okpo": "ОКПО",
+               "oktmo": "ОКТМО", "okved": "ОКВЭД", "address": "адрес",
+               "director_name": "руководитель", "phone": "телефон",
+               "email": "e-mail", "code": "код", "license": "лицензия",
+               "carrier_license": "лицензия перевозчика", "category": "категория"}
+
+
+def human_field(field: str) -> str:
+    """«вещество 0349.mass_norm» → «вещество 0349: масса в пределах норматива, т/год»."""
+    f = str(field or "")
+    if f.startswith("organization."):
+        return "организация: " + _ATTR_HUMAN.get(f[13:], f[13:])
+    if "." in f and not f.endswith(")"):
+        head, _, attr = f.rpartition(".")
+        if attr in _ATTR_HUMAN:
+            return f"{head}: {_ATTR_HUMAN[attr]}"
+    return f
+
+
+def section_of_field(field: str) -> str:
+    f = str(field or "").lower()
+    if f.startswith("organization") or f.startswith("организация"):
+        return "Организация"
+    if f.startswith("objects") or f.startswith("объект"):
+        return "Объект"
+    if "(вода)" in f or "pollutants[water" in f or "сброс" in f:
+        return "Сбросы"
+    if "вещество" in f or "источник выбросов" in f or "pollutants[air" in f or "выброс" in f:
+        return "Выбросы"
+    if any(s in f for s in ("waste", "отход", "акт", "паспорт", "состав",
+                            "движение", "по кварталам", "протокол")):
+        return "Отходы"
+    return "Прочее"
 
 
 def _parse_json(text: str) -> dict:
@@ -276,9 +362,64 @@ def _verify_quotes(quotes: dict, chunk: str) -> dict:
     return out
 
 
+_PROJECT_NAME_RE = re.compile(
+    r"оос|пмоос|пноолр|\bндв\b|\bпдв\b|проект|инвентариз|экспертиз|обсужден|"
+    r"слушани|рекультив|\bсзз\b|\bнму\b|пояснительн|\bтом\s*\d", re.I)
+_OWN_DOC_TYPES = ("устав", "егрюл", "егрип", "карточк", "свидетельств",
+                  "деклараци", "лист записи", "выписк")
+
+
+def _doc_kind(docname: str) -> tuple[str, bool]:
+    """(kind, project) файла по имени — через intake.classify.classify_name,
+    если он есть; иначе по регулярке проектных документов."""
+    base = str(docname or "").split(" (лист")[0].strip()
+    try:
+        from ecodoc.intake import classify
+        if hasattr(classify, "classify_name"):
+            dc = classify.classify_name(base)
+            return (getattr(dc, "kind", "other") or "other",
+                    bool(getattr(dc, "project", False)))
+    except Exception:
+        pass
+    return "other", bool(_PROJECT_NAME_RE.search(base.replace("ё", "е")))
+
+
+def org_block_problem(ctx: ReportContext, org: dict, docname: str,
+                      doc_type: str = "") -> str:
+    """Почему блок organization из этого документа НЕЛЬЗЯ брать как реквизиты
+    нашей организации ('' — можно).
+
+    Эколог увидел в базе реквизиты проектировщика из раздела ООС: модель
+    честно извлекает «организацию» из любого документа, а в проектной
+    документации это проектная организация, заказчик, эксперты. Поэтому:
+      * ИНН в документе ≠ ИНН нашей организации → чужие реквизиты;
+      * проектный документ (ООС/ПНООЛР/НДВ/экспертиза/рекультивация) без
+        совпадения ИНН → блок не берём вовсе (даже если ИНН у нас ещё пуст —
+        реквизиты заводятся из ЕГРЮЛ/карточки, не из проекта)."""
+    inn_doc = re.sub(r"\D", "", str(org.get("inn") or ""))
+    inn_own = re.sub(r"\D", "", str(ctx.organization.inn or ""))
+    if inn_doc and inn_own and inn_doc != inn_own:
+        return (f"реквизиты другой организации (ИНН {inn_doc} ≠ ИНН организации "
+                f"{inn_own}) — проектировщик/контрагент")
+    _kind, project = _doc_kind(docname)
+    dt = str(doc_type or "").lower()
+    own = any(s in dt for s in _OWN_DOC_TYPES)
+    if project and not own and not (inn_doc and inn_doc == inn_own):
+        return ("проектный документ (ООС/ПНООЛР/НДВ/экспертиза): реквизиты "
+                "проектировщика и заказчика не берём — нужна карточка/ЕГРЮЛ")
+    return ""
+
+
 def _merge_org(ctx: ReportContext, data: dict, quotes: dict, src: str,
                rep: ExtractionReport):
     org = data.get("organization") or {}
+    if not org:
+        return
+    prob = org_block_problem(ctx, org, src, str(data.get("doc_type") or ""))
+    if prob:
+        vals = ", ".join(f"{k}={str(v)[:30]}" for k, v in org.items() if v)[:160]
+        rep.rejected.append(Rejected("organization", vals, prob, src))
+        return
     for attr in ("name", "short_name", "inn", "kpp", "ogrn", "address",
                  "director_name", "phone", "email"):
         val = str(org.get(attr) or "").strip()
@@ -502,16 +643,16 @@ def _merge_pollutants(ctx: ReportContext, data: dict, medium, src: str,
             doubt = sanitize.pdk_conflict(code, val)
             if doubt:                       # в графу массы попало ПДК
                 rep.doubts.append(Rejected(
-                    f"вещество {code or name}.{attr}", str(val), doubt, src))
+                    f"вещество ({what}) {code or name}.{attr}", str(val), doubt, src))
                 continue
             cur = getattr(p, attr)
             if cur and cur != val:
                 rep.conflicts.append(Conflict(
-                    f"вещество {code or name}.{attr}", str(cur), str(val), src))
+                    f"вещество ({what}) {code or name}.{attr}", str(cur), str(val), src))
             elif not cur:
                 setattr(p, attr, val)
                 rep.accepted.append(Accepted(
-                    f"вещество {code or name}.{attr} (т)", str(val), src))
+                    f"вещество ({what}) {code or name}.{attr}", str(val), src))
 
 
 def _store_extras(ctx: ReportContext, data: dict, src: str,
@@ -531,16 +672,35 @@ def _store_extras(ctx: ReportContext, data: dict, src: str,
             rep.accepted.append(Accepted(f"{label} → extra.{key}", brief, src))
 
 
+# приоритет источника состава отхода (см. _merge_passports)
+_PASSPORT_PRIORITY = {"passport": 3, "protocol_kha": 2, "biotest": 2,
+                      "oos": 1, "pnoolr": 1, "inventory_waste": 1}
+
+
 def _merge_passports(ctx: ReportContext, data: dict, src: str,
                      rep: ExtractionReport):
     """Паспорта отходов → extra.waste_passports (справочник по ФККО).
 
     Дедуп по коду ФККО; состав дополняется, если в базе его ещё нет.
     Паспорта — справочные данные (наименование/класс/состав), движение
-    отходов они НЕ создают (движение — только из справок-актов)."""
+    отходов они НЕ создают (движение — только из справок-актов).
+
+    Запись помечается `_kind` — классом файла-источника (по имени: текста
+    здесь уже нет). Приоритет источников состава: паспорт > протокол >
+    ООС/ПНООЛР/инвентаризация > прочее; состав из более важного источника
+    заменяет уже принятый из менее важного (об этом — в rep.accepted)."""
     from ecodoc.core.waste_agg import norm_fkko
     from ecodoc.core.sanitize_records import passport_source_ok
+    from ecodoc.intake.classify import classify_name
     store = ctx.extra.setdefault("waste_passports", [])
+    src_kind = classify_name(src).kind
+
+    def _prio(kind: str) -> int:
+        return _PASSPORT_PRIORITY.get(kind or "", 0)
+
+    def _kind_of(item: dict) -> str:
+        return item.get("_kind") or classify_name(str(item.get("_src") or "")).kind
+
     # состав и класс отхода берём только из документов, где они установлены
     # (паспорт, протокол КХА/биотест, ООС, ПНООЛР, инвентаризация, скан
     # паспорта); из расчёта платы, журнала или жалобы — это не паспорт
@@ -560,24 +720,44 @@ def _merge_passports(ctx: ReportContext, data: dict, src: str,
                         None)
         comps = [c for c in (p.get("components") or [])
                  if isinstance(c, dict) and c.get("name")]
+        origin = str(p.get("origin") or "").strip()
+        agg = str(p.get("aggregate_state") or "").strip()
         if existing is None:
             item = {"fkko": fkko, "name": name,
                     "hazard_class": p.get("hazard_class") or "",
-                    "components": comps, "_src": src}
+                    "components": comps, "_src": src, "_kind": src_kind}
+            if origin:
+                item["origin"] = origin
+            if agg:
+                item["aggregate_state"] = agg
             store.append(item)
             rep.accepted.append(Accepted(
                 "паспорт отхода → extra.waste_passports",
                 f"{fkko or '—'} {name}" + (f", состав: {len(comps)} комп."
                                            if comps else ""), src))
         else:
-            # дозаполняем только пустое — паспорт в базе главнее
+            # дозаполняем только пустое — паспорт в базе главнее…
             if not existing.get("name") and name:
                 existing["name"] = name
+            if not existing.get("origin") and origin:
+                existing["origin"] = origin
+            if not existing.get("aggregate_state") and agg:
+                existing["aggregate_state"] = agg
             if not existing.get("components") and comps:
                 existing["components"] = comps
+                existing["_kind"] = src_kind
                 rep.accepted.append(Accepted(
                     f"состав отхода {fkko} → extra.waste_passports",
                     f"{len(comps)} комп.", src))
+            # …кроме состава из источника важнее прежнего: паспорт главнее
+            # протокола, протокол — ООС/ПНООЛР
+            elif comps and _prio(src_kind) > _prio(_kind_of(existing)):
+                existing["components"] = comps
+                existing["_kind"] = src_kind
+                rep.accepted.append(Accepted(
+                    f"состав отхода {fkko} → extra.waste_passports",
+                    f"состав заменён: {src} ({len(comps)} комп.)", src))
+            existing.setdefault("_kind", _kind_of(existing))
 
 
 def _merge_sources(ctx: ReportContext, data: dict, src: str,
@@ -627,25 +807,33 @@ _ORG_LABEL = {"name": "наименование организации", "short_
 
 
 def _collect(sink, data: dict, quotes: dict, pages: dict, docname: str,
-             model: str, span) -> None:
+             model: str, span, ctx: ReportContext | None = None) -> None:
     """Разложить ответ модели по кандидатам: значение + файл + лист + цитата."""
+    from ecodoc.intake.candidates import NEW, REJECTED
+
     def page_of(qkey: str) -> tuple[int, bool]:
         info = pages.get(qkey) or {}
         return int(info.get("page") or span[0]), bool(info.get("exact"))
 
-    def put(key, value, label, qkey, unit=""):
+    def put(key, value, label, qkey, unit="", state=NEW, reason=""):
         if value in (None, "", []):
             return
         page, exact = page_of(qkey)
         sink.add(key, value, label=label, doc="", file=docname, page=page,
                  exact=exact, quote=str(quotes.get(qkey) or ""), method="ai",
-                 model=model, unit=unit)
+                 model=model, unit=unit, state=state, reason=reason)
 
     org = data.get("organization") or {}
+    # чужие реквизиты (проектировщик из ООС, контрагент из договора) в базу
+    # не предлагаем — но и не прячем: кандидат сразу «отклонён» с причиной,
+    # чтобы в карте «что откуда взято» было видно, что и почему не взято
+    prob = (org_block_problem(ctx, org, docname, str(data.get("doc_type") or ""))
+            if (ctx is not None and org) else "")
     for attr, val in org.items():
         if attr in _ORG_LABEL:
             put(f"organization.{attr}", val, _ORG_LABEL[attr],
-                f"organization.{attr}")
+                f"organization.{attr}",
+                state=REJECTED if prob else NEW, reason=prob)
     for i, o in enumerate(data.get("objects") or []):
         code = str(o.get("code") or "").strip()
         if code:
@@ -722,6 +910,7 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
         except Exception:
             cfg = load_config()
     rep = ExtractionReport()
+    rep.configured = f"{cfg.provider}/{cfg.model}".rstrip("/")
     if not cfg.provider:
         rep.errors.append("ИИ не настроен: задайте бесплатный ключ Cohere "
                           "(Сервис → Выбор ИИ) или установите Ollama; "
@@ -786,24 +975,26 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
         rep.page_span[label] = span
         # находки → кандидаты (пользователь потом выберет, что взять в базу)
         if sink is not None:
-            _collect(sink, data, quotes, pages_seen, docname, model, span)
+            _collect(sink, data, quotes, pages_seen, docname, model, span, ctx=ctx)
         if scope in ("all", "org"):
             _merge_org(ctx, data, quotes, label, rep)
             _merge_objects(ctx, data, label, rep)
-        if scope in ("all", "acts"):
+        # «waste» — категория «отходы» целиком: ООС/ПНООЛР/паспорта/протоколы/
+        # акты (эколог: пункт частично перекрывает прочие — так и задумано)
+        if scope in ("all", "acts", "waste"):
             _merge_acts(ctx, data, label, rep)
             _merge_wastes(ctx, data, quotes, label, rep)
-        if scope in ("all", "acts", "passports"):
+        if scope in ("all", "acts", "passports", "waste"):
             _merge_passports(ctx, data, label, rep)
         if scope in ("all", "air"):
             _merge_pollutants(ctx, data, Medium.AIR, label, rep)
             _merge_sources(ctx, data, label, rep)
         if scope in ("all", "water"):
             _merge_pollutants(ctx, data, Medium.WATER, label, rep)
-        if scope in ("all", "acts", "other"):
+        if scope in ("all", "acts", "other", "waste"):
             _store_extras(ctx, data, label, rep)
     # свернуть собранные акты в движение (акты первичны)
-    if scope in ("all", "acts") and ctx.waste_acts:
+    if scope in ("all", "acts", "waste") and ctx.waste_acts:
         from ecodoc.core.waste_agg import (_merge_flows, _merge_receivers,
                                            aggregate_acts, period_breakdown)
         year = getattr(ctx.period, "year", None) or None
@@ -831,6 +1022,6 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
                 f"всего {bd['total']:g} т" + (f"; без даты {bd['no_date']:g} т"
                 if bd["no_date"] else ""), "агрегация"))
         if not year:
-            rep.errors.append("⚠ Отчётный год НЕ задан — во вкладке «Данные» "
+            rep.errors.append("⚠ Отчётный год НЕ задан — во вкладке «Отчётность» "
                               "укажите год; отчётность формируется за конкретный год.")
     return rep
