@@ -424,6 +424,46 @@ def generate(ctx: ReportContext, out_dir: str | Path,
     return paths
 
 
+def remember_details(ctx: ReportContext) -> int:
+    """После генерации паспортов записать использованные сведения в
+    extra.waste_details (только пустые поля): состав в %, происхождение,
+    агрегатное состояние, адрес, протокол. Иначе «Оформить расчёт по
+    паспорту» не видел паспорта, которые сама программа только что сделала
+    (замечание эколога 07.09.2026). Возвращает число записей."""
+    import datetime as _d
+    from ecodoc.core import waste_refdata as R
+    if not isinstance(ctx.extra, dict):
+        ctx.extra = {}
+    details = ctx.extra.setdefault("waste_details", {})
+    n = 0
+    for w in ctx.wastes:
+        try:
+            hazard = int(w.hazard_class)
+        except (TypeError, ValueError):
+            continue
+        if not 1 <= hazard <= 4 or not w.fkko_code:
+            continue
+        d = _details(ctx, w)
+        rec = details.get(w.fkko_code)
+        if not isinstance(rec, dict):
+            rec = {}
+        comps = d.get("components") or []
+        if comps and not rec.get("components"):
+            norm, _note = R.normalize_components(comps)
+            if norm:
+                rec["components"] = [{"name": c.get("name", ""), "percent": c.get("percent", "")}
+                                     for c in norm]
+                rec["composition_source"] = d.get("_comp_kind") or "passport"
+        for key in ("origin", _AGG, "site_address", "protocol"):
+            if d.get(key) and not rec.get(key):
+                rec[key] = d[key]
+        rec["passport_generated_at"] = _d.date.today().isoformat()
+        details[w.fkko_code] = rec
+        n += 1
+    ctx.extra["passports_generated_at"] = _d.date.today().isoformat()
+    return n
+
+
 _MONTHS_GEN = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля",
                "августа", "сентября", "октября", "ноября", "декабря")
 

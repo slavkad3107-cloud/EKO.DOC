@@ -569,6 +569,11 @@ def _merge_oos_wastes(ctx: ReportContext, data: dict, src: str,
         if not chk.ok:
             rep.rejected.append(Rejected("отход по ООС", f"{fkko} {name[:40]}", chk.reason, src))
             continue
+        from ecodoc.core.waste_exclude import is_excluded
+        if is_excluded(ctx, fkko):
+            rep.rejected.append(Rejected("отход по ООС", f"{fkko} {name[:40]}",
+                                         "исключён пользователем", src))
+            continue
         stage = _stage(it.get("stage"))
         mass, vol, dens = _dec(it.get("mass_t")), _dec(it.get("volume_m3")), _dec(it.get("density"))
         if dens is None and mass and vol:
@@ -662,10 +667,15 @@ def _merge_acts(ctx: ReportContext, data: dict, src: str, rep: ExtractionReport)
     from ecodoc.core.models import WasteAct
     seen = {_act_key(a.fkko_code, a.date, a.receiver, a.mass)
             for a in ctx.waste_acts}
+    from ecodoc.core.waste_exclude import is_excluded
     for act in data.get("disposal_acts") or []:
         fkko = re.sub(r"\D", "", str(act.get("fkko") or ""))
         mass = _dec(act.get("mass_t"))
         if len(fkko) != 11 or mass is None or mass == 0:
+            continue
+        if is_excluded(ctx, fkko):
+            rep.rejected.append(Rejected(f"акт {fkko}", f"{mass} т",
+                                         "отход исключён пользователем", src))
             continue
         hz = act.get("hazard_class")
         hazard = int(hz) if hz in (1, 2, 3, 4, 5) else (
@@ -714,9 +724,14 @@ def _merge_wastes(ctx: ReportContext, data: dict, quotes: dict, src: str,
     items = [(w, f"wastes[{j}]")
              for j, w in enumerate(data.get("wastes") or [])]
     from ecodoc.core import sanitize
+    from ecodoc.core.waste_exclude import is_excluded
     for w, qkey in items:
         fkko = re.sub(r"\D", "", str(w.get("fkko") or ""))
         if len(fkko) != 11:
+            continue
+        if is_excluded(ctx, fkko):
+            rep.rejected.append(Rejected("отход", f"{fkko} {str(w.get('name') or '')[:40]}".strip(),
+                                         "исключён пользователем (удалён из перечня)", src))
             continue
         # код сверяется с каталогом ФККО ДО записи: выдуманные коды и
         # групповые заголовки в перечень отходов объекта не идут

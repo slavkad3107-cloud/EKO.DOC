@@ -2,6 +2,9 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
+<!-- версия страницы: сервер подставляет свою при отдаче; JS сверяет с meta.version
+     из API и просит Ctrl+F5, если браузер держит устаревшую страницу -->
+<meta name="ecodoc-version" content="__ECODOC_VERSION__">
 <title>ЭКО.DOC</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -206,8 +209,10 @@ details.newacts>summary{color:var(--warn)}
     <button data-t="intake" class="on">ЗАГРУЗКА</button>
     <button data-t="org">ОРГАНИЗАЦИЯ</button>
     <button data-t="obj">ОБЪЕКТ</button>
-    <button data-t="report">Отчётность</button>
+    <!-- Разработка раньше Отчётности: сначала проект (ООС/ПНООЛР/паспорта),
+         потом отчёты по нему (замечание эколога) -->
     <button data-t="dev">Разработка</button>
+    <button data-t="report">Отчётность</button>
     <button data-t="cal">Календарь</button>
     <button data-t="disp">УПРЗА</button>
     <button data-t="svc">Сервис</button>
@@ -218,7 +223,7 @@ details.newacts>summary{color:var(--warn)}
       <span><b>1)</b> загрузите документы</span>
       <span>→ <b>2)</b> проверьте «что откуда взято», решите «что взять в базу» и закройте «Проверку данных»</span>
       <span>→ <b>3)</b> <a class="link" onclick="showTab('obj')">ОБЪЕКТ</a> — чистовые данные (объекты, отходы, выбросы, сбросы)</span>
-      <span>→ <b>4)</b> <a class="link" onclick="showTab('report')">Отчётность</a> / <a class="link" onclick="showTab('dev')">Разработка</a></span>
+      <span>→ <b>4)</b> <a class="link" onclick="showTab('dev')">Разработка</a> / <a class="link" onclick="showTab('report')">Отчётность</a></span>
     </div>
     <div class="card">
       <h2>Загрузить документы (pdf/doc/xls/jpg/xml и архивы zip/rar/7z — распакуются)</h2>
@@ -329,9 +334,10 @@ details.newacts>summary{color:var(--warn)}
           <span class="spin" id="sp-waste">…</span>
           <span class="hint" id="waste-msg"></span>
         </div>
-        <!-- порядок разделов задаёт renderWasteTab: 1 ФККО/паспорта/каталог (+ сверка
-             по источникам) → 2 справки-акты по периодам → 3 проблемы исходников →
-             загрузка/ИИ. Движение отходов показывается в Отчётность → Отходы -->
+        <!-- порядок разделов задаёт renderWasteTab: 1 проблемы исходников →
+             2 справки-акты по периодам → 3 ФККО/паспорта/каталог (+ сверка по
+             источникам, карточка ООС) → загрузка/ИИ (замечание эколога 07.09).
+             Движение отходов показывается в Отчётность → Отходы -->
         <div id="wasteform"></div>
       </div>
 
@@ -1405,6 +1411,7 @@ async function doIntake(){
       `Ниже — отчёт приёма; под ним — что из какого файла взято, что взять в базу ` +
       `и «Проверка данных». Дальше: <a class="link" onclick="showTab('obj')">` +
       `«ОБЪЕКТ» — чистовые данные</a>, затем <a class="link" ` +
+      `onclick="showTab('dev')">«Разработка»</a> / <a class="link" ` +
       `onclick="showTab('report')">«Отчётность»</a>.`;
     $("files").value = ""; $("folder").value = ""; DROPPED = [];
     if ($("dropzone")) $("dropzone").textContent = "⤓ Перетащите сюда файлы или папки целиком (можно несколько)";
@@ -1551,6 +1558,10 @@ function renderIntakeMap(){
       (!(d.taken||[]).length && !nd ? '<span class="hint">—</span>' : "")+`</td>`+
       `<td style="min-width:220px">`+
       (canRetry ? `<button class="b sec sm" onclick="event.stopPropagation();retryIntake('${esc(d.file)}', this)">↻ Повторить анализ</button>` : "")+
+      // reanalyze: исходник уже удалён, но текст сохранён (textcache) — старый
+      // ООС/ПНООЛР можно разобрать заново текущей версией без повторной загрузки
+      (!canRetry && d.reanalyze ? `<button class="b sec sm" title="разобрать заново текущей версией программы по сохранённому тексту (исходник загружать не нужно)" `+
+        `onclick="event.stopPropagation();retryIntake('${esc(d.file)}', this)">↻ Переразобрать</button>` : "")+
       (d.reason ? `<div class="hint" style="font-size:12px">${esc(d.reason)}</div>` : "")+
       `</td>`+
       `<td style="white-space:nowrap"><button class="b sec sm" style="color:var(--err);border-color:var(--err)" `+
@@ -1591,8 +1602,9 @@ function renderIntakeMap(){
     (!shown.length ? '<div class="hint">по выбранному фильтру файлов нет</div>' : "")+
     `<div class="hint">Разобранные исходники удалены, сохранены снимки листов, на которых `+
     `нашлись данные. Не прочитанные файлы остались в приёме — «Повторить анализ» `+
-    `прогонит их заново (с ИИ). Сомнительные значения ждут решения ниже — `+
-    `«Найденные данные» и «Проверка данных».</div>` + exh + `</details>`;
+    `прогонит их заново (с ИИ). Старые ООС/ПНООЛР можно переразобрать текущей версией `+
+    `без повторной загрузки, если их текст сохранён — кнопка «↻ Переразобрать». `+
+    `Сомнительные значения ждут решения ниже — «Найденные данные» и «Проверка данных».</div>` + exh + `</details>`;
 }
 // удалить файл из приёма вместе с тем, что из него взято (intake_forget)
 async function forgetIntake(file, btn){
@@ -1633,6 +1645,7 @@ async function unexcludeIntake(sha, btn){
 // повторный анализ одного файла из приёма (intake_run по имени)
 async function retryIntake(file, btn){
   needSite();
+  const label = btn ? btn.textContent : "↻ Повторить анализ";   // «Повторить анализ» / «Переразобрать»
   if (btn){ btn.disabled = true; btn.textContent = "анализ…"; }
   try{
     const j = await post("intake_run", {org:ORG, site:SITE, names:[file], ai:true, scope:"all"}, 0);
@@ -1642,7 +1655,7 @@ async function retryIntake(file, btn){
     loadCandidates().catch(()=>{}); ISSUES = null; loadIssues().catch(()=>{});
   }catch(e){
     alert("Повторный анализ не удался: " + errText(e));
-    if (btn){ btn.disabled = false; btn.textContent = "↻ Повторить анализ"; }
+    if (btn){ btn.disabled = false; btn.textContent = label; }
   }
 }
 
@@ -2214,7 +2227,7 @@ async function loadPassportsCheck(){
   }catch(e){ PASS_ROWS = null; PASS_ERR = errText(e); }
   redrawFkkoBlock();
 }
-// перерисовать блок 1, не теряя несохранённых правок в его полях
+// перерисовать блок 3 (ФККО), не теряя несохранённых правок в его полях
 function redrawFkkoBlock(){
   if (!$("wp-fkko") || !CTX) return;
   collectDataForm();
@@ -2282,7 +2295,7 @@ const normFkkoJS = c => String(c||"").replace(/\D/g, "");
 // 11 цифр → «7 33 100 01 72 4» (как в каталоге и в бланках)
 const fmtFkkoJS = c => normFkkoJS(c).replace(/^(\d)(\d{2})(\d{3})(\d{2})(\d{2})(\d)$/, "$1 $2 $3 $4 $5 $6") || String(c||"");
 
-// ── блок 1 вкладки ОТХОДЫ: «ФККО — коды, паспорта, каталог» ────────────
+// ── блок 3 вкладки ОТХОДЫ: «ФККО — коды, паспорта, каталог» ────────────
 // Одна таблица по отходу (объединены бывшие «Паспорта — сверка» и «Проверка
 // ФККО»): код/наименование/класс правятся прямо здесь (data-path в
 // CTX.wastes[i]), рядом — паспорт (есть/нет, состав, источник) и сверка с
@@ -2294,7 +2307,7 @@ function fkkoBlockHtml(){
   const meta = FKKO_META || {};
   const badSrc = (PASS_ROWS||[]).filter(r => r.src_ok === false).length;
   const badCodes = FKKO_ROWS.filter(r => !r.ok).length;
-  let h = '<div class="dsec"><h4>1. ФККО — коды, паспорта, каталог</h4><div class="row">'+
+  let h = '<div class="dsec"><h4>3. ФККО — коды, паспорта, каталог</h4><div class="row">'+
     '<button class="b sec sm" onclick="checkFkko();loadPassportsCheck()">Сверить заново</button>'+
     '<button class="b sec sm" onclick="updateFkko()">Обновить каталог ФККО</button>'+
     (badSrc ? `<button class="b sec sm" onclick="cleanPassports()">Убрать паспорта не из паспортов (${badSrc})</button>` : "")+
@@ -2395,8 +2408,9 @@ function fkkoBlockHtml(){
     '<th>Паспорт</th><th>Каталог ФККО</th><th></th></tr></thead>'+
     `<tbody>${rows}</tbody></table></div>`;
   h += `<div class="row" style="margin-top:6px"><button class="b sec sm" onclick="addRow('wastes')">+ отход</button>`+
-    `<span class="hint">${PASS_SRC_HINT} ✕ удаляет позицию вместе с её справками-актами и паспортом — иначе после «Сохранить» она вернётся (движение считается из актов).</span></div>`;
-  // сверка по источникам — своя карточка внутри блока 1 (кэш XCHK, кнопка «Сверить»)
+    `<span class="hint">${PASS_SRC_HINT} ✕ удаляет отход из базы насовсем — вместе со справками-актами, паспортом, строками ООС и кандидатами; код попадает в «Исключённые коды» и больше не воскресает из документов.</span></div>`;
+  h += excludedWastesHtml();
+  // сверка по источникам — своя карточка внутри блока 3 (кэш XCHK, кнопка «Сверить»)
   h += `<div id="wp-xcheck">${xcheckHtml()}</div></div>`;
   return h;
 }
@@ -2498,31 +2512,78 @@ function oosDecideAll(stage){
   oosList().forEach((o, i) => { if (!o.decision && (o.stage||"") !== "эксплуатация") oosDecide(i, "add"); });
 }
 // ── удаление позиции ФККО / паспорта ──────────────────────────────────
-// Сервер при каждом чтении пересчитывает движение из справок-актов
-// (waste_agg.apply_acts): удалённая позиция возвращалась после «Сохранить»,
-// пока оставались акты с её кодом, а паспорт — из extra.waste_passports.
-// Поэтому ✕ удаляет позицию ВМЕСТЕ с актами и паспортом (с подтверждением).
+// Удаление позиции — операция БАЗЫ (waste_forget), а не splice в браузере:
+// сервер при каждом чтении пересчитывает движение из справок-актов, а
+// кандидаты/ООС/сверка воскрешали удалённый код (замечание эколога 07.09).
+// Сервер убирает позицию, её акты, паспорт, сведения, строки ООС, отклоняет
+// кандидатов и заносит код в extra.waste_excluded — приём и сверки его
+// больше не показывают, пока не нажать «Вернуть» (waste_restore).
 function passportIdx(code){
   return ((CTX.extra||{}).waste_passports||[]).findIndex(p => normFkkoJS(p && p.fkko) === code && code);
 }
-function delWaste(i){
+async function delWaste(i){
   collectDataForm();
   const w = (CTX.wastes||[])[i];
   if (!w) return;
   const code = normFkkoJS(w.fkko_code);
-  const acts = code ? (CTX.waste_acts||[]).filter(a => normFkkoJS(a.fkko_code) === code) : [];
-  const pi = code ? passportIdx(code) : -1;
-  let msg = `Удалить позицию ${fmtFkkoJS(w.fkko_code) || "(без кода)"} «${w.name||""}»?`;
-  if (acts.length) msg += `\n\nВместе с ней удалятся ${acts.length} справок-актов с этим кодом — иначе после «Сохранить» позиция вернётся (движение считается из актов).`;
-  if (pi >= 0) msg += `\nПаспорт с этим кодом тоже будет удалён.`;
+  if (!code){
+    // позиция без кода — серверу исключать нечего: просто убираем строку
+    if (!confirm(`Удалить позицию без кода «${w.name||""}»?`)) return;
+    CTX.wastes.splice(i, 1);
+    markDirty(); renderDataForm();
+    const t = "позиция без кода удалена — нажмите «Сохранить»";
+    if ($("waste-msg")) $("waste-msg").textContent = t;
+    notify(t, "warn");
+    return;
+  }
+  const acts = (CTX.waste_acts||[]).filter(a => normFkkoJS(a.fkko_code) === code);
+  const pi = passportIdx(code);
+  let msg = `Удалить отход ${fmtFkkoJS(code)} «${w.name||""}» из базы?`;
+  msg += `\n\nВместе с позицией удалятся${acts.length ? ` ${acts.length} справок-актов с этим кодом,` : ""}${pi >= 0 ? " паспорт," : ""} `+
+    `сведения и строки ООС по этому коду; кандидаты из документов будут отклонены. `+
+    `Код попадёт в «Исключённые коды» — приём и сверки его больше не покажут (вернуть можно там же).`;
+  if (DIRTY) msg += `\n\nНесохранённые правки в других строках будут потеряны (база перечитается).`;
   if (!confirm(msg)) return;
-  CTX.wastes.splice(i, 1);
-  if (acts.length) CTX.waste_acts = (CTX.waste_acts||[]).filter(a => normFkkoJS(a.fkko_code) !== code);
-  if (pi >= 0){ CTX.extra.waste_passports.splice(pi, 1); PASS_ROWS = (PASS_ROWS||[]).filter(p => normFkkoJS(p.fkko) !== code); }
-  markDirty(); renderDataForm();
-  const t = `Удалено: позиция${acts.length ? `, актов ${acts.length}` : ""}${pi >= 0 ? ", паспорт" : ""} — нажмите «Сохранить»`;
-  if ($("waste-msg")) $("waste-msg").textContent = t;
-  notify(t, "warn");
+  spin("sp-waste", 1);
+  try{
+    const j = await post("waste_forget", {org:ORG, site:SITE, fkko:code}, 0);
+    const t = `Удалено ${fmtFkkoJS(j.fkko||code)}: позиций ${j.wastes||0}, актов ${j.acts||0}, паспортов ${j.passports||0}, `+
+      `строк ООС ${j.oos||0}, сведений ${j.details||0}, кандидатов отклонено ${j.candidates||0} — код исключён`;
+    await loadCtx();                 // сервер уже сохранил базу — перечитываем
+    if ($("waste-msg")) $("waste-msg").textContent = t;
+    notify(t, "warn", 8000);
+  }catch(e){
+    notify("Не удалено: " + errText(e), "err", 8000);
+  }
+  spin("sp-waste", 0);
+}
+// снять исключение кода (waste_restore): сам отход придётся загрузить/ввести заново
+async function restoreWaste(code, btn){
+  needSite();
+  if (btn){ btn.disabled = true; btn.textContent = "…"; }
+  try{
+    const j = await post("waste_restore", {org:ORG, site:SITE, fkko:code}, 0);
+    notify(j.ok === false ? "Кода в списке исключённых уже нет"
+      : `Исключение снято: ${fmtFkkoJS(code)} снова принимается из документов — загрузите/введите отход заново`,
+      j.ok === false ? "warn" : "ok", 6000);
+    await loadCtx();
+  }catch(e){
+    notify("Не вернулось: " + errText(e), "err");
+    if (btn){ btn.disabled = false; btn.textContent = "Вернуть"; }
+  }
+}
+// «Исключённые коды» — extra.waste_excluded: [{fkko, when}]
+function excludedWastesHtml(){
+  const rows = (((CTX||{}).extra||{}).waste_excluded||[]).map(r => (r && typeof r === "object") ? r : {fkko:r}).filter(r => normFkkoJS(r.fkko));
+  if (!rows.length) return "";
+  return `<details class="dsec" style="margin-top:8px"><summary style="cursor:pointer;color:var(--mut)">`+
+    `Исключённые коды (удалены пользователем, из документов не принимаются) — ${rows.length}</summary>`+
+    `<div class="hint">Отходы, удалённые кнопкой ✕: приём, сверка по источникам и «Проверка данных» их не показывают. `+
+    `«Вернуть» снимает исключение — после этого отход нужно загрузить (ЗАГРУЗКА) или ввести заново.</div>`+
+    `<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>ФККО</th><th>Когда исключён</th><th></th></tr></thead><tbody>`+
+    rows.map(r => `<tr><td style="white-space:nowrap">${esc(fmtFkkoJS(r.fkko))}</td><td class="hint">${esc(r.when||"")}</td>`+
+      `<td><button class="b sec sm" onclick="restoreWaste('${normFkkoJS(r.fkko)}', this)">Вернуть</button></td></tr>`).join("")+
+    `</tbody></table></div></details>`;
 }
 function delPassport(code){
   collectDataForm();
@@ -2869,11 +2930,12 @@ function setProfileFlag(key, val){
   $("data-msg").textContent = "признак изменён — не забудьте «Сохранить»";
 }
 // ═══════════════════ вкладка ОТХОДЫ ═══════════════════════════════════
-// Ровно два блока + проблемы исходников (замечания эколога по v0.59):
-// 1 «ФККО — коды, паспорта, каталог» → 2 «Справки-акты по периодам» →
-// 3 «Проблемы исходников по отходам» → дозагрузка и окно ИИ. Серверные
-// сверки кэшируются (FKKO_ROWS/PASS_ROWS/PER_DATA/ISSUES): перерисовка
-// таблиц (добавить строку и т.п.) не дёргает сервер заново.
+// Три блока (порядок — замечание эколога 07.09):
+// 1 «Проблемы исходников по отходам» → 2 «Справки-акты по периодам» →
+// 3 «ФККО — коды, паспорта, каталог» (+ ООС, сверка по источникам) →
+// дозагрузка и окно ИИ. Серверные сверки кэшируются
+// (FKKO_ROWS/PASS_ROWS/PER_DATA/ISSUES): перерисовка таблиц (добавить
+// строку и т.п.) не дёргает сервер заново.
 // «Движение отходов за год» ушло в Отчётность → Отходы (renderMovementReport).
 
 // ── период акта: разбор «ДД.ММ.ГГГГ» / «3 кв 2025» / «03.2025» / «март 2025» ──
@@ -2973,7 +3035,8 @@ const ACT_COLS = [["name","Наименование отхода"],["fkko_code",
 // сверху матрица отходы × периоды в т и м³ (сервер, waste_periods) с ИТОГО по
 // классам и ВСЕГО; клик по строке/ячейке раскрывает ниже акты этого отхода за
 // период — редактируемые строки, сгруппированные год → квартал → месяц с
-// итогами на каждом уровне. Акты без периода сюда не попадают — они в блоке 3.
+// итогами на каждом уровне; новые строки и акты без периода — первой группой
+// «Новые / без периода» (те же строки перечислены и в блоке 1 «Проблемы»).
 let PVIEW = "quarter", PYEAR = 0, PER_DATA = null, PER_ERR = "";
 let ACT_SEL = {fkko:"", y:0, q:0, mo:0};    // что показывать в списке актов
 const _ROMAN = {1:"I", 2:"II", 3:"III", 4:"IV", 5:"V"};
@@ -2991,8 +3054,97 @@ function selectActs(fkko, y, q, mo){
   redrawPeriods();
   const el = $("wp-acts"); if (el && !same) el.scrollIntoView({behavior:"smooth", block:"start"});
 }
+// акт «пустой»: без кода ФККО и без массы/объёма — создан кнопкой «+ акт» и не
+// заполнен. Такие строки в базу не пишутся (saveCtx) и убираются кнопкой
+// «Удалить пустые акты»
+function actIsEmpty(a){
+  // тот же критерий, что у сервера (api_context_save): без кода, наименования,
+  // массы и объёма — иначе счётчики «пустых» здесь и в тосте расходились бы
+  return !!a && !normFkkoJS(a.fkko_code) && !String(a.name||"").trim() && !_num(a.mass) && !_num(a.volume_m3);
+}
+function emptyActs(){ return (CTX && CTX.waste_acts || []).filter(actIsEmpty); }
+// кнопка «Удалить пустые акты (N)»: убирает строки «+ акт», которые так и не
+// заполнили (сервер их при «Сохранить» всё равно отбросит — но на экране они
+// висели и путали)
+function delEmptyActs(){
+  collectDataForm();
+  const n = emptyActs().length;
+  if (!n) return;
+  CTX.waste_acts = (CTX.waste_acts||[]).filter(a => !actIsEmpty(a));
+  markDirty(); renderDataForm();
+  const t = `пустых актов убрано: ${n} — нажмите «Сохранить»`;
+  if ($("waste-msg")) $("waste-msg").textContent = t;
+  notify(t, "warn", 4000);
+}
+// нормативы образования из ООС над актами: по каждому коду из актов (или по
+// выбранному в матрице) — норматив т/год, м³, плотность и факт по актам за год
+function oosNormsHtml(codes, year){
+  const list = oosList();
+  if (!list.length)
+    return '<div class="hint" style="margin:6px 0">Нормативы т/м³ по ООС появятся после загрузки ООС '+
+      '(<a class="link" onclick="showTab(\'intake\')">ЗАГРУЗКА</a>, категория «отходы») '+
+      'или «↻ Переразобрать» старого ООС в карте загрузки.</div>';
+  const oos = oosByCode();
+  const acts = CTX.waste_acts||[];
+  let rows = "";
+  for (const code of codes){
+    const o = oos[code];
+    const fact = acts.filter(a => normFkkoJS(a.fkko_code) === code && (!year || actPeriodJS(a).y === year))
+      .reduce((s, a) => s + _num(a.mass), 0);
+    const norm = o ? _num(o.mass_t) : 0;
+    const pct = (norm && fact) ? Math.round(fact / norm * 100) : 0;
+    const over = pct > 100;
+    rows += `<tr><td style="white-space:nowrap">${esc(fmtFkkoJS(code))}</td>`+
+      (o ? `<td title="${esc(oosTitle(o))}">${esc(o.name||"")}${o._multi ? ` <span class="hint">(${esc(o.stage||"")})</span>` : ""}</td>`+
+           `<td class="oos">${norm ? fmt3(norm) : "—"}</td><td class="oos">${_num(o.volume_m3) ? fmt3(_num(o.volume_m3)) : "—"}</td>`+
+           `<td class="oos">${oosDensity(o) ? oosDensity(o).toFixed(2) : "—"}</td><td class="hint">${esc(o.stage||"")}</td>`
+         : `<td colspan="5" class="hint">в ООС этого кода нет</td>`)+
+      `<td class="oos">${fact ? fmt3(fact) : "—"}</td>`+
+      `<td class="oos"${over ? ' style="color:var(--err);font-weight:600" title="факт по актам превышает норматив ООС"' : ""}>${pct ? pct + " %" : "—"}</td></tr>`;
+  }
+  if (!rows) return "";
+  return `<details class="dsec" open style="margin:6px 0"><summary style="cursor:pointer;color:var(--acc)">Нормативы по ООС и факт по актам${year ? " за " + year : ""}</summary>`+
+    '<div class="hint">норматив образования (т/год, м³, плотность т/м³) из раздела ООС; факт — сумма масс справок-актов по коду'+
+    (year ? " за выбранный год" : "")+'; красное — факт больше норматива</div>'+
+    '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>ФККО</th><th>По ООС</th>'+
+    '<th style="text-align:right">т/год</th><th style="text-align:right">м³</th><th style="text-align:right">ρ, т/м³</th><th>Стадия</th>'+
+    '<th style="text-align:right">Факт, т</th><th style="text-align:right">% нормы</th></tr></thead><tbody>'+rows+'</tbody></table></div></details>';
+}
+// матрица т/м³ на клиенте — зеркало core/waste_periods.build. Серверный
+// PER_DATA верен только для сохранённой базы: после локального удаления или
+// добавления акта (DIRTY) удалённые строки висели бы на экране до «Сохранить».
+// Поэтому при несохранённых правках матрица считается из CTX.waste_acts.
+function buildPeriodsJS(){
+  const rows = {}, years = new Set(), np = {t:0, m3:0, count:0};
+  for (const a of (CTX.waste_acts||[])){
+    if (!a) continue;
+    const code = normFkkoJS(a.fkko_code);
+    const key = code || String(a.name||"").trim().toLowerCase();
+    if (!key) continue;
+    const r = rows[key] = rows[key] || {fkko:code, fkko_fmt: code ? fmtFkkoJS(code) : "", name:"",
+      hazard: (+(a.hazard_class||0)) || (code ? +code.slice(-1) : 0), periods:{}, t_total:0, m3_total:0};
+    if (String(a.name||"").length > r.name.length) r.name = String(a.name||"").trim();
+    const t = _num(a.mass); let m3 = _num(a.volume_m3);
+    if (!m3 && _num(a.density) && t) m3 = t / _num(a.density);
+    const {y, q, mo} = actPeriodJS(a);
+    r.t_total += t; r.m3_total += m3;
+    if (!y){ np.t += t; np.m3 += m3; np.count++; continue; }
+    years.add(y);
+    const py = r.periods[String(y)] = r.periods[String(y)] || {t:0, m3:0, q:{}, m:{}};
+    py.t += t; py.m3 += m3;
+    if (q){ const cq = py.q[String(q)] = py.q[String(q)] || {t:0, m3:0}; cq.t += t; cq.m3 += m3; }
+    if (mo){ const cm = py.m[String(mo)] = py.m[String(mo)] || {t:0, m3:0}; cm.t += t; cm.m3 += m3; }
+  }
+  const out = Object.values(rows).sort((a, b) => ((a.hazard||9) - (b.hazard||9)) ||
+    String(a.fkko).localeCompare(String(b.fkko)) || a.name.localeCompare(b.name));
+  return {years:[...years].sort(), rows:out, no_period:np, totals:{}, _local:true};
+}
+function periodsData(){
+  if (PER_DATA && !DIRTY) return PER_DATA;
+  return CTX ? buildPeriodsJS() : (PER_DATA || {});
+}
 function periodsHtml(){
-  const d = PER_DATA || {}, years = (d.years||[]).map(Number), rows = d.rows||[];
+  const d = periodsData(), years = (d.years||[]).map(Number), rows = d.rows||[];
   if (!PYEAR || !years.includes(PYEAR)) PYEAR = years.length ? Math.max(...years) : 0;
   let h = '<div class="dsec"><h4>2. Справки-акты по периодам (т и м³)</h4>'+
     '<div class="row"><label>Вид: <select onchange="setPview(this.value)">'+
@@ -3009,9 +3161,9 @@ function periodsHtml(){
     // берёт .genres сразу за рядом кнопок (раньше писалось в #out-gen
     // другой вкладки — кнопки выглядели неработающими)
     '<div class="genres" id="wp-genres" hidden></div>';
-  if (PER_ERR) h += `<div class="hint">разбивка: сервер не ответил — ${esc(PER_ERR)}</div>`;
-  else if (!PER_DATA) h += '<div class="hint">разбивка считается…</div>';
-  else if (!rows.length) h += '<div class="hint">Разбивка появится, когда в справках-актах будут массы и периоды.</div>';
+  if (PER_ERR) h += `<div class="hint">разбивка: сервер не ответил — ${esc(PER_ERR)}${d._local ? "; показана разбивка, посчитанная из актов на экране" : ""}</div>`;
+  else if (d._local && DIRTY) h += '<div class="hint">разбивка пересчитана из актов на экране (есть несохранённые правки) — после «Сохранить» её пересчитает сервер</div>';
+  if (!rows.length) h += '<div class="hint">Разбивка появится, когда в справках-актах будут массы и периоды.</div>';
   else {
     // столбцы: функция «ячейка периода из строки» — один код рисует все три вида;
     // sel — параметры клика по ячейке (год, квартал, месяц)
@@ -3079,7 +3231,17 @@ function actsByPeriodHtml(){
     (s.fkko || s.y ? ` <a class="link" onclick="selectActs('',0,0,0)">показать все</a>` : " (все)") + '</h4>'+
     '<div class="hint">Один акт — одна передача отхода. «Период»: дата (15.03.2025), квартал и год '+
     '(3 кв 2025) или месяц и год (03.2025). Из актов считаются журнал 1028, 2-ТП (отходы), кадастр, '+
-    'декларация и разбивка выше; сохранение — общей кнопкой «Сохранить».</div>';
+    'декларация и разбивка выше; сохранение — общей кнопкой «Сохранить». ✕ в строке — удалить акт.</div>';
+  // нормативы ООС по кодам актов (выбранный код — только он; год — из выбора
+  // или текущий год матрицы): замечание эколога — «нормативы т/м³ с плотностью
+  // из ООС должны быть в блоке актов»
+  const normCodes = s.fkko ? [s.fkko]
+    : [...new Set(all.map(x => normFkkoJS(x.r.fkko_code)).filter(Boolean))].sort();
+  if (normCodes.length || !oosList().length) h += oosNormsHtml(normCodes, s.y || PYEAR || 0);
+  const nEmpty = emptyActs().length;
+  if (nEmpty)
+    h += `<div class="row" style="margin:4px 0"><button class="b sec sm" onclick="delEmptyActs()" title="строки «+ акт» без кода, наименования, массы и объёма">Удалить пустые акты (${nEmpty})</button>`+
+      `<span class="hint">пустые строки в базу не пишутся — сервер отбрасывает их при «Сохранить»</span></div>`;
   // новые (после «+ акт») и акты без периода — ПЕРВОЙ раскрытой группой:
   // раньше новая строка не имела периода и не попадала ни в один год —
   // «+ акт» выглядел неработающим
@@ -3126,13 +3288,13 @@ function actsByPeriodHtml(){
   h += `<button class="b sec sm" style="margin-top:6px" onclick="addRow('waste_acts')">+ акт</button>`;
   return h;
 }
-// ── блок 3 вкладки ОТХОДЫ: «Проблемы исходников по отходам» ─────────
+// ── блок 1 вкладки ОТХОДЫ: «Проблемы исходников по отходам» ─────────
 // Выдача data_issues (категория «Отходы»): акты без периода, коды не по ФККО,
 // неправдоподобные т/м³, лицензии, паспорта не из паспортов — с файлом,
 // снимком листа, подсказкой и полем ввода / кнопкой. Если проверка недоступна —
 // хотя бы акты без периода остаются редактируемыми здесь.
 function wasteProblemsHtml(){
-  let h = '<div class="dsec"><h4>3. Проблемы исходников по отходам</h4>';
+  let h = '<div class="dsec"><h4>1. Проблемы исходников по отходам</h4>';
   const noPer = (CTX.waste_acts||[]).map((a, ri) => ({r:a, ri, p:actPeriodJS(a)})).filter(x => !x.p.y);
   if (ISSUES_ERR || !ISSUES){
     h += `<div class="hint">${ISSUES_ERR ? "сервер ещё не отдаёт проверку (data_issues): " + esc(ISSUES_ERR) : "проверка…"}</div>`;
@@ -3147,7 +3309,7 @@ function wasteProblemsHtml(){
   }
   const list = ((ISSUES.categories||{})["Отходы"]) || [];
   if (!list.length) h += '<div class="issue" style="color:var(--acc)">✓ Проблем по отходам не найдено.</div>';
-  else h += `<div class="hint">позиций: ${list.length} · «Записать» сохраняет базу целиком (вместе с правками в таблицах выше)</div>` +
+  else h += `<div class="hint">позиций: ${list.length} · «Записать» сохраняет базу целиком (вместе с правками в таблицах ниже)</div>` +
     issuesTableHtml(list, "iw");
   return h + '</div>';
 }
@@ -3183,12 +3345,15 @@ function renderWasteTab(){
   if (!$("wasteform") || !CTX) return;
   const st = $("wasteform").children.length ? detailsState($("wasteform")) : null;
   let h = "";
-  // 1. ФККО — коды, паспорта, каталог (сервер + CTX.wastes)
-  h += `<div id="wp-fkko">${fkkoBlockHtml()}</div>`;
-  // 2. справки-акты по периодам (матрица с сервера + акты из CTX)
-  h += `<div id="wp-periods">${periodsHtml()}</div>`;
-  // 3. проблемы исходников (data_issues → «Отходы»)
+  // порядок по замечанию эколога (07.09): сначала что не так с исходниками,
+  // потом первичка (акты), потом справочная часть (ФККО/паспорта/ООС/сверка)
+  // 1. проблемы исходников (data_issues → «Отходы»)
   h += `<div id="wp-problems">${wasteProblemsHtml()}</div>`;
+  // 2. справки-акты по периодам (группировка из CTX.waste_acts; матрица —
+  //    с сервера, пока нет локальных правок, иначе считается на клиенте)
+  h += `<div id="wp-periods">${periodsHtml()}</div>`;
+  // 3. ФККО — коды, паспорта, каталог (сервер + CTX.wastes) + карточка ООС + сверка
+  h += `<div id="wp-fkko">${fkkoBlockHtml()}</div>`;
   // дозагрузка исходников и окно ИИ — в самом низу
   h += modUploadHtml("tw");
   h += aiTaskHtml("waste", "Отходы");
@@ -3521,7 +3686,9 @@ function addRow(key){
   const idx = CTX[key].length - 1;
   markDirty(); renderDataForm();
   // новая строка должна быть видна сразу: раскрыть её details и дать фокус
-  const inp = document.querySelector(`[data-path^="${key}[${idx}]."]`);
+  // (у акта — в графу ФККО: код главнее наименования, по нему считается всё)
+  const inp = (key === "waste_acts" && document.querySelector(`[data-path="${key}[${idx}].fkko_code"]`))
+    || document.querySelector(`[data-path^="${key}[${idx}]."]`);
   if (inp){
     let d = inp.closest("details");
     while (d){ d.open = true; d = d.parentElement && d.parentElement.closest("details"); }
@@ -3611,8 +3778,11 @@ async function saveCtx(){
     }
     // перечитать: сервер пересчитал движение из справок-актов
     await loadCtx();
-    $("data-msg").textContent = "Сохранено ✓ (движение пересчитано из актов)";
-    notify("Сохранено ✓ (движение отходов пересчитано из актов)");
+    // сервер отбрасывает пустые строки актов («+ акт» без заполнения) — сказать, сколько
+    const dropped = +(r.dropped_empty_acts||0);
+    const tail = dropped ? `; пустых строк актов отброшено: ${dropped}` : "";
+    $("data-msg").textContent = "Сохранено ✓ (движение пересчитано из актов" + tail + ")";
+    notify("Сохранено ✓ (движение отходов пересчитано из актов" + tail + ")", dropped ? "warn" : "ok", dropped ? 6000 : undefined);
   }catch(e){
     // post() бросает при {error} в ответе — конфликт версий приходит сюда же
     const msg = errText(e);
@@ -3737,8 +3907,8 @@ async function doWasteComposition(btn){
     const j = await post("devdoc", {org:ORG, site:SITE, kind:"waste-composition"}, 0);
     renderWasteComposition(j);
   }catch(e){
-    // сервер отдал {error, gaps} — post() бросил, но остальной ответ есть в e.data
-    renderWasteComposition({error: errText(e), gaps: (e.data && e.data.gaps) || []});
+    // сервер отдал {error, note, gaps} — post() бросил, но остальной ответ есть в e.data
+    renderWasteComposition({error: errText(e), note: (e.data && e.data.note) || "", gaps: (e.data && e.data.gaps) || []});
   }
   if (btn) btn.disabled = false;
   spin("sp-wc", 0); spin("sp-dev", 0);
@@ -3748,6 +3918,9 @@ function renderWasteComposition(j){
   if (!box) return;
   let h = "";
   if (j.error) h += `<div class="issue error">✖ ${esc(j.error)}</div>`;
+  // note сервера: почему состава нет (напр. «ООС разобран прежней версией —
+  // нажмите «Переразобрать» в ЗАГРУЗКЕ / загрузите заново»)
+  if (j.note) h += `<div class="issue warning">${esc(j.note)}${/Переразобрать/.test(j.note) ? ` <a class="link" onclick="showTab('intake')">→ ЗАГРУЗКА</a>` : ""}</div>`;
   if (j.path){
     h += `<div class="issue" style="color:var(--acc)">✓ Папка: ${esc(j.path)} `+
       `<button class="b sec sm" onclick="post('open',{path:${JSON.stringify(String(j.path)).replace(/"/g,"&quot;")}}).catch(e=>alert(errText(e)))">Открыть папку</button></div>`;
@@ -3755,11 +3928,12 @@ function renderWasteComposition(j){
       h += `<div class="hint">файлов: ${j.files.length}</div><ul style="margin:2px 0 4px 18px;padding:0;font-size:13px">`+
         j.files.map(f => `<li>${esc(f)}</li>`).join("")+`</ul>`;
   }
-  if ((j.gaps||[]).length)
-    h += `<details class="dsec" open><summary style="cursor:pointer;color:var(--warn)">Чего не хватает (${j.gaps.length})</summary><ul style="margin:2px 0 4px 18px;padding:0;font-size:13px">`+
-      j.gaps.map(g => `<li class="issue warning">${esc(g)}</li>`).join("")+`</ul></details>`;
+  const gaps = (j.gaps||[]).filter(g => g && g !== j.note);   // note сервер дублирует в gaps
+  if (gaps.length)
+    h += `<details class="dsec" open><summary style="cursor:pointer;color:var(--warn)">Чего не хватает (${gaps.length})</summary><ul style="margin:2px 0 4px 18px;padding:0;font-size:13px">`+
+      gaps.map(g => `<li class="issue warning">${esc(g)}</li>`).join("")+`</ul></details>`;
   box.innerHTML = h;
-  show("out-dev", (j.error ? "Ошибка: " + j.error + "\n" : "") + (j.path ? "Документы: " + j.path + "\n" +
+  show("out-dev", (j.error ? "Ошибка: " + j.error + "\n" : "") + (j.note ? j.note + "\n" : "") + (j.path ? "Документы: " + j.path + "\n" +
     (j.files||[]).map(f => "  • " + f).join("\n") : "") +
     ((j.gaps||[]).length ? "\n\nЧего не хватает:\n" + j.gaps.map(g => "  • " + g).join("\n") : ""));
 }
@@ -4050,15 +4224,21 @@ async function doDevDoc(kind, btn){
     const j = await post("devdoc", body, 0);
     const many = (j.files||[]).length;          // паспорта: папка + список файлов
     let t = (many ? `Папка: ${j.path} — файлов: ${many}` : "Документ: " + j.path);
-    if ((j.gaps||[]).length)
+    // note сервера (напр. ООС разобран прежней версией — «Переразобрать») и
+    // gaps — карточке паспортов (waste-passport) сервер их теперь тоже отдаёт
+    if (j.note) t += "\n\n" + j.note;
+    const gaps = (j.gaps||[]).filter(g => g && g !== j.note);
+    if (gaps.length)
       t += "\n\nЧего не хватает в документе (в тексте помечено «[требуется: …]»):\n"
-         + j.gaps.map(g=>"  • " + g).join("\n");
+         + gaps.map(g=>"  • " + g).join("\n");
     show("out-dev", t + (many ? "\n" + j.files.map(f => "  • " + f).join("\n") : ""));
     showResult(btn, many ? {text:t, dir:j.path, files:j.files} : {text:t, path:j.path});
   }catch(e){
     show("out-dev", "Ошибка: " + errText(e));
-    const gaps = (e.data && e.data.gaps) || [];
+    const note = (e.data && e.data.note) || "";
+    const gaps = ((e.data && e.data.gaps) || []).filter(g => g && g !== note);
     showResult(btn, {kind:"err", text:"Документ не сформирован: " + errText(e) +
+      (note ? "\n\n" + note : "") +
       (gaps.length ? "\n\nЧего не хватает:\n" + gaps.map(g=>"  • " + g).join("\n") : "")});
   }
   if (btn) btn.disabled = false;
@@ -4516,30 +4696,33 @@ const WI_HINT = 'Wi — коэффициент степени опасности
   'приказу МПР № 158 (таблица показателей) или из БДО (банк данных об отходах); '+
   'без Wi класс не считается.';
 function hcCurrent(){ return HC_PASS[+($("hc-sel")||{}).value] || HC_PASS[0]; }
-function hazardFromPassport(){
+async function hazardFromPassport(){
   const box = $("hc-panel");
   if (!box) return;
   if (!CTX){ box.innerHTML = '<div class="hint">Сначала выберите площадку слева.</div>'; return; }
-  // индекс в extra.waste_passports (_idx) нужен серверу как селектор паспорта;
-  // с составом — первыми, они и нужны для расчёта
-  HC_PASS = ((CTX.extra||{}).waste_passports||[]).map((p, i) => p && (p.fkko || p.name) ? {...p, _idx:i} : null)
-    .filter(Boolean).sort((a, b) => ((b.components||[]).length ? 1 : 0) - ((a.components||[]).length ? 1 : 0));
+  // составы — с сервера (waste_compositions): ручные сведения, СГЕНЕРИРОВАННЫЕ
+  // паспорта, паспорта-сканы, протоколы, ООС — раньше панель смотрела только в
+  // extra.waste_passports и «не видела» паспорта, сформированные программой
+  box.innerHTML = '<div class="hint">собираю составы отходов…</div>';
+  let j;
+  try{ j = await post("waste_compositions", {org:ORG, site:SITE}, 0); }
+  catch(e){ box.innerHTML = `<div class="issue error">составы не получены: ${esc(errText(e))}</div>`; return; }
+  HC_PASS = (j.rows||[]).filter(r => r && (r.fkko || r.name));
   if (!HC_PASS.length){
-    box.innerHTML = '<div class="hint">Паспортов в базе нет — загрузите паспорта отходов или протоколы КХА '+
-      '(<a class="link" onclick="showTab(\'waste\')">ОБЪЕКТ → Отходы</a>, блок «Догрузить исходники», '+
-      'либо ЗАГРУЗКА с категорией «паспорта отходов»).</div>';
+    box.innerHTML = `<div class="hint">${esc(j.note || "Составов отходов в базе нет — загрузите паспорта отходов, протоколы КХА или ООС/ПНООЛР "+
+      "(ЗАГРУЗКА, категория «отходы»/«паспорта отходов»), либо сформируйте паспорта и справки о составе.")}</div>`;
     return;
   }
-  const withComp = HC_PASS.filter(p => (p.components||[]).length).length;
-  box.innerHTML = '<div class="row" style="margin-top:6px"><label>Паспорт: '+
-    `<select id="hc-sel" onchange="$('hc-out').innerHTML=''" style="max-width:520px">`+
-    HC_PASS.map((p,i)=>`<option value="${i}">${esc(fmtFkkoJS(p.fkko)||"без кода")} — `+
-      `${esc(String(p.name||"").slice(0,70))} (${(p.components||[]).length ? (p.components.length + " комп.") : "состава нет"})</option>`).join("")+
+  box.innerHTML = '<div class="row" style="margin-top:6px"><label>Отход: '+
+    `<select id="hc-sel" onchange="$('hc-out').innerHTML=''" style="max-width:560px">`+
+    HC_PASS.map((p,i)=>`<option value="${i}">${esc(p.fkko_fmt || fmtFkkoJS(p.fkko)||"без кода")} — `+
+      `${esc(String(p.name||"").slice(0,70))} (${(p.components||[]).length} комп., ${esc(p.source||"паспорт")}${p.total && Math.abs(+p.total - 100) > 0.5 ? ", Σ " + p.total + " %" : ""})</option>`).join("")+
     '</select></label>'+
     '<button class="b" onclick="hcRun(this)">Рассчитать и сформировать .docx</button>'+
     '<button class="b sec sm" onclick="hcToCalc()" title="перенести состав в калькулятор вкладки «Сервис»">В калькулятор</button>'+
     '<span class="spin" id="sp-hc">считаю…</span></div>'+
-    `<div class="hint">паспортов: ${HC_PASS.length}, с составом: ${withComp}. ${WI_HINT}</div>`+
+    `<div class="hint">отходов с составом: ${HC_PASS.length}${j.note ? " · " + esc(j.note) : ""}. ${WI_HINT}</div>`+
+    (HC_PASS.some(p => p.note) ? `<div class="hint">${HC_PASS.filter(p => p.note).map(p => esc(fmtFkkoJS(p.fkko)) + ": " + esc(p.note)).join("; ")}</div>` : "")+
     '<div id="hc-out"></div>';
 }
 // компоненты паспорта в мг/кг (100 % = 1 000 000) с подстановкой введённых Wi
@@ -4770,9 +4953,30 @@ function showStartupNotes(st){
     lines.map(esc).join("<br>") +
     ` <button class="delrow" style="float:right" onclick="this.parentNode.remove()">✕</button>`;
 }
+// страница устарела: сервер подставил свою версию в <meta name="ecodoc-version">,
+// API отдаёт meta.version — расходятся, значит браузер держит старый HTML/JS
+// (после обновления программы): красная плашка «нажмите Ctrl+F5»
+function checkPageVersion(serverVer){
+  const m = document.querySelector('meta[name="ecodoc-version"]');
+  const pageVer = m ? String(m.content || "").trim() : "";
+  // плейсхолдер не заменён (старый сервер не подставляет версию) — сравнивать не с чем
+  if (!/^\d+\.\d+/.test(pageVer) || !serverVer || pageVer === String(serverVer)) return;
+  let box = $("stale-page");
+  if (!box){
+    box = document.createElement("div");
+    box.id = "stale-page";
+    box.style.cssText = "margin:0 0 10px;padding:8px 12px;background:#fdecea;"+
+      "border:1px solid var(--err);border-radius:8px;font-size:14px;color:var(--err);font-weight:600";
+    const main = document.querySelector("main");
+    main.insertBefore(box, main.firstChild);
+  }
+  box.innerHTML = `⚠ Страница устарела (в браузере ${esc(pageVer)}, сервер ${esc(serverVer)}) — нажмите Ctrl+F5, чтобы загрузить свежую версию.`+
+    ` <button class="b sm" style="margin-left:8px" onclick="location.reload(true)">Обновить</button>`;
+}
 async function refreshMeta(){
   META = await get("meta", {});
   $("ver").textContent = "v" + META.version;
+  checkPageVersion(META.version);
   showStartupNotes(META.startup);
   $("aibox").textContent = META.ai.provider
     ? `ИИ: ${META.ai.provider}/${META.ai.model}` : "ИИ: не настроен (Сервис → Найти ИИ)";

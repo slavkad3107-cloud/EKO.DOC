@@ -314,15 +314,34 @@ def analyze_stored(names: list[str], org: str, site: str,
 
     struct — если передан словарь, в него складывается тот же отчёт в
     структурном виде (по разделам базы) для GUI."""
-    att = workspace.site_dir(org, site) / "attachments"
+    from ecodoc.intake import sources, textcache
+    site_dir = workspace.site_dir(org, site)
+    att = site_dir / "attachments"
     with _busy_site(org, site):
         ctx = workspace.load_context(org, site)
-        paths = [att / n for n in names if (att / n).exists()]
+        paths, cached, lost = [], [], []
+        for n in names:
+            if (att / n).exists():
+                paths.append(att / n)
+                continue
+            # исходник уже удалён после прошлого анализа — берём текст из
+            # кэша (переразбор старого ООС новой версией без повторной загрузки)
+            doc = textcache.load(site_dir, sources.sha_by_name(site_dir, n), att / n)
+            if doc is not None:
+                cached.append(doc)
+            else:
+                lost.append(n)
+        lines = [f"Файлов к анализу: {len(paths) + len(cached)}"
+                 + (f" (из сохранённого текста: {len(cached)})" if cached else "")]
+        for n in lost:
+            lines.append(f"✖ {n}: исходника нет и текст не сохранён — загрузите файл заново")
         if struct is not None:
-            struct["files_total"] = len(paths)
+            struct["files_total"] = len(paths) + len(cached)
+            struct["from_cache"] = [d.path.name for d in cached]
+            struct["lost"] = lost
         return _analyze(paths, ctx, org=org, site=site, use_ai=use_ai,
                         forms=forms, ocr=ocr, scope=scope,
-                        lines=[f"Файлов к анализу: {len(paths)}"], struct=struct)
+                        lines=lines, struct=struct, pre_docs=cached)
 
 
 def run(files: list[str], org: str = "", site: str = "",
@@ -367,7 +386,8 @@ def _err_reason(msg: str, p: Path) -> str:
 def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
              use_ai: bool, forms: list[str] | None, ocr: bool,
              lines: list[str], keep_sources: bool = False,
-             scope: str = "all", struct: dict | None = None) -> str:
+             scope: str = "all", struct: dict | None = None,
+             pre_docs: list | None = None) -> str:
     in_workspace = bool(org and site)
     st: dict = struct if struct is not None else {}
     # 2. извлечение текста ПАРАЛЛЕЛЬНО (OCR сканов — узкое место; Tesseract
@@ -393,6 +413,8 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
             else:
                 p, msg = err
                 unread.setdefault(_err_reason(msg, p), []).append(p.name)
+    if pre_docs:
+        docs = list(pre_docs) + docs        # документы из кэша текстов
     st["unread"] = {reason: list(files_) for reason, files_ in unread.items()}
     if unread:
         total = sum(len(v) for v in unread.values())
@@ -450,6 +472,7 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     if in_workspace and docs:
         lines += _snap_sources(docs, rep, ctx, org, site)
         _stamp_batches(stored, org, site)
+        _cache_texts(docs, org, site)
         lines += _finish_candidates(sink, ctx, org, site, struct=st)
 
     # 4. контроль полноты: чего не хватает и что донести
@@ -562,6 +585,23 @@ def _finish_candidates(sink, ctx: ReportContext, org: str, site: str,
         out.append("── Протоколы по классу опасности ──")
         out += [f"  ⚠ {g}" for g in gaps[:5]]
     return out
+
+
+def _cache_texts(docs, org: str, site: str) -> int:
+    """Сохранить текст каждого разобранного документа (texts/<sha>.json.gz):
+    по нему «Переразобрать» работает после удаления исходника."""
+    from ecodoc.intake import sources, textcache
+    site_dir = workspace.site_dir(org, site)
+    reg, _s, _n = _load_registry(site_dir / "attachments")
+    sha_of = {r.get("file"): r.get("sha1", "") for r in reg}
+    n = 0
+    for doc in docs:
+        if getattr(doc, "from_cache", False):
+            continue
+        sha = sha_of.get(doc.path.name) or sources.sha_by_name(site_dir, doc.path.name)
+        if sha and textcache.save(site_dir, sha, doc):
+            n += 1
+    return n
 
 
 def _stamp_batches(stored: list[Path], org: str, site: str) -> None:
@@ -728,11 +768,14 @@ def _snap_sources(docs, rep, ctx: ReportContext, org: str, site: str) -> list[st
     notes, snapped = [], 0
     for doc in docs:
         name = doc.path.name
-        sha = sha_of.get(name) or _sha1(doc.path)
+        sha = (sha_of.get(name) or (_sha1(doc.path) if doc.path.exists() else "")
+               or sources.sha_by_name(site_dir, name))
+        if not sha:
+            continue
         pages = {v.get("page") for v in (found_pages.get(name) or {}).values()
                  if isinstance(v, dict) and v.get("page")}
         images, note = ({}, "")
-        if pages:
+        if pages and doc.path.exists():     # из кэша текста снимки не снять
             images, note = page_image.capture(doc.path, pages, site_dir, sha)
             snapped += len(images)
         if note:

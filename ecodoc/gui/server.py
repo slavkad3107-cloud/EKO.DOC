@@ -21,6 +21,12 @@ from ecodoc import __version__
 from ecodoc.core import registry, serialize, workspace
 
 INDEX = Path(__file__).parent / "index.html"
+
+
+def render_index() -> bytes:
+    """index.html с подставленной версией — интерфейс сверяет её с API и
+    просит Ctrl+F5, если браузер показал устаревшую страницу."""
+    return INDEX.read_bytes().replace(b"__ECODOC_VERSION__", __version__.encode("utf-8"))
 SOURCE = Path(__file__).parent / "source.html"   # просмотр листа-источника
 
 
@@ -177,10 +183,17 @@ def api_context_save(params, body):
                    encoding="utf-8")
     ctx = serialize.from_json(tmp)
     tmp.unlink(missing_ok=True)
+    # пустые строки актов («+ акт» без заполнения) в базу не пишем
+    before = len(ctx.waste_acts)
+    ctx.waste_acts = [a for a in ctx.waste_acts
+                      if (a.fkko_code or "").strip() or (a.name or "").strip()
+                      or a.mass or a.volume_m3]
+    dropped = before - len(ctx.waste_acts)
     # save_context также пишет реквизиты организации в org.json (иначе
     # правки блока organization во вкладке «Данные» терялись бы)
     workspace.save_context(body["org"], body["site"], ctx)
-    return {"ok": True, "version": _ctx_version(p)}
+    _ISSUES_CACHE.pop((body["org"], body["site"]), None)
+    return {"ok": True, "version": _ctx_version(p), "dropped_empty_acts": dropped}
 
 
 def _decode_to_tmp(files: list[dict], tmpdir: Path) -> list[str]:
@@ -680,19 +693,28 @@ def api_devdoc(params, body):
         made = waste_passport.generate(ctx, out_dir / "паспорта")
         if not made:
             return {"error": "Нет отходов I–IV класса — паспорта не требуются."}
-        return {"path": str(made[0].parent), "files": [p.name for p in made]}
+        # использованные сведения (состав в %, происхождение, адрес) — в базу:
+        # расчёт класса и справки состава видят сгенерированные паспорта
+        try:
+            waste_passport.remember_details(ctx)
+            workspace.save_context(body["org"], body["site"], ctx)
+        except Exception:
+            pass
+        return {"path": str(made[0].parent), "files": [p.name for p in made],
+                "gaps": waste_passport.gaps(ctx)}
     elif kind == "waste-composition":
         # справка о составе по ООС/ПНООЛР — проект для протокола КХА
         from ecodoc.development import waste_composition
-        made = waste_composition.generate(
-            ctx, out_dir / "состав_отходов",
-            site_dir=workspace.site_dir(body["org"], body["site"]))
+        site_dir = workspace.site_dir(body["org"], body["site"])
+        made = waste_composition.generate(ctx, out_dir / "состав_отходов",
+                                          site_dir=site_dir)
+        note = _oos_note(ctx, site_dir)
         if not made:
             return {"error": "Нет отходов с компонентным составом — загрузите "
                              "ООС/ПНООЛР или протоколы КХА.",
-                    "gaps": waste_composition.gaps(ctx)}
+                    "note": note, "gaps": [note] * bool(note) + waste_composition.gaps(ctx)}
         return {"path": str(made[0].parent), "files": [p.name for p in made],
-                "gaps": waste_composition.gaps(ctx)}
+                "note": note, "gaps": waste_composition.gaps(ctx)}
     else:
         return {"error": f"неизвестный документ: {kind}"}
     return {"path": str(path)}
@@ -753,6 +775,114 @@ def _hazard_class_from_passport(body):
                         declared_class=info.get("hazard_class"))
         out["path"] = str(path)
     return out
+
+
+def _oos_note(ctx, site_dir) -> str:
+    """Почему нет данных ООС: не загружен или разобран прежней версией."""
+    from ecodoc.intake import sources, textcache
+    docs = sources.load(site_dir).get("docs") or {}
+    oos = [(sha, rec) for sha, rec in docs.items()
+           if str(rec.get("doc_type") or "") in ("oos", "pnoolr")
+           or any(k in str(rec.get("file") or "").upper() for k in ("ООС", "ПМООС", "ПНООЛР"))]
+    have = bool(isinstance(ctx.extra, dict) and ctx.extra.get("oos_wastes"))
+    if have:
+        return ""
+    if not oos:
+        return ("ООС/ПНООЛР не загружен — загрузите его в ЗАГРУЗКЕ с категорией "
+                "«отходы: ООС/ПНООЛР/паспорта/протоколы/акты»")
+    sha, rec = oos[0]
+    name = rec.get("file", "")
+    if textcache.has(site_dir, sha):
+        return (f"ООС «{name}» разобран прежней версией программы — таблица отходов "
+                f"из него не извлечена: нажмите «Переразобрать» в ЗАГРУЗКЕ")
+    return (f"ООС «{name}» разобран прежней версией программы, исходник и текст не "
+            f"сохранены — загрузите файл заново (ЗАГРУЗКА, категория «отходы»)")
+
+
+def api_waste_forget(params, body):
+    """Удалить отход насовсем: позиция, акты, паспорт, сведения, строки ООС,
+    кандидаты → отклонено; код исключается (extra.waste_excluded)."""
+    from ecodoc.core import waste_exclude
+    from ecodoc.core.waste_agg import apply_acts
+    from ecodoc.intake import intake
+    org, site = body["org"], body["site"]
+    if intake.is_busy(org, site):
+        return {"error": "Идёт приём по этой площадке — дождитесь окончания."}
+    ctx = workspace.load_context(org, site)
+    res = waste_exclude.forget(ctx, workspace.site_dir(org, site), str(body.get("fkko") or ""))
+    if res.get("error"):
+        return res
+    apply_acts(ctx)
+    workspace.save_context(org, site, ctx)
+    _ISSUES_CACHE.pop((org, site), None)
+    return res
+
+
+def api_waste_restore(params, body):
+    from ecodoc.core import waste_exclude
+    org, site = body["org"], body["site"]
+    ctx = workspace.load_context(org, site)
+    ok = waste_exclude.restore(ctx, str(body.get("fkko") or ""))
+    if ok:
+        workspace.save_context(org, site, ctx)
+    return {"ok": ok}
+
+
+def api_waste_compositions(params, body):
+    """Составы отходов из всех источников (ручные сведения, сгенерированные
+    паспорта, паспорта-сканы, протоколы) — для «Оформить расчёт по паспорту»."""
+    from ecodoc.core import fkko as _fkko
+    from ecodoc.core import waste_refdata as R
+    from ecodoc.core.waste_agg import norm_fkko
+    from ecodoc.development import waste_passport
+    ctx = workspace.load_context(body["org"], body["site"])
+    labels = {"manual": "сведения, введённые вручную", "protocol": "протокол состава",
+              "passport": "паспорт отхода (скан)", "oos": "ООС/ПНООЛР",
+              "pnoolr": "ООС/ПНООЛР", "generated": "сгенерированный паспорт"}
+    rows, seen = [], set()
+    for w in ctx.wastes:
+        code = norm_fkko(w.fkko_code)
+        if not code or code in seen:
+            continue
+        d = waste_passport._details(ctx, w)
+        comps = d.get("components") or []
+        if not comps:
+            continue
+        norm, note = R.normalize_components(comps)
+        if not norm:
+            continue
+        seen.add(code)
+        total = sum(float(str(c.get("percent") or 0).replace(",", ".")) for c in norm)
+        rows.append({"fkko": code, "fkko_fmt": _fkko.fmt(code), "name": w.name,
+                     "hazard_class": w.hazard_class,
+                     "components": [{"name": c.get("name", ""), "percent": c.get("percent", "")}
+                                    for c in norm],
+                     "source": labels.get(d.get("_comp_kind") or "", d.get("_comp_kind") or "паспорт"),
+                     "total": round(total, 2), "note": note or ""})
+    extra = ctx.extra if isinstance(ctx.extra, dict) else {}
+    for p in extra.get("waste_passports") or []:
+        code = norm_fkko(p.get("fkko") if isinstance(p, dict) else "")
+        if not code or code in seen or not (p.get("components") or []):
+            continue
+        norm, note = R.normalize_components(p["components"])
+        if not norm:
+            continue
+        seen.add(code)
+        rows.append({"fkko": code, "fkko_fmt": _fkko.fmt(code), "name": p.get("name", ""),
+                     "hazard_class": p.get("hazard_class") or int(code[-1]),
+                     "components": [{"name": c.get("name", ""), "percent": c.get("percent", "")}
+                                    for c in norm],
+                     "source": "паспорт отхода (загруженный)", "total": 100.0, "note": note or ""})
+    note = ""
+    if not rows:
+        if extra.get("passports_generated_at"):
+            note = ("паспорта сформированы, но состава нет ни у одного отхода — в них "
+                    "состав «определяется по протоколу»: загрузите протоколы состава "
+                    "отходов или ООС/ПНООЛР с таблицей характеристики отходов")
+        else:
+            note = ("составов нет: загрузите протоколы состава отходов, паспорта или "
+                    "ООС/ПНООЛР — без состава класс опасности не считается")
+    return {"rows": rows, "note": note}
 
 
 def api_hazard_class(params, body):
@@ -1569,6 +1699,8 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "fkko_check": api_fkko_check,
               "forms_registry": api_forms_registry}
 POST_ROUTES = {"intake_forget": api_intake_forget,
+               "waste_forget": api_waste_forget, "waste_restore": api_waste_restore,
+               "waste_compositions": api_waste_compositions,
                "intake_unexclude": api_intake_unexclude,
                "org_add": api_org_add, "org_lookup": api_org_lookup,
                "site_add": api_site_add, "site_del": api_site_del,
@@ -1666,10 +1798,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             return self.wfile.write(data)
-        # всё остальное — одна страница
-        data = INDEX.read_bytes()
+        # всё остальное — одна страница (без кэша: после обновления программы
+        # браузер не должен показывать старый интерфейс)
+        data = render_index()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)

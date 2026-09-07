@@ -94,7 +94,10 @@ def intake_map(ctx: ReportContext, site_dir: Path, org: str = "", site: str = ""
                 d["status"] = "unread"
                 d["reason"] = "файл не разобран: не прочитался или ИИ не ответил — " \
                               "«Повторить анализ» или заведите данные вручную"
+    from ecodoc.intake import textcache
     for d in by_file.values():
+        d["reanalyze"] = bool(d.get("doc")) and textcache.has(site_dir, d["doc"]) \
+            and d["status"] != "unread"
         if d["status"] == "unread" and (d["taken"] or d["doubts"]):
             # файл остался в приёме (ИИ не осилил часть листов), но что-то из
             # него уже взято — это «частично», а не «не прочитан»

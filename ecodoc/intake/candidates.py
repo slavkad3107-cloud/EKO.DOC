@@ -212,6 +212,10 @@ def write(ctx, key: str, value) -> bool:
                                     WasteFlow)
     from ecodoc.core.waste_agg import norm_fkko
     coll, sel, attr = parse_key(key)
+    if coll in ("wastes", "waste_acts") and sel.get("fkko"):
+        from ecodoc.core.waste_exclude import is_excluded
+        if is_excluded(ctx, sel["fkko"]):
+            return False                    # позиция удалена пользователем
     obj = None
     if coll == "organization":
         obj = ctx.organization

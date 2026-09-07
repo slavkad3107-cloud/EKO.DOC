@@ -348,7 +348,11 @@ def build(ctx, site_dir: str | Path | None) -> dict:
                           for rec in sources.load(site_dir)["docs"].values())
     out_rows = []
     oos_only = acts_only = 0
+    from ecodoc.core.waste_exclude import excluded_codes
+    skip = excluded_codes(ctx)
     for code in sorted(rows):
+        if code in skip:
+            continue                        # удалён пользователем — не воскрешаем
         r = rows[code]
         issues = _issues(r, any_project)
         in_oos = any(k in r.sources for k in _PROJECT)
