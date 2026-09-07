@@ -39,7 +39,8 @@ def test_org_block_allowed_for_own_card_and_matching_inn():
                                       "ООС.pdf") == ""
     assert analyzer.org_block_problem(ctx, {"name": "ИП Миних"}, "карточка.pdf",
                                       doc_type="устав") == ""
-    assert analyzer.org_block_problem(_ctx(""), {"name": "ИП Миних"}, "договор.pdf") == ""
+    # из договора блок organization не берётся — реквизиты сторон идут через parties
+    assert "только из ЕГРЮЛ" in analyzer.org_block_problem(_ctx(""), {"name": "ИП Миних"}, "договор.pdf")
 
 
 def test_merge_org_rejects_foreign_block_with_reason():

@@ -197,7 +197,7 @@ def test_intake_collects_candidates_with_source(tmp_path, make_pdf, monkeypatch)
     workspace.add_org("ТЕСТ")
     workspace.add_site("ТЕСТ", "Пл")
     a = make_pdf(tmp_path / "устав.pdf", ["Устав", "ИНН 7801234564"])
-    b = make_pdf(tmp_path / "счет.pdf", ["Счёт-фактура", "ИНН 780600114472"])
+    b = make_pdf(tmp_path / "лист записи.pdf", ["Лист записи ЕГРЮЛ", "ИНН 780600114472"])
     report = intake.run([str(a), str(b)], org="ТЕСТ", site="Пл", use_ai=False)
 
     site_dir = workspace.site_dir("ТЕСТ", "Пл")
@@ -219,7 +219,7 @@ def test_api_candidates_and_decide(tmp_path, make_pdf):
     workspace.add_org("ТЕСТ")
     workspace.add_site("ТЕСТ", "Пл")
     a = make_pdf(tmp_path / "устав.pdf", ["Устав", "ИНН 7801234564"])
-    b = make_pdf(tmp_path / "счет.pdf", ["Счёт", "ИНН 780600114472"])
+    b = make_pdf(tmp_path / "лист записи.pdf", ["Лист записи ЕГРЮЛ", "ИНН 780600114472"])
     intake.run([str(a), str(b)], org="ТЕСТ", site="Пл", use_ai=False)
 
     out = server.api_candidates({"org": "ТЕСТ", "site": "Пл"}, {})

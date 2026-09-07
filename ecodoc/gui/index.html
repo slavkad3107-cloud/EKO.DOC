@@ -154,6 +154,21 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
 .rep-bad{color:var(--err)} .rep-warn{color:var(--warn)} .rep-ok{color:var(--acc)}
 /* подвкладки ОБЪЕКТА показываются/скрываются, не перерисовываются */
 .osub{display:block}.osub.off{display:none}
+/* результат генерации — рядом с кнопкой, которую нажали (а не в #out-gen
+   другой вкладки): текст + «Открыть» / «Открыть папку» */
+.genres{margin:6px 0;padding:8px 10px;border:1px solid var(--line);border-left:4px solid var(--acc);
+  border-radius:6px;font-size:13px;background:#f7faf8;white-space:pre-wrap;word-break:break-word}
+.genres.err{border-left-color:var(--err);background:#fdecea}
+.genres.busy{border-left-color:var(--warn);background:#fff8e1}
+.genres .row{margin:6px 0 0}
+/* отходы из ООС: карточка над перечнем ФККО */
+table.dtbl td.oos{color:var(--mut);text-align:right;white-space:nowrap;padding:2px 6px;font-size:12px}
+.oos-dec{font-size:12px;white-space:nowrap}
+.oos-dec.add{color:var(--acc)} .oos-dec.skip{color:var(--mut)}
+tr.oos-add td{background:#f0f8f3} tr.oos-skip td{opacity:.55}
+.dens-warn{display:block;font-size:11px;color:var(--warn);background:#fff3c4;border-radius:4px;padding:1px 4px;margin-top:2px;white-space:nowrap}
+/* акты без периода (новые) — первая, раскрытая группа списка актов */
+details.newacts>summary{color:var(--warn)}
 </style>
 </head>
 <body>
@@ -283,7 +298,7 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
       <div class="osub" id="osub-obj">
         <div class="row">
           <button class="b" onclick="saveCtx()">💾 Сохранить</button>
-          <button class="b sec" onclick="loadCtx()">Перечитать</button>
+          <button class="b sec" onclick="rereadCtx()" title="заново прочитать данные площадки с диска (несохранённые правки пропадут)">Перечитать</button>
           <button class="b sec" onclick="checkObjects()">Проверить код и определить ОКТМО/ОКАТО</button>
           <button class="b sec" onclick="deleteBadObjects()">Удалить некорректные</button>
           <button class="b sec" onclick="openWs()">Открыть папку площадки</button>
@@ -381,8 +396,8 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
              из вкладки ОТХОДЫ (замечание эколога): это данные ДЛЯ форм -->
         <div id="move-rw"></div>
         <div class="row" style="margin:8px 0 2px">
-          <button class="b sec" onclick="doWasteSummary()">📊 Сводная по отходам из справок-актов (мес/кв/год, .xlsx)</button>
-          <button class="b sec" onclick="doWasteTable()">📋 Табличка по отходам (т/м³ по классам, .xlsx)</button>
+          <button class="b sec" onclick="doWasteSummary(this)">📊 Сводная по отходам из справок-актов (мес/кв/год, .xlsx)</button>
+          <button class="b sec" onclick="doWasteTable(this)">📋 Табличка по отходам (т/м³ по классам, .xlsx)</button>
         </div>
         <div id="miss-rw"></div>
         <h3 style="margin:8px 0 6px;color:var(--acc)">Формы по отходам</h3>
@@ -520,7 +535,7 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
         <label>Папка готовых документов:
           <input type="text" id="results-dir" style="width:340px"></label>
         <button class="b sec" onclick="saveResultsDir()">Сохранить</button>
-        <button class="b sec" onclick="post('open',{path:META.results}).catch(()=>{})">Открыть</button>
+        <button class="b sec" onclick="openPath(META.results)">Открыть</button>
         <span class="hint" id="storage-msg"></span>
       </div>
       <div class="row" style="margin-top:6px">
@@ -682,6 +697,75 @@ function notify(text, kind, ms){
 }
 
 const $ = id => document.getElementById(id);
+
+// ── результат генерации рядом с кнопкой ──────────────────────────────
+// Раньше «Сводная», «Табличка», «Сгенерировать (.docx)» писали итог в
+// #out-gen / #out-dev — pre в другой вкладке или в самом низу карточки, и
+// пользователь видел «ничего не происходит». Теперь у каждой кнопки свой
+// контейнер: в карточке формы — в её конце, у ряда кнопок — сразу под рядом.
+// Плюс тост и кнопки «Открыть» / «Открыть папку» (post open).
+function parentDir(p){ return String(p||"").replace(/[\\/][^\\/]*$/, ""); }
+async function openPath(p){
+  if (!p) return;
+  try{ await post("open", {path:p}); }
+  catch(e){ notify("Не удалось открыть: " + errText(e), "err"); }
+}
+function resultBox(anchor){
+  const el = typeof anchor === "string" ? $(anchor) : anchor;
+  if (!el) return null;
+  if (el.classList && el.classList.contains("genres")) return el;
+  const card = el.closest(".form-card");
+  if (card){
+    let box = card.querySelector(":scope > .genres");
+    if (!box){ box = document.createElement("div"); box.className = "genres"; card.appendChild(box); }
+    return box;
+  }
+  const row = el.closest(".row") || el.parentNode;
+  let box = row.nextElementSibling;
+  if (!box || !box.classList.contains("genres")){
+    box = document.createElement("div"); box.className = "genres"; row.after(box);
+  }
+  return box;
+}
+// r = {text, path, dir, files:[], kind:"ok"|"err"|"busy", quiet}
+function showResult(anchor, r){
+  const box = anchor ? resultBox(anchor) : null;   // без якоря — только тост
+  r = r || {};
+  const kind = r.kind || (r.error ? "err" : "ok");
+  const text = r.text || r.error || "";
+  if (box){
+    box.className = "genres" + (kind === "err" ? " err" : kind === "busy" ? " busy" : "");
+    box.hidden = false;
+    box.textContent = "";
+    const t = document.createElement("div"); t.textContent = text; box.appendChild(t);
+    if (r.files && r.files.length){
+      const ul = document.createElement("ul"); ul.style.cssText = "margin:2px 0 4px 18px;padding:0";
+      for (const f of r.files){ const li = document.createElement("li"); li.textContent = f; ul.appendChild(li); }
+      box.appendChild(ul);
+    }
+    const dir = r.dir || (r.path ? parentDir(r.path) : "");
+    if (r.path || dir){
+      const row = document.createElement("div"); row.className = "row";
+      if (r.path){
+        const b = document.createElement("button"); b.className = "b sm"; b.textContent = "Открыть";
+        b.onclick = () => openPath(r.path); row.appendChild(b);
+      }
+      if (dir){
+        const b2 = document.createElement("button"); b2.className = "b sec sm"; b2.textContent = "Открыть папку";
+        b2.onclick = () => openPath(dir); row.appendChild(b2);
+      }
+      box.appendChild(row);
+    }
+    const x = document.createElement("button"); x.className = "delrow"; x.title = "скрыть";
+    x.style.cssText = "float:right"; x.textContent = "✕"; x.onclick = () => { box.hidden = true; };
+    box.prepend(x);
+  }
+  if (!r.quiet && kind !== "busy"){
+    if (kind === "err") notify(text.split("\n")[0], "err", 7000);
+    else notify(r.path ? "Сформировано: " + r.path : text.split("\n")[0], "ok", 6000);
+  }
+  return box;
+}
 // timeoutMs=0 — без таймаута (долгие операции: ИИ-интейк, сторож, генерация)
 const api = async (name, opts, timeoutMs=90000) => {
   const ctrl = new AbortController();
@@ -1609,6 +1693,11 @@ function renderOrgTab(){
           `<button class="b sec" style="padding:4px 10px;font-size:13px" onclick="proposeShortName()">Предложить краткое</button>`+
           `<span class="spin" id="sp-short">думает…</span></div>`;
       h += `</div>`;
+    } else if (k === "address"){
+      // юрадрес: у юрлица — из ЕГРЮЛ; у ИП выписка ЕГРИП адрес не публикует,
+      // его берут из договора (раздел «реквизиты сторон») — замечание эколога
+      h += `<div class="fld" style="grid-column:span 2"><label>${label}</label>${tinput(o[k],'organization.'+k, 'индекс, регион, город, улица, дом')}`+
+        `<div class="hint">${ADDR_HINT}</div></div>`;
     } else {
       h += `<div class="fld"><label>${label}</label>${tinput(o[k],'organization.'+k)}</div>`;
     }
@@ -1678,20 +1767,31 @@ async function verifyOrg(){
   spin("sp-org", 0);
 }
 function renderOrgVerify(j){
+  // ИП (ИНН 12 цифр): открытая выписка ЕГРИП адрес не содержит — вместо
+  // пустого сравнения честная подсказка (замечание эколога)
+  const isIp = String(j.inn||"").replace(/\D/g, "").length === 12;
   const rows = (j.rows||[]).map(r => {
-    const mark = r.same ? "✓" : (r.empty ? "＋" : "≠");
+    const ipAddr = isIp && r.field === "address" && !r.egrul;
+    const mark = ipAddr ? "—" : r.same ? "✓" : (r.empty ? "＋" : "≠");
     const act = (!r.same && r.egrul)
-      ? `<button class="b sec" onclick="takeEgrul('${esc(r.field)}')">Взять из ЕГРЮЛ</button>` : "";
-    return `<tr><td>${mark}</td><td>${esc(r.field)}</td>`+
+      ? `<button class="b sec" onclick="takeEgrul('${esc(r.field)}')">Взять из ${isIp ? "ЕГРИП" : "ЕГРЮЛ"}</button>` : "";
+    // поле — русской подписью (как в форме); адрес — с пометкой источника
+    let lab = (ORG_FLD.find(x => x[0] === r.field) || [])[1] || r.field;
+    if (r.field === "address") lab = "Юридический адрес" + (isIp ? " (ЕГРИП не выдаёт)" : " (из ЕГРЮЛ)");
+    const fld = esc(lab) + (r.field === "address" && !ipAddr ? `<div class="hint">${ADDR_HINT}</div>` : "");
+    const reg = ipAddr
+      ? '<span class="hint">для ИП адрес в открытом ЕГРИП не выдаётся — введите вручную или возьмите из договора (раздел «реквизиты сторон»)</span>'
+      : (esc(r.egrul) || '<span class="hint">нет в выписке</span>');
+    return `<tr><td>${mark}</td><td>${fld}</td>`+
       `<td>${esc(r.ours) || '<span class="hint">пусто</span>'}</td>`+
-      `<td>${esc(r.egrul)}</td><td>${act}</td></tr>`;
+      `<td>${reg}</td><td>${act}</td></tr>`;
   }).join("");
   EGRUL = j.egrul || {};
   $("orgverify").innerHTML =
-    `<div class="dsec"><h4>Сверка с ЕГРЮЛ по ИНН ${esc(j.inn)}</h4>`+
-    `<div class="hint">расхождений: ${j.diff}, пустых у нас: ${j.empty}</div>`+
+    `<div class="dsec"><h4>Сверка с ${isIp ? "ЕГРИП" : "ЕГРЮЛ"} по ИНН ${esc(j.inn)}</h4>`+
+    `<div class="hint">расхождений: ${j.diff}, пустых у нас: ${j.empty}${isIp ? " · ИП: адрес выписка не содержит" : ""}</div>`+
     '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th></th><th>Поле</th>'+
-    '<th>У нас</th><th>ЕГРЮЛ</th><th></th></tr></thead><tbody>'+rows+
+    `<th>У нас</th><th>${isIp ? "ЕГРИП" : "ЕГРЮЛ"}</th><th></th></tr></thead><tbody>`+rows+
     '</tbody></table></div>'+
     `<button class="b" style="margin-top:6px" onclick="takeEgrulAll()">Взять все из ЕГРЮЛ</button>`+
     `</div>`;
@@ -1879,7 +1979,7 @@ const ISSUE_CATS = ["Отходы", "Выбросы", "Сбросы", "Объе�
 const ISSUE_KIND = {unread:"файл не прочитан", doubt:"сомнительное значение",
   missing_period:"акт без периода", bad_code:"код не по ФККО", implausible:"неправдоподобно",
   license:"лицензия", passport_source:"паспорт не из паспорта", short_name:"краткое наименование",
-  object_code:"код объекта"};
+  object_code:"код объекта", oos_stage:"отход из ООС (эксплуатация)", density_oos:"плотность ≠ ООС"};
 let ISSUES_INFLIGHT = null;     // проверка тяжёлая (сотни файлов) — не дублировать запрос
 async function loadIssues(){
   if (!ORG || !SITE) return;
@@ -1937,9 +2037,25 @@ function issueFixHtml(it, id){
       `<button class="b sec sm" onclick="manualCand('${esc(f.key||"")}','${esc(it.label||"")}')">Ввести своё</button></div>`;
   if (f.type === "clean")
     return `<button class="b sec sm" onclick="issueClean('${esc(f.only||"")}', this)">Убрать (${f.only==="passports" ? "паспорта не из паспортов" : "мусорные вещества"})</button>`;
+  // эксплуатационный отход из ООС: решение прямо здесь (тот же oosDecide, что
+  // в карточке «Отходы из ООС» вкладки Отходы) + сохранение
+  if (it.kind === "oos_stage" && /^extra\.oos_wastes\[(\d+)\]\.decision$/.test(f.path||""))
+    return `<div class="fixrow"><button class="b sm" onclick="oosIssueDecide('${esc(f.path)}','add',this)">Добавить в перечень</button>`+
+      `<button class="b sec sm" onclick="oosIssueDecide('${esc(f.path)}','skip',this)">Не добавлять</button>`+
+      ` <a class="link" onclick="showTab('waste')">во вкладку</a></div>`;
   if (f.type === "tab")
     return `<a class="link" onclick="showTab('${esc(f.tab||"obj")}')">перейти во вкладку</a>`;
   return "";
+}
+async function oosIssueDecide(path, decision, btn){
+  const m = String(path||"").match(/^extra\.oos_wastes\[(\d+)\]\.decision$/);
+  if (!m || !CTX){ alert("Не задан адрес записи ООС"); return; }
+  const i = +m[1];
+  if (!oosList()[i]){ alert("Записи ООС с таким номером в базе нет — нажмите «Проверить заново»"); return; }
+  if (btn){ btn.disabled = true; btn.textContent = "…"; }
+  oosDecide(i, decision);            // помечает и (для add) заводит позицию ФККО
+  await saveCtx();                    // тост «Сохранено» / ошибка — из saveCtx
+  loadIssues().catch(()=>{});
 }
 function issueRowHtml(it, id){
   return `<tr><td class="hint" style="white-space:nowrap">${esc(ISSUE_KIND[it.kind]||it.kind||"")}</td>`+
@@ -2235,6 +2351,17 @@ function fkkoBlockHtml(){
       (p.src ? `<div class="hint">${p.src_ok === false ? '<span style="color:var(--err)">⚠ не из паспорта/протокола:</span> ' : "источник: "}${esc(p.src)}</div>` : "") +
       (probs.length ? `<div class="hint" style="color:var(--warn)">${probs.map(esc).join("; ")}</div>` : "");
   };
+  // нормативы из ООС (extra.oos_wastes) — колонки «ООС: т/год», «ООС: м³», «т/м³»
+  const oos = oosByCode();
+  const oosNum = v => (v === null || v === undefined || v === "" || !_num(v)) ? "—" : fmt3(_num(v));
+  const oosCells = code => {
+    const o = oos[code];
+    if (!o) return '<td class="oos">—</td><td class="oos">—</td><td class="oos">—</td>';
+    const tag = o._multi ? `<div class="hint" title="в ООС отход есть и в строительстве, и в эксплуатации">${esc(o.stage||"")}</div>` : "";
+    return `<td class="oos" title="${esc(oosTitle(o))}">${oosNum(o.mass_t)}${tag}</td>`+
+      `<td class="oos">${oosNum(o.volume_m3)}</td><td class="oos">${oosNum(oosDensity(o))}</td>`;
+  };
+  h += oosCardHtml();
   const seen = new Set();
   let rows = "";
   wastes.forEach((w, i) => {
@@ -2244,8 +2371,9 @@ function fkkoBlockHtml(){
       `<td><input value="${esc(fmtFkkoJS(w.fkko_code))}" data-path="wastes[${i}].fkko_code" style="min-width:130px;white-space:nowrap" placeholder="7 33 100 01 72 4"></td>`+
       `<td><input value="${esc(w.name)}" data-path="wastes[${i}].name" list="waste-list" onchange="fillWaste(this)" style="min-width:220px"></td>`+
       `<td><input value="${esc(w.hazard_class)}" data-path="wastes[${i}].hazard_class" style="width:48px"></td>`+
-      `<td>${passCell(code)}</td><td>${catalogCell(code)}</td>`+
-      `<td><button class="delrow" title="удалить позицию" onclick="delRow(this)">✕</button></td></tr>`;
+      oosCells(code)+
+      `<td>${passCell(code)}${p ? ` <a class="link" onclick="delPassport('${code}')" title="убрать паспорт из базы (позиция и акты остаются)">убрать паспорт</a>` : ""}</td><td>${catalogCell(code)}</td>`+
+      `<td><button class="delrow" title="удалить позицию вместе с её актами и паспортом" onclick="delWaste(${i})">✕</button></td></tr>`;
   });
   // паспорта, у которых нет позиции в перечне отходов — показываем, чтобы не потерялись
   for (const p of PASS_ROWS||[]){
@@ -2254,18 +2382,160 @@ function fkkoBlockHtml(){
     seen.add(code);
     rows += `<tr class="${p.src_ok === false ? "srcbad" : ""}"><td style="white-space:nowrap">${esc(p.fkko_fmt||fmtFkkoJS(code))}</td>`+
       `<td>${esc(p.name)}<div class="hint">только паспорт — в актах и движении отхода нет</div></td>`+
-      `<td>${esc(p.hazard_class)}</td><td>${passCell(code)}</td><td>${catalogCell(code)}</td><td></td></tr>`;
+      `<td>${esc(p.hazard_class)}</td>${oosCells(code)}<td>${passCell(code)}</td><td>${catalogCell(code)}</td>`+
+      `<td><button class="delrow" title="удалить паспорт" onclick="delPassport('${code}')">✕</button></td></tr>`;
   }
   if (!rows) h += '<div class="hint">Отходов пока нет — добавьте позицию или загрузите паспорта / справки-акты '+
     '(блок «Догрузить исходники» внизу вкладки).</div>';
   else h += '<div style="overflow-x:auto"><table class="dtbl" data-key="wastes"><thead><tr><th>ФККО</th>'+
-    '<th>Наименование</th><th>Класс</th><th>Паспорт</th><th>Каталог ФККО</th><th></th></tr></thead>'+
+    '<th>Наименование</th><th>Класс</th>'+
+    '<th title="норматив образования по ООС, т/год" style="text-align:right">ООС: т/год</th>'+
+    '<th title="объём по ООС, м³" style="text-align:right">ООС: м³</th>'+
+    '<th title="плотность по ООС (т/м³ или т ÷ м³)" style="text-align:right">т/м³</th>'+
+    '<th>Паспорт</th><th>Каталог ФККО</th><th></th></tr></thead>'+
     `<tbody>${rows}</tbody></table></div>`;
   h += `<div class="row" style="margin-top:6px"><button class="b sec sm" onclick="addRow('wastes')">+ отход</button>`+
-    `<span class="hint">${PASS_SRC_HINT}</span></div>`;
+    `<span class="hint">${PASS_SRC_HINT} ✕ удаляет позицию вместе с её справками-актами и паспортом — иначе после «Сохранить» она вернётся (движение считается из актов).</span></div>`;
   // сверка по источникам — своя карточка внутри блока 1 (кэш XCHK, кнопка «Сверить»)
   h += `<div id="wp-xcheck">${xcheckHtml()}</div></div>`;
   return h;
+}
+
+// ── отходы из ООС (extra.oos_wastes; заполняет сервер при приёме ООС) ──
+// запись: {fkko, name, hazard_class, stage:"строительство"|"эксплуатация",
+//          mass_t, volume_m3, density, src, page, decision:""|"add"|"skip"}
+function oosList(){
+  const l = (CTX && CTX.extra || {}).oos_wastes;
+  return Array.isArray(l) ? l : [];
+}
+function oosDensity(o){
+  if (!o) return 0;
+  if (_num(o.density)) return _num(o.density);
+  const t = _num(o.mass_t), m3 = _num(o.volume_m3);
+  return (t && m3) ? t / m3 : 0;
+}
+function oosTitle(o){
+  return `ООС, ${o.stage||"этап не указан"}: ${o.name||""}` +
+    (o.src ? `\nисточник: ${o.src}${o.page ? ", л." + o.page : ""}` : "");
+}
+// код → запись ООС для колонок перечня: решение «добавить» главнее, затем
+// строительство (основа для паспортов и актов), затем первая попавшаяся
+function oosByCode(){
+  const out = {};
+  for (const o of oosList()){
+    const code = normFkkoJS(o.fkko);
+    if (!code) continue;
+    const prev = out[code];
+    if (!prev){ out[code] = {...o}; continue; }
+    prev._multi = true;
+    const better = o.decision === "add" && prev.decision !== "add" ||
+      (o.decision === prev.decision && o.stage === "строительство" && prev.stage !== "строительство");
+    if (better) out[code] = {...o, _multi:true};
+  }
+  return out;
+}
+function oosCardHtml(){
+  const list = oosList();
+  if (!list.length)
+    return '<div class="dsec" style="background:#fbfcfb"><h4>Отходы из ООС</h4><div class="hint">ООС не загружен или отходы из него '+
+      'не извлечены — <a class="link" onclick="showTab(\'intake\')">загрузите ООС в ЗАГРУЗКЕ</a> (категория «отходы»).</div></div>';
+  const have = new Set((CTX.wastes||[]).map(w => normFkkoJS(w.fkko_code)).filter(Boolean));
+  const row = (o, i) => {
+    const code = normFkkoJS(o.fkko), inList = code && have.has(code);
+    const dec = o.decision || "";
+    const state = dec === "add" ? '<span class="oos-dec add">✓ в перечне</span>'
+      : dec === "skip" ? '<span class="oos-dec skip">не добавлять</span>'
+      : inList ? '<span class="oos-dec add" title="код уже есть в перечне">уже в перечне</span>' : '<span class="oos-dec">?</span>';
+    return `<tr class="${dec === "add" ? "oos-add" : dec === "skip" ? "oos-skip" : ""}">`+
+      `<td style="white-space:nowrap">${esc(fmtFkkoJS(o.fkko))}</td><td>${esc(o.name||"")}</td>`+
+      `<td style="text-align:center">${esc(o.hazard_class||"")}</td>`+
+      `<td class="oos">${_num(o.mass_t) ? fmt3(_num(o.mass_t)) : "—"}</td><td class="oos">${_num(o.volume_m3) ? fmt3(_num(o.volume_m3)) : "—"}</td>`+
+      `<td class="oos">${oosDensity(o) ? oosDensity(o).toFixed(2) : "—"}</td>`+
+      `<td class="hint" style="white-space:nowrap">${esc(o.src||"")}${o.page ? " л." + esc(o.page) : ""}</td>`+
+      `<td>${state}</td><td style="white-space:nowrap">`+
+      (dec !== "add" ? `<button class="b sm" onclick="oosDecide(${i},'add')">Добавить в перечень</button> ` : "")+
+      (dec !== "skip" ? `<button class="b sec sm" onclick="oosDecide(${i},'skip')">Не добавлять</button>` : "")+
+      (dec ? ` <a class="link" onclick="oosDecide(${i},'')" title="снять решение">отменить</a>` : "")+
+      `</td></tr>`;
+  };
+  const table = (items) => '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>ФККО</th><th>Наименование</th><th>Класс</th>'+
+    '<th style="text-align:right">т/год</th><th style="text-align:right">м³</th><th style="text-align:right">т/м³</th><th>Источник</th><th>Решение</th><th></th></tr></thead><tbody>'+
+    items.map(([o, i]) => row(o, i)).join("")+'</tbody></table></div>';
+  const idx = list.map((o, i) => [o, i]);
+  const build = idx.filter(([o]) => o.stage !== "эксплуатация");
+  const oper = idx.filter(([o]) => o.stage === "эксплуатация");
+  const undecided = list.filter(o => !o.decision).length;
+  let h = `<details class="dsec" ${undecided ? "open" : ""}><summary style="cursor:pointer;color:var(--acc)">Отходы из ООС — ${list.length}`+
+    (undecided ? ` <span class="cnt">${undecided}</span> <span class="hint">без решения</span>` : ' <span class="cnt zero">0</span>')+`</summary>`+
+    '<div class="hint">Нормативы образования из раздела ООС. «Добавить в перечень» создаёт позицию ФККО (если её нет); '+
+    'решения и позиции записываются кнопкой «Сохранить».</div>';
+  if (build.length){
+    h += `<div class="row" style="margin:6px 0 2px"><b>Строительные (основа для паспортов и актов) — ${build.length}</b>`+
+      (build.some(([o]) => !o.decision) ? ` <button class="b sec sm" onclick="oosDecideAll('строительство')">Добавить все строительные</button>` : "")+`</div>`+table(build);
+  }
+  if (oper.length)
+    h += `<div class="row" style="margin:8px 0 2px"><b>Эксплуатационные — уточните, добавлять ли — ${oper.length}</b></div>`+table(oper);
+  return h + '</details>';
+}
+function oosDecide(i, decision){
+  collectDataForm();
+  const list = oosList(); const o = list[i];
+  if (!o) return;
+  o.decision = decision;
+  if (decision === "add"){
+    const code = normFkkoJS(o.fkko);
+    if (!(CTX.wastes||[]).some(w => normFkkoJS(w.fkko_code) === code && code)){
+      (CTX.wastes = CTX.wastes||[]).push({fkko_code: fmtFkkoJS(o.fkko), name: o.name||"",
+        hazard_class: o.hazard_class || 5, _from_oos: true});
+    }
+  }
+  markDirty();
+  if ($("waste-msg")) $("waste-msg").textContent = "решение по ООС записано — нажмите «Сохранить»";
+  redrawFkkoBlock();
+}
+function oosDecideAll(stage){
+  collectDataForm();
+  oosList().forEach((o, i) => { if (!o.decision && (o.stage||"") !== "эксплуатация") oosDecide(i, "add"); });
+}
+// ── удаление позиции ФККО / паспорта ──────────────────────────────────
+// Сервер при каждом чтении пересчитывает движение из справок-актов
+// (waste_agg.apply_acts): удалённая позиция возвращалась после «Сохранить»,
+// пока оставались акты с её кодом, а паспорт — из extra.waste_passports.
+// Поэтому ✕ удаляет позицию ВМЕСТЕ с актами и паспортом (с подтверждением).
+function passportIdx(code){
+  return ((CTX.extra||{}).waste_passports||[]).findIndex(p => normFkkoJS(p && p.fkko) === code && code);
+}
+function delWaste(i){
+  collectDataForm();
+  const w = (CTX.wastes||[])[i];
+  if (!w) return;
+  const code = normFkkoJS(w.fkko_code);
+  const acts = code ? (CTX.waste_acts||[]).filter(a => normFkkoJS(a.fkko_code) === code) : [];
+  const pi = code ? passportIdx(code) : -1;
+  let msg = `Удалить позицию ${fmtFkkoJS(w.fkko_code) || "(без кода)"} «${w.name||""}»?`;
+  if (acts.length) msg += `\n\nВместе с ней удалятся ${acts.length} справок-актов с этим кодом — иначе после «Сохранить» позиция вернётся (движение считается из актов).`;
+  if (pi >= 0) msg += `\nПаспорт с этим кодом тоже будет удалён.`;
+  if (!confirm(msg)) return;
+  CTX.wastes.splice(i, 1);
+  if (acts.length) CTX.waste_acts = (CTX.waste_acts||[]).filter(a => normFkkoJS(a.fkko_code) !== code);
+  if (pi >= 0){ CTX.extra.waste_passports.splice(pi, 1); PASS_ROWS = (PASS_ROWS||[]).filter(p => normFkkoJS(p.fkko) !== code); }
+  markDirty(); renderDataForm();
+  const t = `Удалено: позиция${acts.length ? `, актов ${acts.length}` : ""}${pi >= 0 ? ", паспорт" : ""} — нажмите «Сохранить»`;
+  if ($("waste-msg")) $("waste-msg").textContent = t;
+  notify(t, "warn");
+}
+function delPassport(code){
+  collectDataForm();
+  code = normFkkoJS(code);
+  const pi = passportIdx(code);
+  if (pi < 0){ notify("Паспорта с таким кодом в базе нет", "warn"); return; }
+  const p = CTX.extra.waste_passports[pi];
+  if (!confirm(`Удалить паспорт ${fmtFkkoJS(code)} «${p.name||""}» из базы?\n(позиция перечня и справки-акты остаются)`)) return;
+  CTX.extra.waste_passports.splice(pi, 1);
+  PASS_ROWS = (PASS_ROWS||[]).filter(x => normFkkoJS(x.fkko) !== code);
+  markDirty(); renderDataForm();
+  if ($("waste-msg")) $("waste-msg").textContent = "паспорт удалён — нажмите «Сохранить»";
+  notify("Паспорт удалён — нажмите «Сохранить»", "warn");
 }
 
 // ── сверка отходов по источникам: ООС/ПНООЛР ↔ паспорт ↔ протокол ↔ акты ──
@@ -2444,8 +2714,10 @@ const esc = s => String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;")
   .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 const ORG_FLD = [["name","Полное наименование"],["short_name","Краткое наименование"],
   ["inn","ИНН"],["kpp","КПП"],["ogrn","ОГРН"],["okpo","ОКПО"],["okved","ОКВЭД"],
-  ["oktmo","ОКТМО"],["address","Юридический адрес"],["director_name","Руководитель (ФИО)"],
+  ["oktmo","ОКТМО"],["address","Юридический адрес (из ЕГРЮЛ)"],["director_name","Руководитель (ФИО)"],
   ["director_position","Должность"],["phone","Телефон"],["email","E-mail"]];
+// пояснение к юрадресу (форма организации и таблица сверки с ЕГРЮЛ)
+const ADDR_HINT = "по ЕГРЮЛ; для ИП ЕГРИП адрес не публикует — берётся из договора, раздел «реквизиты сторон»";
 
 function seedWater(){
   const w = (CTX.extra || {}).water || {};
@@ -2488,6 +2760,13 @@ async function loadCtx(){
   else if (onTab("intake")) loadIssues().catch(()=>{});
   DIRTY = false;              // только что прочитали с диска — правок нет
   updateWorkNow();
+}
+// кнопка «Перечитать»: с подтверждением при несохранённых правках и тостом
+async function rereadCtx(){
+  needSite();
+  if (DIRTY && !confirm("Есть несохранённые правки — перечитать данные с диска и потерять их?")) return;
+  try{ await loadCtx(); notify("Данные площадки перечитаны с диска", "ok", 3000); }
+  catch(e){ notify("Не перечитано: " + errText(e), "err"); }
 }
 function tinput(val, path, ph, num){
   return `<input value="${esc(val)}" data-path="${path}" `+
@@ -2723,9 +3002,13 @@ function periodsHtml(){
     (PVIEW !== "year" && years.length ? '<label>Год: <select onchange="setPyear(this.value)">'+
       years.slice().sort((a,b)=>b-a).map(y=>`<option value="${y}"${y===PYEAR?" selected":""}>${y}</option>`).join("")+
       '</select></label>' : "")+
-    '<button class="b sec sm" onclick="doWasteTable()" title="т / м³ по классам опасности с итогами — по бланку «форма таблички по отходам»">📋 Табличка (.xlsx)</button>'+
-    '<button class="b sec sm" onclick="doWasteSummary()" title="листы: месяцы / кварталы / год">📊 Сводная (.xlsx)</button>'+
-    '</div>';
+    '<button class="b sec sm" onclick="doWasteTable(this)" title="т / м³ по классам опасности с итогами — по бланку «форма таблички по отходам»">📋 Табличка (.xlsx)</button>'+
+    '<button class="b sec sm" onclick="doWasteSummary(this)" title="листы: месяцы / кварталы / год">📊 Сводная (.xlsx)</button>'+
+    '</div>'+
+    // результат «Таблички»/«Сводной» — здесь же, под кнопками: showResult
+    // берёт .genres сразу за рядом кнопок (раньше писалось в #out-gen
+    // другой вкладки — кнопки выглядели неработающими)
+    '<div class="genres" id="wp-genres" hidden></div>';
   if (PER_ERR) h += `<div class="hint">разбивка: сервер не ответил — ${esc(PER_ERR)}</div>`;
   else if (!PER_DATA) h += '<div class="hint">разбивка считается…</div>';
   else if (!rows.length) h += '<div class="hint">Разбивка появится, когда в справках-актах будут массы и периоды.</div>';
@@ -2768,7 +3051,7 @@ function periodsHtml(){
     const np = d.no_period||{};
     if (np.count)
       h += `<div class="issue warn">⚠ Без периода: ${np.count} акт(ов), ${fmt3(np.t)} т / `+
-        `${fmt3(np.m3)} м³ — в разбивку не входят; проставьте период в блоке 3 «Проблемы исходников».</div>`;
+        `${fmt3(np.m3)} м³ — в разбивку не входят; проставьте период в группе «Новые / без периода» списка актов ниже.</div>`;
   }
   h += `<div id="wp-acts">${actsByPeriodHtml()}</div></div>`;
   return h;
@@ -2797,10 +3080,21 @@ function actsByPeriodHtml(){
     '<div class="hint">Один акт — одна передача отхода. «Период»: дата (15.03.2025), квартал и год '+
     '(3 кв 2025) или месяц и год (03.2025). Из актов считаются журнал 1028, 2-ТП (отходы), кадастр, '+
     'декларация и разбивка выше; сохранение — общей кнопкой «Сохранить».</div>';
-  if (!withPer.length)
-    h += '<div class="hint">Актов с периодом пока нет — добавьте строку или загрузите справки-акты '+
+  // новые (после «+ акт») и акты без периода — ПЕРВОЙ раскрытой группой:
+  // раньше новая строка не имела периода и не попадала ни в один год —
+  // «+ акт» выглядел неработающим
+  const noPer = all.filter(x => !x.p.y && (!s.fkko || normFkkoJS(x.r.fkko_code) === s.fkko));
+  if (noPer.length && !s.y){
+    const t = sum(noPer);
+    // раскрыта, если строк немного (у Миниха их 204 — свёрнута; «+ акт» сам
+    // раскрывает группу и ставит фокус в новую строку)
+    h += `<details class="dsec yr newacts"${noPer.length <= 30 ? " open" : ""}><summary>Новые / без периода — актов ${noPer.length} · ${fmt3(t.t)} т · ${fmt3(t.m3)} м³ — укажите «Период», иначе в разбивку и годовые формы не попадут</summary>`+
+      tablePairs("", "waste_acts", noPer, ACT_COLS, true)+`</details>`;
+  }
+  if (!withPer.length && !noPer.length)
+    h += '<div class="hint">Актов пока нет — нажмите «+ акт» или загрузите справки-акты '+
       '(блок «Догрузить исходники» внизу вкладки).</div>';
-  else if (!list.length)
+  else if (!list.length && !noPer.length)
     h += '<div class="hint">По выбранному отходу/периоду актов нет.</div>';
   const years = [...new Set(list.map(x=>x.p.y))].sort((a,b)=>b-a);
   years.forEach((y, yi) => {
@@ -2844,9 +3138,10 @@ function wasteProblemsHtml(){
     h += `<div class="hint">${ISSUES_ERR ? "сервер ещё не отдаёт проверку (data_issues): " + esc(ISSUES_ERR) : "проверка…"}</div>`;
     if (noPer.length){
       const t = noPer.reduce((s,x)=>s+_num(x.r.mass), 0);
+      // сами строки редактируются в блоке 2 (группа «Новые / без периода») —
+      // вторая таблица с теми же data-path задваивала бы поля при сборе
       h += `<div class="issue warn">Без периода — актов ${noPer.length} (${fmt3(t)} т): укажите дату, `+
-        `квартал или месяц в графе «Период» — иначе они не попадут в разбивку и годовые формы</div>`+
-        tablePairs("", "waste_acts", noPer, ACT_COLS, true);
+        `квартал или месяц в графе «Период» в блоке 2 (группа «Новые / без периода») — иначе они не попадут в разбивку и годовые формы</div>`;
     }
     return h + '</div>';
   }
@@ -2866,8 +3161,27 @@ function refreshWasteChecks(){
   loadIssues().catch(()=>{});
 }
 
+// открытость details по тексту заголовка — чтобы перерисовка (удалить/добавить
+// строку) не сворачивала раскрытые пользователем годы/кварталы/карточки
+function detailsState(box){
+  const st = {};
+  if (box) box.querySelectorAll("details").forEach(d => {
+    const s = d.querySelector(":scope > summary");
+    if (s) st[s.textContent.trim().replace(/\d+(\.\d+)?/g, "#")] = d.open;   // числа в заголовках меняются
+  });
+  return st;
+}
+function restoreDetails(box, st){
+  if (!box || !st) return;
+  box.querySelectorAll("details").forEach(d => {
+    const s = d.querySelector(":scope > summary");
+    const k = s && s.textContent.trim().replace(/\d+(\.\d+)?/g, "#");
+    if (k && k in st) d.open = st[k];
+  });
+}
 function renderWasteTab(){
   if (!$("wasteform") || !CTX) return;
+  const st = $("wasteform").children.length ? detailsState($("wasteform")) : null;
   let h = "";
   // 1. ФККО — коды, паспорта, каталог (сервер + CTX.wastes)
   h += `<div id="wp-fkko">${fkkoBlockHtml()}</div>`;
@@ -2879,6 +3193,7 @@ function renderWasteTab(){
   h += modUploadHtml("tw");
   h += aiTaskHtml("waste", "Отходы");
   $("wasteform").innerHTML = h;
+  restoreDetails($("wasteform"), st);
 }
 
 // ── движение отходов за год — теперь в Отчётность → Отходы ────────────
@@ -3019,7 +3334,7 @@ function deleteBadObjects(){
   collectDataForm();
   const before = (CTX.objects||[]).length;
   CTX.objects = (CTX.objects||[]).filter(o=>!isTrashObj(o));
-  renderDataForm();
+  markDirty(); renderDataForm();
   const msg = `Удалено ${before-CTX.objects.length} строк с кодом не по формату — нажмите «Сохранить».`;
   $("data-msg").textContent = msg;
   if ($("obj-msg")) $("obj-msg").textContent = msg;
@@ -3030,7 +3345,7 @@ function deleteZeroWastes(){
     (String(w.fkko_code||"").trim() || String(w.name||"").trim());
   const before = (CTX.wastes||[]).length;
   CTX.wastes = (CTX.wastes||[]).filter(w=>!isZero(w));
-  renderDataForm();
+  markDirty(); renderDataForm();
   $("data-msg").textContent =
     `Удалено ${before-CTX.wastes.length} позиций без масс — нажмите «Сохранить».`;
 }
@@ -3134,6 +3449,21 @@ function rowHtml(key, r, cols, ri){
       h += `<td><input value="${esc(actLabelJS(r))}" data-path="${key}[${ri}].period_label" `+
         `placeholder="15.03.2025 · 3 кв 2025 · 03.2025" style="min-width:110px" `+
         `title="дата акта ДД.ММ.ГГГГ, либо квартал и год («3 кв 2025»), либо месяц и год («03.2025»)"></td>`;
+    } else if (key==="waste_acts" && f==="density"){
+      // подсказка расхождения с плотностью по ООС: |факт − норма| > 30 %
+      const code = normFkkoJS(r.fkko_code), o = code ? oosByCode()[code] : null;
+      const norm = oosDensity(o);
+      const t = _num(r.mass), m3 = _num(r.volume_m3);
+      const fact = _num(r.density) || ((t && m3) ? t / m3 : 0);
+      const warn = norm && fact && Math.abs(fact - norm) / norm > 0.3;
+      h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" placeholder="${norm ? norm.toFixed(2) : ""}" `+
+        `title="${norm ? "по ООС " + norm.toFixed(2) + " т/м³" : "плотность по ООС неизвестна"}">`+
+        (warn ? `<span class="dens-warn" title="факт ${fact.toFixed(2)} т/м³, по ООС ${norm.toFixed(2)} т/м³">плотность ≠ ООС (${fact.toFixed(2)} / ${norm.toFixed(2)})</span>` : "")+`</td>`;
+    } else if (key==="waste_acts" && (f==="mass" || f==="volume_m3")){
+      // ввод массы/объёма: пустое парное поле досчитывается по плотности
+      // (своей из графы «Плотн.» либо по ООС) — actPairInput
+      h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" inputmode="decimal" `+
+        `oninput="actPairInput(this,'${f}')" title="${f === "mass" ? "масса, т — объём досчитается по плотности" : "объём, м³ — масса досчитается по плотности"}"></td>`;
     } else if (key==="waste_acts" && (f==="license" || f==="carrier_license")){
       const bad = !looksLikeLicense(r[f]);
       h += `<td><input value="${esc(r[f])}" data-path="${key}[${ri}].${f}" `+
@@ -3160,12 +3490,48 @@ function rowHtml(key, r, cols, ri){
   h += `<td><button class="delrow" title="удалить" onclick="delRow(this)">✕</button></td></tr>`;
   return h;
 }
+// ── акт: масса ↔ объём по плотности (графа «Плотн.» акта либо норматив ООС) ──
+// Заполняется только ПУСТОЕ парное поле или то, что мы же досчитали раньше
+// (data-auto) — введённое вручную не трогаем. Плотность подсказывается в
+// placeholder графы «Плотн.» (rowHtml → oosDensity).
+function actPairInput(el, field){
+  const tr = el.closest("tr");
+  if (!tr) return;
+  const q = f => tr.querySelector(`[data-path$=".${f}"]`);
+  const other = q(field === "mass" ? "volume_m3" : "mass");
+  const dens = q("density"), fk = q("fkko_code");
+  if (!other) return;
+  const code = normFkkoJS(fk ? fk.value : "");
+  const rho = _num(dens && dens.value) || oosDensity(code ? oosByCode()[code] : null);
+  const v = _num(el.value);
+  // введено вручную (ненулевое) — не трогаем; «0» сервер пишет вместо пустого
+  if (_num(other.value) && other.dataset.auto !== "1") return;
+  if (!v || !rho){ if (other.dataset.auto === "1"){ other.value = ""; delete other.dataset.auto; } return; }
+  const res = field === "mass" ? v / rho : v * rho;
+  other.value = (Math.round(res * 1000) / 1000).toString();
+  other.dataset.auto = "1";
+  other.title = `рассчитано по плотности ${rho.toFixed(3)} т/м³ (${dens && dens.value.trim() ? "из акта" : "по ООС"}) — можно поправить`;
+  markDirty();
+}
 const DEFROW = {objects:{}, pollutants:{medium:"air"}, wastes:{hazard_class:5},
   waste_acts:{hazard_class:5, operation:"размещение"}, _pair:{}, _pwater:{}};
 function addRow(key){
   collectDataForm();
   (CTX[key] = CTX[key]||[]).push({...(DEFROW[key]||{})});
-  renderDataForm();
+  const idx = CTX[key].length - 1;
+  markDirty(); renderDataForm();
+  // новая строка должна быть видна сразу: раскрыть её details и дать фокус
+  const inp = document.querySelector(`[data-path^="${key}[${idx}]."]`);
+  if (inp){
+    let d = inp.closest("details");
+    while (d){ d.open = true; d = d.parentElement && d.parentElement.closest("details"); }
+    inp.scrollIntoView({behavior:"smooth", block:"center"});
+    inp.focus();
+  }
+  const msg = {waste_acts:"добавлен новый акт — заполните период, ФККО и массу, затем «Сохранить»",
+               wastes:"добавлена позиция — заполните и нажмите «Сохранить»"}[key] || "строка добавлена — не забудьте «Сохранить»";
+  if (key === "waste_acts" || key === "wastes"){ if ($("waste-msg")) $("waste-msg").textContent = msg; }
+  notify(msg, "ok", 3000);
 }
 function delRow(btn){
   collectDataForm();
@@ -3175,7 +3541,15 @@ function delRow(btn){
   const inp = tr.querySelector("[data-path]");
   const m = inp && inp.dataset.path.match(/\[(\d+)\]/);
   const idx = m ? +m[1] : [...tr.parentNode.children].indexOf(tr);
-  CTX[key].splice(idx,1); renderDataForm();
+  if (!CTX[key] || idx < 0 || idx >= CTX[key].length) return;
+  CTX[key].splice(idx,1);
+  markDirty(); renderDataForm();
+  const msg = "строка удалена — нажмите «Сохранить», чтобы записать";
+  if (key === "waste_acts" || key === "wastes"){ if ($("waste-msg")) $("waste-msg").textContent = msg; }
+  else if (key === "_pair"){ if ($("air-msg")) $("air-msg").textContent = msg; }
+  else if (key === "_pwater" || key === "_wintake" || key === "_wdischarge"){ if ($("water-msg")) $("water-msg").textContent = msg; }
+  else if ($("data-msg")) $("data-msg").textContent = msg;
+  notify(msg, "warn", 3000);
 }
 function collectDataForm(){
   // поля разнесены по вкладкам: ДАННЫЕ, ОРГАНИЗАЦИЯ, ОБЪЕКТ, ОТХОДЫ, ВЫБРОСЫ,
@@ -3272,8 +3646,11 @@ async function detectOktmo(){
 }
 async function openWs(){
   needSite();
-  const j = await get("context", {org:ORG, site:SITE});
-  await post("open", {path: j.path}).catch(e=>alert(e.message));
+  try{
+    const j = await get("context", {org:ORG, site:SITE});
+    await post("open", {path: parentDir(j.path)});
+    notify("Открыта папка площадки: " + parentDir(j.path), "ok", 5000);
+  }catch(e){ notify("Не удалось открыть папку: " + errText(e), "err"); }
 }
 
 // ── отчётность / разработка ──
@@ -3309,15 +3686,24 @@ function renderForms(){
       extra = `<div id="hc-panel"></div>`;
     } else if (f.implemented){
       btns = `<button class="b sec" onclick="doValidate('${f.code}')">Проверить</button>
-         <button class="b" onclick="doGenerate('${f.code}')">Сгенерировать</button>`
-         + (dev ? "" : ` <button class="b sec" onclick="doSubmit('${f.code}')" title="XML + МЧД + чек-лист для загрузки в ЛКПП">Пакет к подаче</button>`);
+         <button class="b" onclick="doGenerate('${f.code}', this)">Сгенерировать</button>`
+         + (dev ? "" : ` <button class="b sec" onclick="doSubmit('${f.code}', this)" title="XML + МЧД + чек-лист для загрузки в ЛКПП">Пакет к подаче</button>`);
     } else if (f.devdoc){
-      btns = `<button class="b" onclick="doDevDoc('${f.code}')">Сгенерировать (.docx)</button>`;
+      btns = `<button class="b" onclick="doDevDoc('${f.code}', this)">Сгенерировать (.docx)</button>`;
+      if (f.code === "tu-waste")
+        // письмо ТУ: адресат и цель — иначе адресат берётся по актам (приёмщик)
+        btns = `<div class="row" style="gap:6px;margin-bottom:6px">
+          <input type="text" id="tu-receiver" style="width:280px" placeholder="Адресат (полигон/ТСЖ/оператор) — иначе по актам">
+          <input type="text" id="tu-purpose" style="width:220px" placeholder="Цель (напр. рекультивация, отсыпка)"></div>` + btns;
     } else {
-      // без генератора: вместо «каркас» — что делать (подсказка из title после « — »)
+      // без генератора — не кнопка, а серая подпись «в разработке» с тем, что
+      // делать (подсказка из title после « — »)
       const hint = String(f.title||"").includes(" — ")
-        ? f.title.split(" — ").slice(1).join(" — ") : f.title;
-      btns = `<span class="hint">нет автогенерации: ${esc(hint)}</span>`;
+        ? f.title.split(" — ").slice(1).join(" — ") : "";
+      // тома НДВ/НДС собираются во вкладке «УПРЗА» — туда и ведём, это не «в разработке»
+      btns = /УПРЗА/.test(hint)
+        ? `<button class="b sec" onclick="showTab('disp')">Собрать во вкладке «УПРЗА»</button> <span class="hint">${esc(hint)}</span>`
+        : `<span class="badge dev">в разработке</span> <span class="hint">автогенерации пока нет${hint ? ": " + esc(hint) : ""}</span>`;
     }
     card.innerHTML = `<div class="t">${title}</div>
       <div class="c">${f.code}</div><div class="row">${btns}</div>${extra}
@@ -3588,35 +3974,49 @@ async function doDiskUsage(){
   }catch(e){ show("out-du", "Ошибка: " + errText(e)); }
   spin("sp-du",0);
 }
-async function doWasteTable(){
+// кнопки есть и в Отчётность → Отходы, и в ОБЪЕКТ → Отходы: результат — под
+// нажатой кнопкой (showResult), а не в #out-gen другой вкладки
+async function doWasteTable(btn){
   needSite(); spin("sp-gen",1); spin("sp-waste",1);
+  if (btn) btn.disabled = true;
+  showResult(btn,{kind:"busy", text:"формирую табличку…", quiet:true});
   try{
     const j = await post("waste_table", {org:ORG, site:SITE}, 0);
     let t = `Табличка по отходам (${j.rows} позиций): ` + j.path;
     if (j.no_density) t += `\n⚠ У ${j.no_density} позиций нет плотности — графа м³ пустая. `+
       "Плотность берётся из справок-актов (графы «Плотн., т/м³» или т + м³).";
     show("out-gen", t);
-    if ($("waste-msg")) $("waste-msg").textContent = `✓ табличка: ${j.rows} позиций — ` + j.path;
-    post("open", {path:j.path}).catch(()=>{});
+    if ($("waste-msg")) $("waste-msg").textContent = `✓ табличка: ${j.rows} позиций`;
+    showResult(btn,{text:t, path:j.path});
   }catch(e){
-    // кнопка есть и во вкладке ОТХОДЫ, где out-gen не виден — говорим всюду
     show("out-gen", "Табличка: " + errText(e));
     if ($("waste-msg")) $("waste-msg").textContent = "Табличка: " + errText(e);
-    else alert(errText(e));
+    showResult(btn,{kind:"err", text:"Табличка не сформирована: " + errText(e)});
   }
+  if (btn) btn.disabled = false;
   spin("sp-gen",0); spin("sp-waste",0);
 }
-async function doWasteSummary(){
-  needSite(); spin("sp-gen",1);
+async function doWasteSummary(btn){
+  needSite(); spin("sp-gen",1); spin("sp-waste",1);
+  if (btn) btn.disabled = true;
+  showResult(btn,{kind:"busy", text:"формирую сводную…", quiet:true});
   try{
     const j = await post("waste_summary", {org:ORG, site:SITE}, 0);
-    if (j.error){ show("out-gen", "Сводная: " + j.error); }
-    else {
-      show("out-gen", `Сводная по отходам (${j.acts} актов, листы: месяцы/кварталы/год):\n` + j.path);
-      post("open", {path:j.path}).catch(()=>{});
+    if (j.error){
+      show("out-gen", "Сводная: " + j.error);
+      showResult(btn,{kind:"err", text:"Сводная не сформирована: " + j.error});
+    } else {
+      const t = `Сводная по отходам (${j.acts} актов, листы: месяцы / кварталы / год):\n` + j.path;
+      show("out-gen", t);
+      if ($("waste-msg")) $("waste-msg").textContent = `✓ сводная: ${j.acts} актов`;
+      showResult(btn,{text:t, path:j.path});
     }
-  }catch(e){ show("out-gen", "Ошибка: " + errText(e)); }
-  spin("sp-gen",0);
+  }catch(e){
+    show("out-gen", "Ошибка: " + errText(e));
+    showResult(btn,{kind:"err", text:"Сводная не сформирована: " + errText(e)});
+  }
+  if (btn) btn.disabled = false;
+  spin("sp-gen",0); spin("sp-waste",0);
 }
 function renderIssues(code, issues){
   $("iss-"+code).innerHTML = (issues||[]).map(i =>
@@ -3627,41 +4027,69 @@ async function doValidate(code){
   needSite();
   try{ const j = await post("validate", {org:ORG, site:SITE, form:code});
        renderIssues(code, j.issues);
-  }catch(e){ alert(e.message); }
+       const n = (j.issues||[]).filter(i => i.level === "error").length;
+       notify(n ? `${code}: ошибок ${n} — см. карточку формы` : `${code}: проверка пройдена`, n ? "warn" : "ok", 4000);
+  }catch(e){
+    // ошибка проверки — в карточке формы, а не alert
+    renderIssues(code, [{level:"error", field:"проверка", message: errText(e)}]);
+    notify("Проверка не выполнена: " + errText(e), "err");
+  }
 }
-async function doDevDoc(kind){
+// документ разработки: результат — в карточке формы (showResult), дублируется
+// в #out-dev внизу вкладки
+async function doDevDoc(kind, btn){
   needSite(); spin("sp-dev",1);
+  if (btn) btn.disabled = true;
+  showResult(btn, {kind:"busy", text:"формирую документ… (может занять до минуты)", quiet:true});
   try{
-    const j = await post("devdoc", {org:ORG, site:SITE, kind}, 0);
-    let t = "Документ: " + j.path;
+    const body = {org:ORG, site:SITE, kind};
+    if (kind === "tu-waste"){
+      body.receiver = ($("tu-receiver")||{}).value || "";
+      body.purpose  = ($("tu-purpose")||{}).value || "";
+    }
+    const j = await post("devdoc", body, 0);
+    const many = (j.files||[]).length;          // паспорта: папка + список файлов
+    let t = (many ? `Папка: ${j.path} — файлов: ${many}` : "Документ: " + j.path);
     if ((j.gaps||[]).length)
       t += "\n\nЧего не хватает в документе (в тексте помечено «[требуется: …]»):\n"
          + j.gaps.map(g=>"  • " + g).join("\n");
-    show("out-dev", t);
-    post("open", {path:j.path}).catch(()=>{});
-  }catch(e){ show("out-dev", "Ошибка: " + e.message); }
+    show("out-dev", t + (many ? "\n" + j.files.map(f => "  • " + f).join("\n") : ""));
+    showResult(btn, many ? {text:t, dir:j.path, files:j.files} : {text:t, path:j.path});
+  }catch(e){
+    show("out-dev", "Ошибка: " + errText(e));
+    const gaps = (e.data && e.data.gaps) || [];
+    showResult(btn, {kind:"err", text:"Документ не сформирован: " + errText(e) +
+      (gaps.length ? "\n\nЧего не хватает:\n" + gaps.map(g=>"  • " + g).join("\n") : "")});
+  }
+  if (btn) btn.disabled = false;
   spin("sp-dev",0);
 }
-async function doSubmit(code){
+async function doSubmit(code, btn){
   needSite(); spin("sp-gen",1);
+  if (btn) btn.disabled = true;
+  showResult(btn, {kind:"busy", text:"собираю пакет к подаче…", quiet:true});
   try{
     const j = await post("submit", {org:ORG, site:SITE, form:code,
                                     force:$("genforce").checked}, 0);
-    if (j.error){ show("out-gen", "Ошибка: " + j.error); spin("sp-gen",0); return; }
-    renderIssues(code, j.issues);
-    if (j.blocked){
-      show("out-gen", "⛔ " + j.note + "\nЧек-лист с перечнем ошибок: " +
-           j.checklist + "\n(чтобы всё равно выпустить файлы — включите «принудительно»)");
-      post("open", {path:j.dir}).catch(()=>{});
-      spin("sp-gen",0); return;
+    if (j.error){ show("out-gen", "Ошибка: " + j.error); showResult(btn, {kind:"err", text:j.error}); }
+    else {
+      renderIssues(code, j.issues);
+      if (j.blocked){
+        const t = "⛔ " + j.note + "\nЧек-лист с перечнем ошибок: " +
+             j.checklist + "\n(чтобы всё равно выпустить файлы — включите «принудительно»)";
+        show("out-gen", t);
+        showResult(btn, {kind:"err", text:t, path:j.checklist, dir:j.dir});
+      } else {
+        let t = "Пакет к подаче: " + j.dir + "\n";
+        for (const [k,v] of Object.entries(j.files||{})) t += "  " + k + ": " + v.split(/[\\/]/).pop() + "\n";
+        t += "  чек-лист: ЧЕКЛИСТ.md\n";
+        t += j.errors ? ("\n⚠ " + j.errors + " ошибок preflight — см. ЧЕКЛИСТ.md") : "\n✅ preflight без ошибок — можно загружать в ЛКПП и подписывать.";
+        show("out-gen", t);
+        showResult(btn, {text:t, dir:j.dir});
+      }
     }
-    let t = "Пакет к подаче: " + j.dir + "\n";
-    for (const [k,v] of Object.entries(j.files||{})) t += "  " + k + ": " + v.split(/[\\/]/).pop() + "\n";
-    t += "  чек-лист: ЧЕКЛИСТ.md\n";
-    t += j.errors ? ("\n⚠ " + j.errors + " ошибок preflight — см. ЧЕКЛИСТ.md") : "\n✅ preflight без ошибок — можно загружать в ЛКПП и подписывать.";
-    show("out-gen", t);
-    post("open", {path:j.dir}).catch(()=>{});
-  }catch(e){ show("out-gen", "Ошибка: " + e.message); }
+  }catch(e){ show("out-gen", "Ошибка: " + errText(e)); showResult(btn, {kind:"err", text:"Пакет не собран: " + errText(e)}); }
+  if (btn) btn.disabled = false;
   spin("sp-gen",0);
 }
 async function validateAll(){
@@ -3687,6 +4115,9 @@ async function validateAll(){
         t += `  • ${NAMES[mod]||mod}: ${c.err} ошибок, ${c.warn} предупреждений\n`;
     t += "\nОткройте вкладку модуля, чтобы увидеть замечания по каждой форме.";
     show("out-gen", t);
+    // сводка — в самом низу вкладки, за модулями: тост + прокрутка к ней
+    notify(t.split("\n")[0] + " — сводка внизу вкладки, замечания в карточках форм", errN ? "warn" : "ok", 6000);
+    $("out-gen").scrollIntoView({behavior:"smooth", block:"nearest"});
     // значок с числом ошибок на кнопке модуля — видно, не открывая
     for (const [mod, c] of Object.entries(byMod)){
       const btn = $("mt-r" + mod[0]);
@@ -3696,8 +4127,10 @@ async function validateAll(){
   }catch(e){ alert(e.message); }
   spin("sp-gen",0);
 }
-async function doGenerate(code){
+async function doGenerate(code, btn){
   needSite(); spin("sp-gen",1);
+  if (btn) btn.disabled = true;
+  showResult(btn, {kind:"busy", text:"генерация…", quiet:true});
   try{
     const j = await post("generate", {org:ORG, site:SITE, form:code,
       pdf:$("genpdf").checked, force:$("genforce").checked}, 0);
@@ -3709,12 +4142,16 @@ async function doGenerate(code){
     if (j.pdf)   t += "PDF:    " + j.pdf + "\n";
     if (j.pdf_error) t += "PDF:    не удалось — " + j.pdf_error + "\n";
     show("out-gen", t || "Готово");
-    if (j.xml) post("open", {path:j.xml}).catch(()=>{});
+    const main = j.print || j.xml || j.pdf || "";
+    showResult(btn, {text:t || "Готово", path:main, dir: main ? parentDir(main) : ""});
   }catch(e){
     // показать присланные вместе с ошибкой замечания валидации
     if (e.data && e.data.issues) renderIssues(code, e.data.issues);
-    show("out-gen", "Ошибка: " + e.message);
+    show("out-gen", "Ошибка: " + errText(e));
+    showResult(btn, {kind:"err", text:"Не сформировано: " + errText(e) +
+      (e.data && e.data.issues ? "\n(замечания валидации — выше в карточке; «принудительно» — выпустить с ошибками)" : "")});
   }
+  if (btn) btn.disabled = false;
   spin("sp-gen",0);
 }
 
@@ -3847,9 +4284,11 @@ async function doVolume(){
     const j = await post("volume", body, 0);
     let t = "Том собран: " + j.path;
     if ((j.notes||[]).length) t += "\n" + j.notes.map(n=>"  " + n).join("\n");
+    if ((j.gaps||[]).length) t += "\n\nЧего не хватает:\n" + j.gaps.map(g=>"  • " + g).join("\n");
     show("out-vol", t);
+    notify("Сформировано: " + j.path, "ok", 6000);
     post("open", {path:j.path}).catch(()=>{});
-  }catch(e){ show("out-vol", "Ошибка: " + errText(e)); }
+  }catch(e){ show("out-vol", "Ошибка: " + errText(e)); notify("Том не собран: " + errText(e), "err"); }
   spin("sp-vol",0);
 }
 async function doUpraza(){
@@ -3862,8 +4301,9 @@ async function doUpraza(){
          "\n  JSON:  " + j.json +
          "\n\nВ «Экологе»: Импорт из Excel; сопоставьте колонки листов " +
          "«Источники»/«Выбросы» (лист «Инструкция» внутри файла).");
+    notify("Выгружено для УПРЗА: " + j.excel, "ok", 6000);
     post("open", {path: j.excel}).catch(()=>{});
-  }catch(e){ show("out-disp", "Ошибка: " + e.message); }
+  }catch(e){ show("out-disp", "Ошибка: " + errText(e)); notify("Выгрузка не удалась: " + errText(e), "err"); }
   spin("sp-disp",0);
 }
 
@@ -4066,81 +4506,139 @@ function gotoHazardCalc(){
   const card = $("hztbl") && $("hztbl").closest(".card");
   if (card) card.scrollIntoView({behavior:"smooth", block:"start"});
 }
+// Одношаговый сценарий (замечание эколога «не работает»): выбрать паспорт →
+// «Рассчитать и сформировать .docx» → сервер сам берёт состав паспорта
+// (post hazard_class {passport: fkko}) и отвечает {path, k, hazard_class,
+// missing_wi:[…]} либо {error}. Компоненты без Wi показываются с полями ввода
+// — «Пересчитать» идёт старым режимом (components с Ci из паспорта + введённые Wi).
 let HC_PASS = [];
 const WI_HINT = 'Wi — коэффициент степени опасности компонента: берётся из приложения к '+
   'приказу МПР № 158 (таблица показателей) или из БДО (банк данных об отходах); '+
   'без Wi класс не считается.';
+function hcCurrent(){ return HC_PASS[+($("hc-sel")||{}).value] || HC_PASS[0]; }
 function hazardFromPassport(){
   const box = $("hc-panel");
   if (!box) return;
   if (!CTX){ box.innerHTML = '<div class="hint">Сначала выберите площадку слева.</div>'; return; }
-  HC_PASS = ((CTX.extra||{}).waste_passports||[]).filter(p => (p.components||[]).length);
+  // индекс в extra.waste_passports (_idx) нужен серверу как селектор паспорта;
+  // с составом — первыми, они и нужны для расчёта
+  HC_PASS = ((CTX.extra||{}).waste_passports||[]).map((p, i) => p && (p.fkko || p.name) ? {...p, _idx:i} : null)
+    .filter(Boolean).sort((a, b) => ((b.components||[]).length ? 1 : 0) - ((a.components||[]).length ? 1 : 0));
   if (!HC_PASS.length){
-    box.innerHTML = '<div class="hint">Паспортов с составом в базе нет — загрузите паспорта '+
-      'отходов или протоколы КХА во вкладке «ОТХОДЫ» (блок «Догрузить исходники»).</div>';
+    box.innerHTML = '<div class="hint">Паспортов в базе нет — загрузите паспорта отходов или протоколы КХА '+
+      '(<a class="link" onclick="showTab(\'waste\')">ОБЪЕКТ → Отходы</a>, блок «Догрузить исходники», '+
+      'либо ЗАГРУЗКА с категорией «паспорта отходов»).</div>';
     return;
   }
+  const withComp = HC_PASS.filter(p => (p.components||[]).length).length;
   box.innerHTML = '<div class="row" style="margin-top:6px"><label>Паспорт: '+
-    `<select id="hc-sel" onchange="hcRenderComps()" style="max-width:520px">`+
-    HC_PASS.map((p,i)=>`<option value="${i}">${esc(p.fkko||"без кода")} — `+
-      `${esc(String(p.name||"").slice(0,70))} (${p.components.length} комп.)</option>`).join("")+
-    '</select></label></div><div id="hc-comps"></div>';
-  hcRenderComps();
+    `<select id="hc-sel" onchange="$('hc-out').innerHTML=''" style="max-width:520px">`+
+    HC_PASS.map((p,i)=>`<option value="${i}">${esc(fmtFkkoJS(p.fkko)||"без кода")} — `+
+      `${esc(String(p.name||"").slice(0,70))} (${(p.components||[]).length ? (p.components.length + " комп.") : "состава нет"})</option>`).join("")+
+    '</select></label>'+
+    '<button class="b" onclick="hcRun(this)">Рассчитать и сформировать .docx</button>'+
+    '<button class="b sec sm" onclick="hcToCalc()" title="перенести состав в калькулятор вкладки «Сервис»">В калькулятор</button>'+
+    '<span class="spin" id="sp-hc">считаю…</span></div>'+
+    `<div class="hint">паспортов: ${HC_PASS.length}, с составом: ${withComp}. ${WI_HINT}</div>`+
+    '<div id="hc-out"></div>';
 }
-function hcRenderComps(){
-  const p = HC_PASS[+($("hc-sel")||{}).value] || HC_PASS[0];
-  if (!p) return;
-  // Ci в мг/кг: 100 % = 1 000 000 мг/кг → 1 % = 10 000 мг/кг
-  const rows = (p.components||[]).map((c,i)=>{
-    const pct = _num(c.percent), ci = c.ci != null ? _num(c.ci) : Math.round(pct*10000);
-    return `<tr><td><input data-c="name" value="${esc(c.name)}"></td>`+
-      `<td style="text-align:right">${pct ? pct : '<span class="hint">—</span>'}</td>`+
-      `<td><input data-c="ci" value="${ci||""}" inputmode="decimal"></td>`+
-      `<td><input data-c="wi" value="${esc(c.wi||"")}" inputmode="decimal" `+
-      `placeholder="[требуется]" title="${esc(WI_HINT)}"></td></tr>`;
-  }).join("");
-  $("hc-comps").innerHTML =
-    '<div style="overflow-x:auto"><table class="dtbl" id="hc-tbl"><thead><tr><th>Компонент</th>'+
-    '<th>%, по паспорту</th><th>Ci, мг/кг</th><th>Wi</th></tr></thead><tbody>'+rows+'</tbody></table></div>'+
-    `<div class="hint">${WI_HINT}</div>`+
-    '<div class="row"><button class="b" onclick="hcSave()">Оформить расчёт (.docx)</button>'+
-    '<button class="b sec" onclick="hcToCalc()" title="перенести состав в калькулятор вкладки «Сервис»">В калькулятор</button>'+
-    '<span class="spin" id="sp-hc">…</span></div>'+
-    '<div class="out" id="hc-out" style="display:none;white-space:pre-wrap"></div>';
-}
-function hcComps(){
-  return [...$("hc-tbl").querySelectorAll("tbody tr")].map(tr=>{
-    const g = s => _num(tr.querySelector(`[data-c="${s}"]`).value);
-    return {name: tr.querySelector('[data-c="name"]').value.trim(), ci: g("ci"), wi: g("wi")};
+// компоненты паспорта в мг/кг (100 % = 1 000 000) с подстановкой введённых Wi
+function hcCompsFromPassport(p, wiMap){
+  wiMap = wiMap || {};
+  return (p.components||[]).map(c => {
+    const name = String(c.name||"").trim();
+    const ci = c.ci != null && c.ci !== "" ? _num(c.ci) : Math.round(_num(c.percent) * 10000);
+    const wi = wiMap[name] !== undefined ? _num(wiMap[name]) : _num(c.wi);
+    return {name, ci, wi};
   }).filter(c => c.name);
 }
-async function hcSave(){
+function hcWiInputs(){
+  const m = {};
+  document.querySelectorAll("#hc-out input[data-wi]").forEach(el => { if (el.value.trim()) m[el.dataset.wi] = el.value.trim(); });
+  return m;
+}
+async function hcRun(btn, wiMap){
   needSite();
-  const p = HC_PASS[+($("hc-sel")||{}).value] || HC_PASS[0];
-  const comps = hcComps();
-  if (!comps.length){ alert("Нет компонентов"); return; }
-  const noWi = comps.filter(c => !(c.wi > 0));
-  if (noWi.length){
-    show("hc-out", `⚠ Не задан Wi у: ${noWi.map(c=>c.name).join(", ")}.\n${WI_HINT}`);
-    return;
-  }
-  spin("sp-hc", 1);
+  const p = hcCurrent();
+  if (!p) return;
+  spin("sp-hc", 1); if (btn) btn.disabled = true;
+  const out = $("hc-out");
+  out.innerHTML = '<div class="genres busy">считаю класс опасности по составу паспорта…</div>';
   try{
-    const j = await post("hazard_class", {org:ORG, site:SITE, save:1,
-      waste_name:p.name||"", fkko:p.fkko||"", basis:`паспорт отхода${p._src ? " ("+p._src+")" : ""}`,
-      components:comps}, 0);
-    let t = `K = Σ(Ci/Wi) = ${(+j.k_total).toPrecision(4)}\nКЛАСС ОПАСНОСТИ: ${j.hazard_class}`;
-    if (j.hazard_class === 5) t += "\n⚠ V класс требует подтверждения биотестированием.";
+    let j = null, err = "";
+    // режим «по паспорту»: сервер сам берёт состав (hazard_class.for_waste по
+    // коду ФККО или индексу паспорта) — тело {org, site, fkko, passport,
+    // passport_idx, wi:{компонент: Wi}, save}; без components
+    try{
+      j = await post("hazard_class", {org:ORG, site:SITE, fkko:p.fkko||"", passport:p.fkko||"",
+        passport_idx:p._idx, passport_name:p.name||"", waste_name:p.name||"", wi:wiMap||{}, save:1}, 0);
+    }catch(e){ err = errText(e); j = e.data || null; }
+    if (j && j.missing && !j.missing_wi) j.missing_wi = j.missing;   // синоним в ответе
+    // запасной маршрут (components с Ci из паспорта в базе + Wi): сервер ещё
+    // не понимает режим «по паспорту» (старый ответ «Добавьте компоненты»)
+    if (!j || j.error || (j.k === undefined && j.k_total === undefined)){
+      const comps = hcCompsFromPassport(p, wiMap);
+      if (!comps.length){
+        // старый сервер отвечает «Добавьте компоненты…» — это не про паспорт;
+        // новый — «у отхода … нет состава» (+ gaps) — его и показываем
+        const srv = (j && j.error) || err || "";
+        const own = "у паспорта нет компонентного состава — загрузите паспорт / протокол КХА с составом или ООС/ПНООЛР";
+        hcRenderResult({error: /^Добавьте компоненты/.test(srv) || !srv ? own : srv,
+                        gaps: (j && j.gaps) || []}, p);
+        return;
+      }
+      const noWi = comps.filter(c => !(c.wi > 0)).map(c => c.name);
+      if (noWi.length){
+        // ошибка нового маршрута здесь не нужна: состав взят из паспорта в
+        // базе, не хватает только Wi — их и просим
+        hcRenderResult({missing_wi: noWi, comps, note: `состав из паспорта: ${comps.length} комп., без Wi — ${noWi.length}`}, p);
+        return;
+      }
+      try{
+        j = await post("hazard_class", {org:ORG, site:SITE, save:1, waste_name:p.name||"", fkko:p.fkko||"",
+          basis:`паспорт отхода${p._src ? " (" + p._src + ")" : ""}`, components:comps}, 0);
+      }catch(e){ hcRenderResult({error: errText(e)}, p); return; }
+    }
+    hcRenderResult(j, p);
+  }finally{ spin("sp-hc", 0); if (btn) btn.disabled = false; }
+}
+function hcRenderResult(j, p){
+  const out = $("hc-out");
+  if (!out) return;
+  const k = j.k !== undefined ? j.k : j.k_total;
+  const miss = j.missing_wi || [];
+  let h = "";
+  if (j.error) h += `<div class="genres err">✖ ${esc(j.error)}</div>`;
+  if (j.note) h += `<div class="hint">${esc(j.note)}</div>`;
+  if ((j.gaps||[]).length)
+    h += `<details class="dsec" open><summary style="cursor:pointer;color:var(--warn)">Чего не хватает (${j.gaps.length})</summary>`+
+      `<ul style="margin:2px 0 4px 18px;padding:0;font-size:13px">${j.gaps.map(g => `<li>${esc(g)}</li>`).join("")}</ul></details>`;
+  if (j.error) notify(String(j.error).split("\n")[0], "err", 7000);
+  if (k !== undefined && k !== null && !j.error){
+    let t = `K = Σ(Ci/Wi) = ${(+k).toPrecision(4)}\nКЛАСС ОПАСНОСТИ: ${j.hazard_class}`;
+    if (+j.hazard_class === 5) t += "\n⚠ V класс требует подтверждения биотестированием.";
     if ((j.warnings||[]).length) t += "\n" + j.warnings.map(w=>"⚠ "+w).join("\n");
-    if (j.path){ t += "\nДокумент: " + j.path; post("open", {path:j.path}).catch(()=>{}); }
-    show("hc-out", t);
-  }catch(e){ show("hc-out", "Ошибка: " + errText(e)); }
-  spin("sp-hc", 0);
+    if (j.path) t += "\nДокумент: " + j.path;
+    h += `<div class="genres" id="hc-res"></div>`;
+    out.innerHTML = h;
+    // кнопки «Открыть»/«Открыть папку» вешаются как свойства DOM — после
+    // этого innerHTML контейнера не переписываем (дописываем insertAdjacentHTML)
+    showResult($("hc-res"), {text:t, path:j.path});
+    h = "";
+  }
+  if (miss.length){
+    h += `<div class="dsec"><h4>Компоненты без Wi — ${miss.length}</h4><div class="hint">${WI_HINT} Введите Wi и нажмите «Пересчитать».</div>`+
+      '<div style="overflow-x:auto"><table class="dtbl"><thead><tr><th>Компонент</th><th>Wi</th></tr></thead><tbody>'+
+      miss.map(n => `<tr><td>${esc(typeof n === "string" ? n : (n.name||""))}</td><td><input data-wi="${esc(typeof n === "string" ? n : (n.name||""))}" inputmode="decimal" placeholder="[требуется]" style="width:120px"></td></tr>`).join("")+
+      '</tbody></table></div><div class="row"><button class="b" onclick="hcRun(this, hcWiInputs())">Пересчитать с введёнными Wi</button></div></div>';
+  }
+  if (k !== undefined && k !== null && !j.error) out.insertAdjacentHTML("beforeend", h);
+  else out.innerHTML = h;
 }
 function hcToCalc(){
-  const p = HC_PASS[+($("hc-sel")||{}).value] || HC_PASS[0];
-  const comps = hcComps();
-  if (!comps.length){ alert("Нет компонентов"); return; }
+  const p = hcCurrent();
+  const comps = p ? hcCompsFromPassport(p, hcWiInputs()) : [];
+  if (!comps.length){ alert("У выбранного паспорта нет компонентного состава"); return; }
   $("hztbl").querySelector("tbody").innerHTML = "";
   for (const c of comps) addHzRow({name:c.name, ci:String(c.ci||""), wi:c.wi ? String(c.wi) : ""});
   if (p){ $("hz-name").value = p.name||""; $("hz-fkko").value = p.fkko||""; }

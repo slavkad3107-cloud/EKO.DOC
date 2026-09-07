@@ -115,8 +115,10 @@ def test_intake_snaps_page_with_found_value(tmp_path, site):
     from ecodoc.core import workspace
     from ecodoc.intake import intake, sources
     org, st = site
+    # реквизиты регэкспом берутся только из документов самой организации
+    # (выписка ЕГРЮЛ/карточка) — правило эколога 07.09
     src = _pdf(tmp_path / "проект.pdf",
-               ["титульный лист", "Заказчик ООО «Тест», ИНН 7801234564", "приложения"])
+               ["Выписка из ЕГРЮЛ", "ООО «Тест», ИНН 7801234564", "приложения"])
     intake.run([str(src)], org=org, site=st, use_ai=False)
 
     site_dir = workspace.site_dir(org, st)
@@ -144,7 +146,7 @@ def test_api_source_page_and_meta(tmp_path, site):
     from ecodoc.gui import server
     from ecodoc.intake import intake
     org, st = site
-    src = _pdf(tmp_path / "справка.pdf", ["титул", "ИНН 7801234564"])
+    src = _pdf(tmp_path / "справка.pdf", ["Карточка организации", "ИНН 7801234564"])
     intake.run([str(src)], org=org, site=st, use_ai=False)
     docs = server.api_sources({"org": org, "site": st}, {})["docs"]
     assert docs and docs[0]["found"] >= 1

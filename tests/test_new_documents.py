@@ -259,11 +259,14 @@ def test_tu_letter(ctx, tmp_path):
                    purpose="размещения на полигоне")
     doc = Document(out)
     text = "\n".join(p.text for p in doc.paragraphs)
-    assert "ООО «Полигон»" in text and "размещения на полигоне" in text
+    # адресат — в шапке письма (таблица дата/№ | адресат), остальное — в тексте
+    head = " ".join(c.text for row in doc.tables[0].rows for c in row.cells)
+    assert "ООО «Полигон»" in head and "размещения на полигоне" in text
     assert "780600114472" in text and "41-0247-005048-П" in text
-    table = doc.tables[0]
+    table = doc.tables[1]
     cells = [c.text for row in table.rows for c in row.cells]
-    assert "47110101521" in cells and "Лампы ртутные" in cells
+    assert "4 71 101 01 52 1" in cells and "Лампы ртутные" in cells
+    assert "‹" not in text and "‹" not in " ".join(cells)
 
 
 # ── реестр и API ─────────────────────────────────────────────────────────
@@ -290,3 +293,8 @@ def test_api_devdoc_generates_new_documents(ctx, tmp_path, monkeypatch):
         out = server.api_devdoc({}, {"org": "ТЕСТ", "site": "Пл", "kind": kind})
         assert "path" in out, (kind, out)
         assert out["path"]
+    # три «отходных» документа отвечают {path, gaps}: путь — .docx, gaps — список
+    for kind in ("waste-inventory", "pnoolr", "tu-waste"):
+        out = server.api_devdoc({}, {"org": "ТЕСТ", "site": "Пл", "kind": kind})
+        assert out["path"].endswith(".docx"), (kind, out["path"])
+        assert isinstance(out["gaps"], list) and out["gaps"], kind

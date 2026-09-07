@@ -14,8 +14,10 @@ def test_email_extraction_no_crash():
 
 
 def test_fill_from_doc_with_email():
-    doc = SimpleNamespace(path=Path("письмо.txt"),
-                          text="ООО Тест ИНН 7801234564 e-mail info@example.ru")
+    # реквизиты регэкспом берутся только из документов самой организации
+    # (карточка/ЕГРЮЛ/устав) — правило эколога 07.09
+    doc = SimpleNamespace(path=Path("карточка.txt"),
+                          text="Карточка предприятия ООО Тест ИНН 7801234564 e-mail info@example.ru")
     ctx = ReportContext()
     extractor._fill_from_doc(ctx, doc)          # не должно падать
     assert ctx.organization.inn == "7801234564"

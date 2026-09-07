@@ -52,11 +52,19 @@ def test_generate_creates_docx_with_components_and_control(tmp_path):
     assert "7 33 100 01 72 4" in text and "IV" in text
     assert "уборка офисных помещений" in text
     assert "Смесь твердых материалов" in text
-    assert "бумага" in text and "пластик" in text and "60" in text
-    assert "95" in text                                    # итого 60+25+10
-    assert "сумма состава ≠ 100 %" in text                 # контроль
+    # 60+25+10 = 95 % → в диапазоне 95–105 приводится к 100 пропорционально
+    assert "бумага" in text and "пластик" in text
+    assert "63,16" in text and "26,32" in text and "10,52" in text
+    assert "100,00" in text and "сходится" in text
+    assert "приведена к 100" in text
+    assert "≠ 100" not in text and "‹" not in text
     assert "ООС.pdf (лист 12)" in text                     # источник
     assert "Ответственный за обращение с отходами" in text
+    # шапка лаборатории под заполнение и адрес места отбора проб
+    assert "Испытательная лаборатория (центр)" in text
+    assert "Протокол исследований (измерений)" in text
+    assert "СПб, ул. Пример, 1" in text
+    assert "Определение количественного состава отхода" in text
 
 
 def test_generate_sum_ok_no_warning(tmp_path):

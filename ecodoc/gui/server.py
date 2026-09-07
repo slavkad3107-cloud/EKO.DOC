@@ -643,22 +643,25 @@ def api_devdoc(params, body):
         path = pek_program.generate(ctx, out_dir / "программа_ПЭК.docx")
         return {"path": str(path), "gaps": pek_program.gaps(ctx)}
     elif kind == "waste-inventory":
+        # отчёт .docx (титул, разделы, таблицы) + перечень .xlsx рядом
         from ecodoc.development import waste_inventory
-        path = waste_inventory.generate(
-            ctx, out_dir / f"инвентаризация_отходов{_year_suffix(ctx)}.xlsx")
+        return waste_inventory.generate_all(ctx, out_dir)
     elif kind == "air-inventory":
         from ecodoc.development import air_inventory
         path = air_inventory.generate(
             ctx, out_dir / f"инвентаризация_выбросов{_year_suffix(ctx)}.xlsx")
     elif kind == "pnoolr":
+        # текстовая часть .docx по приказу № 1021 + расчётная часть .xlsx
         from ecodoc.development import pnoolr
-        path = pnoolr.generate(
-            ctx, out_dir / f"ПНООЛР_расчётная_часть{_year_suffix(ctx)}.xlsx")
+        return pnoolr.generate_all(ctx, out_dir)
     elif kind == "tu-waste":
         from ecodoc.development import tu_waste
-        path = tu_waste.generate(ctx, out_dir / "запрос_ТУ.docx",
-                                 receiver=body.get("receiver", ""),
-                                 purpose=body.get("purpose", ""))
+        receiver = str(body.get("receiver") or "")
+        stage = str(body.get("stage") or "строительство")
+        path = tu_waste.generate(ctx, out_dir / f"запрос_ТУ{_year_suffix(ctx)}.docx",
+                                 receiver=receiver, purpose=str(body.get("purpose") or ""),
+                                 stage=stage)
+        return {"path": str(path), "gaps": tu_waste.gaps(ctx, receiver, stage)}
     elif kind == "oos":
         from ecodoc.development import oos
         path = oos.generate(ctx, out_dir / f"раздел_ООС{_year_suffix(ctx)}.docx",
@@ -695,22 +698,98 @@ def api_devdoc(params, body):
     return {"path": str(path)}
 
 
+def _hazard_class_from_passport(body):
+    """Режим «по паспорту» (замечание эколога «не работает»): тело
+    {org, site, passport: <ФККО|индекс>|fkko, passport_name?, wi?: {имя: Wi},
+    save?} → состав из базы (ручной ввод → протокол состава → паспорт →
+    ООС, приведён к 100 %) → Ci = % × 10 000, Wi из справочника
+    waste_refdata → K и класс → .docx в out_dir/класс_опасности/.
+    Ответ: {k, k_total, hazard_class, components, warnings, missing_wi,
+    note, source, path} либо {error}."""
+    from ecodoc.development.hazard_class import (calculate,
+                                                 components_from_percent,
+                                                 for_waste, generate)
+    ctx = workspace.load_context(body["org"], body["site"])
+    selector = body.get("passport")
+    if selector in (None, ""):
+        selector = body.get("fkko") or ""
+    info = for_waste(ctx, selector)
+    if info.get("error") and "не найден" in info["error"] and body.get("passport_name"):
+        by_name = for_waste(ctx, str(body["passport_name"]))
+        if not by_name.get("error"):
+            info = by_name
+    if info.get("error"):
+        return info
+    comps, missing = components_from_percent(info["components"], body.get("wi"))
+    if not comps:
+        return {"error": f"у отхода {info.get('fkko')} {info.get('name')} нет "
+                         f"компонентов с числовым содержанием"}
+    r = calculate(comps)
+    out = {"k": r.k_total, "k_total": r.k_total, "hazard_class": r.hazard_class,
+           "declared_class": info.get("hazard_class"),
+           "components": r.components, "warnings": list(r.warnings),
+           "missing_wi": missing, "source": info["source"],
+           "name": info["name"], "fkko": info["fkko"],
+           "note": " ; ".join(x for x in (
+               f"состав — {info['source']}", info.get("note") or "") if x)}
+    if missing:
+        out["warnings"].append(
+            "без Wi (в K не учтены): " + ", ".join(missing)
+            + " — введите Wi из БДО и пересчитайте")
+    if body.get("save", 1):
+        out_dir = workspace.results_dir(body["org"], body["site"]) / "класс_опасности"
+        code = re.sub(r"\D", "", str(info.get("fkko") or "")) or re.sub(
+            r'[\\/:*?"<>|]', "_", str(info.get("name") or "отход"))[:60]
+        proto = info.get("protocol") or {}
+        basis = (f"Компонентный состав отхода — {info['source']}"
+                 + (f" ({proto.get('lab')})" if proto.get("lab") else "")
+                 + "; содержание приведено к 100 % и переведено в мг/кг; "
+                   "Wi — по приложению № 4 и п. 11 Критериев (пр. № 158), "
+                   "справочные значения БДО помечены в графе «Источник Wi».")
+        path = generate(comps, out_dir / f"расчёт_класса_{code}.docx",
+                        waste_name=info.get("name", ""), fkko=info.get("fkko", ""),
+                        org_name=ctx.organization.name, org_inn=ctx.organization.inn,
+                        basis=basis, protocol=proto, missing_wi=missing,
+                        declared_class=info.get("hazard_class"))
+        out["path"] = str(path)
+    return out
+
+
 def api_hazard_class(params, body):
+    """Расчёт класса опасности (пр. МПР № 158). Два режима:
+    * «по паспорту» — без components, но с org/site и passport|fkko
+      (см. _hazard_class_from_passport);
+    * ручной — components [{name, ci (мг/кг), wi}] (+ save/waste_name/fkko/
+      basis/org/site) — контракт калькулятора вкладки «Сервис»; Wi = 0 —
+      берётся из справочника waste_refdata, если компонент известен."""
     from ecodoc.development.hazard_class import Component, calculate, generate
-    comps = [Component(name=c.get("name", ""), ci=float(c.get("ci") or 0),
-                       wi=float(c.get("wi") or 0))
-             for c in body.get("components", []) if c.get("name")]
+    if not body.get("components") and body.get("org") and body.get("site") \
+            and (body.get("passport") not in (None, "") or body.get("fkko")):
+        return _hazard_class_from_passport(body)
+    from ecodoc.core.waste_refdata import wi_for
+    comps = []
+    for c in body.get("components", []):
+        if not c.get("name"):
+            continue
+        wi = float(c.get("wi") or 0)
+        src = "задано вручную" if wi else ""
+        if not wi:
+            found, src_ref, _canon = wi_for(str(c.get("name")))
+            if found:
+                wi, src = float(found), src_ref
+        comps.append(Component(name=c.get("name", ""), ci=float(c.get("ci") or 0),
+                               wi=wi, wi_source=src))
     if not comps:
         return {"error": "Добавьте компоненты отхода (наименование, Ci, Wi)."}
     r = calculate(comps)
     out = {"k_total": r.k_total, "hazard_class": r.hazard_class,
            "components": r.components, "warnings": r.warnings}
     if body.get("save"):                       # оформить расчёт документом
-        org_name = ""
+        org_name = org_inn = ""
         if body.get("org") and body.get("site"):
-            out_dir = workspace.results_dir(body["org"], body["site"])
-            org_name = workspace.load_context(body["org"], body["site"]) \
-                .organization.name
+            out_dir = workspace.results_dir(body["org"], body["site"]) / "класс_опасности"
+            org = workspace.load_context(body["org"], body["site"]).organization
+            org_name, org_inn = org.name, org.inn
         else:                                  # калькулятор без объекта
             out_dir = workspace.results_root() / "расчёты"
         name = re.sub(r'[\\/:*?"<>|]', "_",
@@ -718,7 +797,8 @@ def api_hazard_class(params, body):
         path = generate(comps, out_dir / f"расчёт_класса_{name}.docx",
                         waste_name=body.get("waste_name", ""),
                         fkko=body.get("fkko", ""), org_name=org_name,
-                        basis=body.get("basis", ""))
+                        org_inn=org_inn, basis=body.get("basis", ""),
+                        missing_wi=[c.name for c in comps if not c.wi])
         out["path"] = str(path)
     return out
 
@@ -1077,7 +1157,20 @@ def api_org_verify(params, body):
         same = _norm_req(ours) == _norm_req(theirs)
         rows.append({"field": f, "ours": ours, "egrul": theirs,
                      "same": same, "empty": not ours})
-    return {"inn": inn, "rows": rows, "egrul": found,
+    labels = {"name": "Полное наименование", "short_name": "Краткое наименование",
+              "inn": "ИНН", "kpp": "КПП", "ogrn": "ОГРН/ОГРНИП",
+              "address": "Юридический адрес (по ЕГРЮЛ)",
+              "director_name": "Руководитель", "director_position": "Должность руководителя"}
+    for r in rows:
+        r["label"] = labels.get(r["field"], r["field"])
+    notes = []
+    # ЕГРИП адрес места жительства ИП не публикует: сервис ФНС его не отдаёт —
+    # юридический адрес ИП берётся из договора (раздел «реквизиты сторон»)
+    if len(re.sub(r"\D", "", inn)) == 12 and not found.get("address"):
+        notes.append("ЕГРИП не публикует адрес индивидуального предпринимателя — "
+                     "юридический адрес берётся из договора (раздел «Юридические "
+                     "адреса и реквизиты сторон», сторона ЗАКАЗЧИК) или вводится вручную.")
+    return {"inn": inn, "rows": rows, "egrul": found, "notes": notes,
             "diff": sum(1 for r in rows if not r["same"] and not r["empty"]),
             "empty": sum(1 for r in rows if r["empty"] and r["egrul"])}
 

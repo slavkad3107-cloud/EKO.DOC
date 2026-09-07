@@ -101,6 +101,30 @@ def _set(ctx: ReportContext, obj, attr: str, value: str, doc: ExtractedDoc,
         _note_page(ctx, doc, attr, value)
 
 
+_OWN_HINT = re.compile(r"карточк\w* (предприятия|организации|контрагента)|"
+                       r"реквизиты (организации|предприятия|ип)\b|выписк\w* из егр|"
+                       r"лист записи|свидетельств\w* о постановке|устав\b|"
+                       r"декларац\w* о плате|отч[её]т\w* .{0,40}экологическ\w* контрол",
+                       re.I | re.S)
+
+
+def _own_document(doc: ExtractedDoc) -> bool:
+    """Документ самой организации (устав, ЕГРЮЛ, карточка, свидетельство НВОС,
+    декларация, отчёт ПЭК)? Правило эколога (07.09): реквизиты — только по ИНН
+    из ЕГРЮЛ или из раздела «реквизиты сторон» договора; из первого попавшегося
+    ИНН в ООС/акте/протоколе реквизиты не берём (там проектировщик, полигон,
+    лаборатория). Договоры разбирает ИИ по сторонам — регэкспу они не видны."""
+    try:
+        from ecodoc.intake import classify
+        kind = getattr(classify.classify(doc), "kind", "")
+    except Exception:
+        kind = ""
+    if kind in ("egrul", "nvos_cert", "declaration", "pek_report", "pek_program"):
+        return True
+    hay = (doc.path.name + "\n" + doc.text[:3000]).replace("ё", "е")
+    return bool(_OWN_HINT.search(hay))
+
+
 def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
                    scope: str = "all", sink=None) -> None:
     """scope — категория раздельной загрузки (см. analyzer.analyze_docs):
@@ -109,7 +133,7 @@ def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
     t = doc.text
     org: Organization = ctx.organization
 
-    if scope in ("all", "org"):
+    if scope in ("all", "org") and _own_document(doc):
         inn = _first(RE_INN_UL, t) or _first(RE_INN_FL, t)
         _set(ctx, org, "inn", inn, doc, sink=sink)
         if not org.is_individual:              # у ИП КПП не бывает
@@ -120,6 +144,7 @@ def _fill_from_doc(ctx: ReportContext, doc: ExtractedDoc,
         _set(ctx, org, "okved", _first(RE_OKVED, t), doc, sink=sink)
         _set(ctx, org, "email", _first(RE_EMAIL, t), doc, sink=sink)
 
+    if scope in ("all", "org"):
         # объект(ы) НВОС — формат по core/nvos (единое правило для всей программы)
         from ecodoc.core import nvos
         for code in nvos.find_all(t):

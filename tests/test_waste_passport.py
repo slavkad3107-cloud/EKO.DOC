@@ -289,3 +289,101 @@ def test_v_class_confirmation_by_biotest(tmp_path):
     # без акта биотестирования справка не выдумывается
     ctx.extra["lab_results"] = []
     assert wp.generate_v_class(ctx, tmp_path / "n") == []
+
+
+# ─────────── замечания эколога 07.09.2026: состав в %, происхождение, адрес ───────────
+def _all_text(path):
+    from docx import Document
+    d = Document(path)
+    return "\n".join([p.text for p in d.paragraphs]
+                     + [c.text for t in d.tables for r in t.rows for c in r.cells])
+
+
+def test_passport_no_placeholders_origin_and_site_address(tmp_path):
+    """Без ручных данных: происхождение — по справочнику ФККО (не «‹указать…›»),
+    адрес места образования — адрес объекта НВОС, состав — из паспорта."""
+    from ecodoc.core.models import NVOSObject
+    ctx = _ctx()
+    ctx.organization.address = "СПб, Коломенская ул., 7"
+    ctx.objects = [NVOSObject(code="41-0247-005048-П", name="База",
+                              address="ЛО, Всеволожский р-н, Промзона Янино, "
+                                      "Промышленный проезд, 10")]
+    ctx.extra["site_address"] = "Промышленная"     # имя площадки — не адрес
+    ctx.wastes = [ctx.wastes[1]]                    # 73310001724, IV класс
+    ctx.extra["waste_passports"] = [{
+        "fkko": "73310001724", "name": "Мусор от офисных помещений", "hazard_class": 4,
+        "_src": "010.jpg",
+        "components": [{"name": "бумага", "percent": "50"},
+                       {"name": "картон", "percent": "30"},
+                       {"name": "полиэтилен", "percent": "20"}]}]
+    (path,) = wp.generate(ctx, tmp_path)
+    text = _all_text(path)
+    assert "‹" not in text and "›" not in text
+    assert "жизнедеятельность работников" in text     # 73310001724 → эталон ПОО ТБО
+    assert "Промзона Янино, Промышленный проезд, 10" in text  # адрес объекта
+    assert "Промышленная\n" not in text
+    assert "50,00" in text and "30,00" in text and "20,00" in text
+    assert not wp.gaps(ctx)
+
+
+def test_passport_composition_mg_per_kg_and_sum_rules(tmp_path):
+    """«Картон 169000» — мг/кг из протокола: ÷ 10 000 → %, порядок по
+    убыванию, сумма 100; недобор < 95 % → строка «Прочие»; перебор > 105 % —
+    состав не печатается и попадает в gaps()."""
+    ctx = _ctx()
+    ctx.wastes = [ctx.wastes[1]]
+    ctx.extra["waste_passports"] = [{
+        "fkko": "73310001724", "name": "Мусор", "hazard_class": 4, "_src": "п.jpg",
+        "components": [{"name": "Картон", "percent": "169000"},
+                       {"name": "Бумага", "percent": "531000"},
+                       {"name": "Полиэтилен", "percent": "200000"}]}]
+    (path,) = wp.generate(ctx, tmp_path / "a")
+    text = _all_text(path)
+    assert "169000" not in text and "16,90" in text and "53,10" in text
+    assert "Прочие компоненты" in text and "10,00" in text   # 90 % → до 100
+    assert text.index("Бумага") < text.index("Полиэтилен") < text.index("Картон")
+    # 95 % — граница диапазона пропорционального приведения
+    ctx.extra["waste_passports"][0]["components"][2]["percent"] = "250000"
+    (path,) = wp.generate(ctx, tmp_path / "c")
+    text = _all_text(path)
+    assert "55,89" in text and "Прочие компоненты" not in text
+    # перебор
+    ctx.extra["waste_passports"][0]["components"] = [
+        {"name": "Бумага", "percent": "80"}, {"name": "Картон", "percent": "40"}]
+    (path,) = wp.generate(ctx, tmp_path / "b")
+    text = _all_text(path)
+    assert "80,00" not in text and "КХА" in text
+    assert any("не сходится" in g and "120.00" in g for g in wp.gaps(ctx))
+
+
+def test_passport_ignores_air_protocols_but_takes_waste_protocol(tmp_path):
+    """Из 171 протокола Миниха состав должен брать только протокол СОСТАВА
+    этого отхода: воздух (мг/м³, г/с), почва, вода — мимо; протокол отхода
+    (мг/кг, объект — отход по ФККО) — берётся и главнее скана паспорта."""
+    ctx = _ctx()
+    ctx.wastes = [WasteFlow(fkko_code="9 19 201 02 39 4",
+                            name="песок, загрязненный нефтью или нефтепродуктами "
+                                 "(содержание нефтепродуктов менее 15 %)",
+                            hazard_class=4)]
+    ctx.extra["lab_results"] = [
+        {"kind": "КХА", "protocol_no": "1", "object": "атмосферный воздух, песок",
+         "substances": [{"name": "нефтепродукты", "value": "0.5", "unit": "мг/м3"}]},
+        {"kind": "хим", "protocol_no": "2", "object": "земельный участок 47:07",
+         "substances": [{"name": "нефтепродукты", "value": "9040", "unit": "мг/кг"}]},
+        {"kind": "хим", "protocol_no": "3", "object": "Участок №6003",
+         "substances": [{"name": "Углерод (Сажа)", "value": "0.004", "unit": "г/с"}]},
+        {"kind": "КХА", "protocol_no": "77-Отх", "date": "01.03.2025", "lab": "ИЦ",
+         "fkko": "91920102394",
+         "substances": [{"name": "кремний диоксид", "value": "870000", "unit": "мг/кг"},
+                        {"name": "нефтепродукты", "value": "72000", "unit": "мг/кг"},
+                        {"name": "влага", "value": "58000", "unit": "мг/кг"}]}]
+    ctx.extra["waste_passports"] = [{
+        "fkko": "91920102394", "name": "Песок", "hazard_class": 4, "_src": "012.jpg",
+        "components": [{"name": "кремний диоксид (песок)", "percent": "99"}]}]
+    lab = wp.lab_result_for(ctx, ctx.wastes[0], kinds=("КХА", "хим"))
+    assert lab["protocol_no"] == "77-Отх"
+    (path,) = wp.generate(ctx, tmp_path)
+    text = _all_text(path)
+    assert "№ 77-Отх от 01.03.2025" in text
+    assert "87,00" in text and "7,20" in text and "5,80" in text
+    assert "99,00" not in text and "9040" not in text

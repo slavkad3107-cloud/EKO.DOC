@@ -29,8 +29,10 @@ def site(tmp_path, make_pdf, monkeypatch):
         make_pdf(tmp_path / "свидетельство.pdf",
                  ["Свидетельство о постановке на учёт",
                   "Объект НВОС 41-0247-005048-П, Промзона Янино"]),
-        make_pdf(tmp_path / "счёт.pdf",          # чужие реквизиты — конфликт
-                 ["Счёт-фактура", "ИНН 7801234564"]),
+        # вторая (устаревшая) выписка с другим ИНН — конфликт между документами
+        # самой организации; счёт контрагента реквизитов больше не даёт
+        make_pdf(tmp_path / "выписка_старая.pdf",
+                 ["Выписка ЕГРЮЛ", "ИНН 7801234564"]),
     ]
     intake.run([str(d) for d in docs], org=ORG, site=SITE, use_ai=False)
     return tmp_path
@@ -44,7 +46,7 @@ def test_full_cycle(site, tmp_path):
     assert len(docs) == 3
     assert any(rec.get("images") for rec in docs.values()), "нет сканов листов"
 
-    # 2. ДАННЫЕ: ИНН разошёлся между выпиской и счётом — программа спрашивает
+    # 2. ДАННЫЕ: ИНН разошёлся между двумя выписками — программа спрашивает
     ctx = workspace.load_context(ORG, SITE)
     store = cd.Store(site_dir)
     groups = {g.key: g for g in cc.group(store.items, ctx)}

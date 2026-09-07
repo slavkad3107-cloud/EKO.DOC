@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal
 from pathlib import Path
 
 from ecodoc.core.models import ReportContext
@@ -215,6 +216,46 @@ def data_issues(ctx: ReportContext, site_dir: Path, org: str = "", site: str = "
                     "suggest": "", "file": f, "doc": doc, "page": page, "image": img(doc, page),
                     "fix": {"type": "input", "key": akey + "." + fld,
                             "path": f"waste_acts[{i}].{fld}", "placeholder": "№ лицензии, дата"}})
+    # нормативы из ООС: эксплуатационные отходы ждут решения; акты с
+    # плотностью, далёкой от ООС (т/м³), — под вопросом
+    try:
+        from ecodoc.ai.analyzer import oos_norm_for
+        oos = [x for x in ((ctx.extra or {}).get("oos_wastes") or []) if isinstance(x, dict)]
+    except Exception:
+        oos, oos_norm_for = [], None
+    for i, x in enumerate(oos):
+        if x.get("stage") == "эксплуатация" and not x.get("decision"):
+            f = str(x.get("src") or "").split(" (лист")[0]
+            cats["Отходы"].append({
+                "kind": "oos_stage", "label": f"{fkko.fmt(x.get('fkko', ''))} {x.get('name', '')}",
+                "value": f"{x.get('mass_t') or '—'} т / {x.get('volume_m3') or '—'} м³",
+                "reason": "эксплуатационный отход из ООС — уточните, добавлять ли его в перечень "
+                          "(основа перечня — строительные отходы ООС)",
+                "suggest": "", "file": f, "doc": sources.sha_by_name(site_dir, f) if f else "",
+                "page": 0, "image": "",
+                "fix": {"type": "tab", "tab": "waste", "path": f"extra.oos_wastes[{i}].decision"}})
+    if oos_norm_for is not None:
+        for i, a in enumerate(ctx.waste_acts):
+            norm = oos_norm_for(ctx, a.fkko_code)
+            if not norm or not norm.get("density"):
+                continue
+            try:
+                m, v, d0 = Decimal(str(a.mass)), Decimal(str(a.volume_m3)), Decimal(str(norm["density"]))
+            except Exception:
+                continue
+            if m <= 0 or v <= 0 or d0 <= 0:
+                continue
+            dens = m / v
+            if abs(dens - d0) / d0 > Decimal("0.3"):
+                f, doc, page = _act_source(store.items, a)
+                cats["Отходы"].append({
+                    "kind": "density_oos",
+                    "label": f"акт {a.date or 'без даты'} · {fkko.fmt(a.fkko_code)} {a.name}",
+                    "value": f"{a.mass} т / {a.volume_m3} м³ = {dens.quantize(Decimal('0.001'))} т/м³",
+                    "reason": f"плотность по акту отличается от ООС ({norm['density']} т/м³) "
+                              f"более чем на 30 % — проверьте массу или объём",
+                    "suggest": "", "file": f, "doc": doc, "page": page, "image": img(doc, page),
+                    "fix": {"type": "tab", "tab": "waste", "path": f"waste_acts[{i}].mass"}})
     for r in recs.check_passports(ctx):
         if not r["problems"]:
             continue

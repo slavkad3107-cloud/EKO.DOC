@@ -30,6 +30,9 @@ SYSTEM = """Ты — ассистент инженера-эколога РФ. И
  "doc_type": "справка об утилизации|акт|протокол КХА|биотестирование|договор|устав|иное",
  "organization": {"name":"", "short_name":"", "inn":"", "kpp":"", "ogrn":"",
                   "address":"", "director_name":"", "phone":"", "email":""},
+ "parties": [{"role":"заказчик|исполнитель|подрядчик|поставщик|покупатель|арендатор|арендодатель|иное",
+              "name":"", "short_name":"", "inn":"", "kpp":"", "ogrn":"", "address":"",
+              "director_name":"", "phone":"", "email":"", "bank":""}],
  "objects": [{"code":"XX-XXXX-XXXXXX-Б", "name":"", "address":"", "category":""}],
  "wastes": [{"fkko":"11 цифр", "name":"", "hazard_class":1-5,
              "generated":"т", "transferred":"т", "used":"т", "neutralized":"т"}],
@@ -50,12 +53,36 @@ SYSTEM = """Ты — ассистент инженера-эколога РФ. И
                        "pollutants":[{"code":"", "name":"", "g_s":"г/с", "t_year":"т/год"}]}],
  "lab_results": [{"kind":"КХА|биотест|хим", "protocol_no":"", "date":"",
                   "lab":"", "object":"", "substances":[{"name":"", "value":"", "unit":""}]}],
+ "oos_wastes": [{"stage":"строительство|эксплуатация", "fkko":"11 цифр", "name":"",
+                 "hazard_class":1-5, "mass_t":"т (за период строительства или т/год)",
+                 "volume_m3":"", "density":"т/м3", "source_process":"откуда образуется",
+                 "handling":"куда передаётся"}],
  "quotes": {"<путь.к.полю>": "дословная короткая цитата из текста"}
 }
 Правила: числа — строками с точкой; массы в тоннах (переведи из кг: /1000);
 не выдумывай — включай только то, что явно есть в тексте; для каждого
 заполненного поля добавь запись в quotes (например "organization.inn",
 "wastes[0].generated", "disposal_acts[0].mass_t").
+
+РЕКВИЗИТЫ ОРГАНИЗАЦИИ. Блок organization заполняй ТОЛЬКО из документов самой
+организации: устав, выписка/лист записи ЕГРЮЛ (ЕГРИП), карточка предприятия,
+свидетельство о постановке объекта НВОС на учёт, декларация о плате, отчёт
+ПЭК. В ДОГОВОРАХ реквизиты сторон (раздел «Юридические адреса и реквизиты
+сторон», «Адреса и реквизиты», «Подписи сторон») клади в parties — по одной
+записи на сторону с её ролью (Заказчик, Исполнитель, Подрядчик…) и ВСЕМ, что
+там есть: ИНН, КПП, ОГРН, юридический адрес, телефон, e-mail, руководитель.
+В organization из договора ничего не клади. Реквизиты проектировщика,
+заказчика проекта, экспертов, лаборатории, полигона — не organization.
+
+ОТХОДЫ В ПРОЕКТНОЙ ДОКУМЕНТАЦИИ (раздел ООС/ПМООС, ПНООЛР, инвентаризация):
+таблицы «Отходы, образующиеся при строительстве» и «…при эксплуатации» — каждую
+строку клади в oos_wastes со stage (строительство/эксплуатация), кодом ФККО,
+наименованием, классом, массой в тоннах и объёмом в м³ (если даны оба —
+оба; плотность т/м³ — если указана), процессом образования и способом
+обращения. Это нормативы: по ним потом сверяются справки-акты. Строки с
+компонентным составом (%) отходов дополнительно клади в waste_passports.
+Проценты состава — числа в % масс. (не мг/кг); если в документе мг/кг —
+переведи (÷10000) и укажи unit не надо, только percent.
 
 ЧТО НЕ ЯВЛЯЕТСЯ ЗАГРЯЗНЯЮЩИМ ВЕЩЕСТВОМ (не клади в pollutants_air/water):
  • работы, процессы и оборудование — «сварочные работы», «работа
@@ -401,13 +428,91 @@ def org_block_problem(ctx: ReportContext, org: dict, docname: str,
     if inn_doc and inn_own and inn_doc != inn_own:
         return (f"реквизиты другой организации (ИНН {inn_doc} ≠ ИНН организации "
                 f"{inn_own}) — проектировщик/контрагент")
-    _kind, project = _doc_kind(docname)
+    if inn_doc and inn_own and inn_doc == inn_own:
+        return ""                      # это точно наша организация
+    kind, project = _doc_kind(docname)
     dt = str(doc_type or "").lower()
-    own = any(s in dt for s in _OWN_DOC_TYPES)
-    if project and not own and not (inn_doc and inn_doc == inn_own):
+    own = kind in OWN_KINDS or any(s in dt for s in _OWN_DOC_TYPES)
+    if project and not own:
         return ("проектный документ (ООС/ПНООЛР/НДВ/экспертиза): реквизиты "
                 "проектировщика и заказчика не берём — нужна карточка/ЕГРЮЛ")
+    if not own:
+        # правило эколога (07.09): реквизиты — только по ИНН из ЕГРЮЛ или из
+        # раздела «реквизиты сторон» договора (сторона ЗАКАЗЧИК) — см. parties
+        return ("реквизиты берутся только из ЕГРЮЛ (по ИНН) и из раздела "
+                "«реквизиты сторон» договора (сторона с нашим ИНН / ЗАКАЗЧИК)")
     return ""
+
+
+# документы самой организации — из них блок organization берётся напрямую
+OWN_KINDS = frozenset({"egrul", "nvos_cert", "declaration", "pek_report",
+                       "pek_program"})
+_ORG_ATTRS = ("name", "short_name", "inn", "kpp", "ogrn", "address",
+              "director_name", "phone", "email")
+
+
+def pick_party(ctx: ReportContext, parties: list) -> tuple[dict | None, str]:
+    """Сторона договора, которая и есть наша организация.
+
+    Приоритет: совпадение ИНН; если свой ИНН ещё не известен — сторона с ролью
+    ЗАКАЗЧИК (правило эколога: «ЗАКАЗЧИК — там брать всё, что есть»).
+    Возвращает (сторона | None, причина отказа)."""
+    inn_own = re.sub(r"\D", "", str(ctx.organization.inn or ""))
+    parties = [p for p in parties if isinstance(p, dict)]
+    if not parties:
+        return None, ""
+    if inn_own:
+        for p in parties:
+            if re.sub(r"\D", "", str(p.get("inn") or "")) == inn_own:
+                return p, ""
+        return None, (f"ни одна сторона договора не совпала по ИНН с организацией "
+                      f"({inn_own}) — реквизиты контрагентов не берём")
+    for p in parties:
+        if "заказчик" in str(p.get("role") or "").lower():
+            return p, ""
+    return None, "ИНН организации не задан, стороны с ролью ЗАКАЗЧИК в договоре нет"
+
+
+def _merge_org_fields(ctx: ReportContext, org: dict, quotes: dict, src: str,
+                      rep: ExtractionReport, qprefix: str = "organization") -> None:
+    for attr in _ORG_ATTRS:
+        val = str(org.get(attr) or "").strip()
+        if not val:
+            continue
+        if attr == "kpp" and ctx.organization.is_individual:
+            continue
+        if attr == "short_name":
+            from ecodoc.core.sanitize_records import short_name_problem
+            full = ctx.organization.name or str(org.get("name") or "")
+            prob = short_name_problem(full, val, ctx.organization.inn or str(org.get("inn") or ""))
+            if prob:
+                rep.rejected.append(Rejected("organization.short_name", val, prob, src))
+                continue
+        cur = getattr(ctx.organization, attr, "")
+        if cur and cur != val:
+            rep.conflicts.append(Conflict(f"organization.{attr}", cur, val, src))
+        elif not cur:
+            setattr(ctx.organization, attr, val)
+            quote = quotes.get(f"{qprefix}.{attr}", "") or quotes.get(f"organization.{attr}", "")
+            ctx.provenance[attr] = {"src": src, "quote": quote, "by": "ai"}
+            rep.accepted.append(Accepted(f"organization.{attr}", val, src, quote))
+
+
+def _merge_parties(ctx: ReportContext, data: dict, quotes: dict, src: str,
+                   rep: ExtractionReport) -> None:
+    """Реквизиты из раздела «реквизиты сторон» договора — только нашей стороны."""
+    parties = data.get("parties") or []
+    if not parties:
+        return
+    party, why = pick_party(ctx, parties)
+    if party is None:
+        if why:
+            names = "; ".join(f"{p.get('role') or '?'}: {p.get('name') or p.get('inn') or '—'}"
+                              for p in parties if isinstance(p, dict))[:160]
+            rep.rejected.append(Rejected("стороны договора", names, why, src))
+        return
+    idx = parties.index(party)
+    _merge_org_fields(ctx, party, quotes, src, rep, qprefix=f"parties[{idx}]")
 
 
 def _merge_org(ctx: ReportContext, data: dict, quotes: dict, src: str,
@@ -420,33 +525,95 @@ def _merge_org(ctx: ReportContext, data: dict, quotes: dict, src: str,
         vals = ", ".join(f"{k}={str(v)[:30]}" for k, v in org.items() if v)[:160]
         rep.rejected.append(Rejected("organization", vals, prob, src))
         return
-    for attr in ("name", "short_name", "inn", "kpp", "ogrn", "address",
-                 "director_name", "phone", "email"):
-        val = str(org.get(attr) or "").strip()
-        if not val:
+    _merge_org_fields(ctx, org, quotes, src, rep)
+
+
+def _stage(value) -> str:
+    v = str(value or "").lower()
+    return "строительство" if ("строит" in v or "демонт" in v or "снос" in v) else "эксплуатация"
+
+
+def _merge_oos_wastes(ctx: ReportContext, data: dict, src: str,
+                      rep: ExtractionReport) -> None:
+    """Отходы из таблиц ООС/ПНООЛР → extra.oos_wastes (нормативы: т, м³, т/м³).
+
+    Правило эколога (07.09): ООС — основополагающий документ по отходам;
+    протоколы/паспорта делаются по разделу СТРОИТЕЛЬНЫХ отходов, а
+    эксплуатационные — только после уточнения (decision пустое → вопрос в
+    «Проверке данных»). Масса и объём из ООС — нормативы для сверки актов."""
+    items = data.get("oos_wastes") or []
+    if not items:
+        return
+    kind, project = _doc_kind(src)
+    if not (project or kind in ("oos", "pnoolr", "inventory_waste")):
+        rep.rejected.append(Rejected("отходы по ООС", f"{len(items)} строк",
+                                     "нормативы отходов берутся только из проектной "
+                                     "документации (ООС/ПНООЛР/инвентаризация)", src))
+        return
+    from ecodoc.core import sanitize
+    from ecodoc.core.models import WasteFlow
+    if not isinstance(ctx.extra, dict):
+        ctx.extra = {}
+    store = ctx.extra.setdefault("oos_wastes", [])
+    added = 0
+    for it in items:
+        if not isinstance(it, dict):
             continue
-        # у ИП (12-значный ИНН) КПП не бывает — не тащить его из счетов
-        # контрагентов (реквизиты чужих ЮЛ в документах)
-        if attr == "kpp" and ctx.organization.is_individual:
+        fkko = re.sub(r"\D", "", str(it.get("fkko") or ""))
+        name = str(it.get("name") or "").strip()
+        if len(fkko) != 11:
+            rep.rejected.append(Rejected("отход по ООС", f"{fkko or '—'} {name[:40]}",
+                                         "код ФККО не из 11 цифр", src))
             continue
-        if attr == "short_name":
-            # краткое наименование из чужого документа (контрагент в счёте)
-            # или равное полному — не принимаем: оно должно быть сокращением
-            # ИМЕННО этой организации («ИП Миних Е.А.», «ООО «Технострой»»)
-            from ecodoc.core.sanitize_records import short_name_problem
-            full = ctx.organization.name or str(org.get("name") or "")
-            prob = short_name_problem(full, val, ctx.organization.inn or str(org.get("inn") or ""))
-            if prob:
-                rep.rejected.append(Rejected("organization.short_name", val, prob, src))
-                continue
-        cur = getattr(ctx.organization, attr, "")
-        if cur and cur != val:
-            rep.conflicts.append(Conflict(f"organization.{attr}", cur, val, src))
-        elif not cur:
-            setattr(ctx.organization, attr, val)
-            quote = quotes.get(f"organization.{attr}", "")
-            ctx.provenance[attr] = {"src": src, "quote": quote, "by": "ai"}
-            rep.accepted.append(Accepted(f"organization.{attr}", val, src, quote))
+        chk = sanitize.check_waste(fkko, name, it.get("hazard_class"))
+        if not chk.ok:
+            rep.rejected.append(Rejected("отход по ООС", f"{fkko} {name[:40]}", chk.reason, src))
+            continue
+        stage = _stage(it.get("stage"))
+        mass, vol, dens = _dec(it.get("mass_t")), _dec(it.get("volume_m3")), _dec(it.get("density"))
+        if dens is None and mass and vol:
+            dens = (mass / vol).quantize(Decimal("0.001"))
+        hz = it.get("hazard_class")
+        hazard = int(hz) if hz in (1, 2, 3, 4, 5) else (int(fkko[-1]) if fkko[-1] in "12345" else 5)
+        rec = next((x for x in store if isinstance(x, dict) and x.get("fkko") == fkko
+                    and x.get("stage") == stage), None)
+        if rec is None:
+            rec = {"fkko": fkko, "name": name, "hazard_class": hazard, "stage": stage,
+                   "mass_t": str(mass) if mass is not None else "",
+                   "volume_m3": str(vol) if vol is not None else "",
+                   "density": str(dens) if dens is not None else "",
+                   "source_process": str(it.get("source_process") or "").strip(),
+                   "handling": str(it.get("handling") or "").strip(),
+                   "src": src, "decision": "add" if stage == "строительство" else ""}
+            store.append(rec)
+            added += 1
+            rep.accepted.append(Accepted(
+                f"отход по ООС ({stage}) {fkko}",
+                f"{name[:50]}: {rec['mass_t'] or '—'} т, {rec['volume_m3'] or '—'} м³"
+                + (f", {rec['density']} т/м³" if rec["density"] else ""), src))
+        else:
+            for k, v in (("name", name), ("mass_t", mass), ("volume_m3", vol), ("density", dens),
+                         ("source_process", it.get("source_process")), ("handling", it.get("handling"))):
+                if v not in (None, "") and not rec.get(k):
+                    rec[k] = str(v).strip()
+        # строительные отходы — основа перечня: код заводится в базу сразу
+        if stage == "строительство" and not any(w.fkko_code == fkko for w in ctx.wastes):
+            ctx.wastes.append(WasteFlow(fkko_code=fkko, name=name, hazard_class=hazard))
+    if any(x.get("stage") == "эксплуатация" and not x.get("decision")
+           for x in store if isinstance(x, dict)):
+        rep.doubts.append(Rejected("отходы по ООС (эксплуатация)",
+                                   f"{sum(1 for x in store if x.get('stage') == 'эксплуатация' and not x.get('decision'))} позиц.",
+                                   "уточните, добавлять ли эксплуатационные отходы в перечень "
+                                   "(ОБЪЕКТ → Отходы → «Отходы из ООС»)", src))
+
+
+def oos_norm_for(ctx: ReportContext, fkko: str) -> dict | None:
+    """Норматив из ООС по коду: строительство главнее эксплуатации."""
+    code = re.sub(r"\D", "", str(fkko or ""))
+    rows = [x for x in (ctx.extra.get("oos_wastes") or []) if isinstance(x, dict)
+            and x.get("fkko") == code] if isinstance(ctx.extra, dict) else []
+    rows.sort(key=lambda x: 0 if x.get("stage") == "строительство" else 1)
+    return rows[0] if rows else None
 
 
 def _merge_objects(ctx: ReportContext, data: dict, src: str, rep: ExtractionReport):
@@ -834,6 +1001,26 @@ def _collect(sink, data: dict, quotes: dict, pages: dict, docname: str,
             put(f"organization.{attr}", val, _ORG_LABEL[attr],
                 f"organization.{attr}",
                 state=REJECTED if prob else NEW, reason=prob)
+    # стороны договора: кандидаты только от нашей стороны (ИНН / ЗАКАЗЧИК)
+    parties = data.get("parties") or []
+    if ctx is not None and parties:
+        party, _why = pick_party(ctx, parties)
+        if party is not None:
+            i = parties.index(party)
+            for attr, val in party.items():
+                if attr in _ORG_LABEL:
+                    put(f"organization.{attr}", val,
+                        f"{_ORG_LABEL[attr]} (договор, {party.get('role') or 'сторона'})",
+                        f"parties[{i}].{attr}")
+    for i, ow in enumerate(data.get("oos_wastes") or []):
+        if not isinstance(ow, dict):
+            continue
+        fkko = re.sub(r"\D", "", str(ow.get("fkko") or ""))
+        if len(fkko) != 11 or ow.get("mass_t") in (None, ""):
+            continue
+        put(f"wastes[fkko={fkko}].generated", ow.get("mass_t"),
+            f"отход {ow.get('name') or fkko}: норматив по ООС ({_stage(ow.get('stage'))}), т",
+            f"oos_wastes[{i}].mass_t", unit="т")
     for i, o in enumerate(data.get("objects") or []):
         code = str(o.get("code") or "").strip()
         if code:
@@ -978,7 +1165,10 @@ def analyze_docs(docs: list[ExtractedDoc], ctx: ReportContext,
             _collect(sink, data, quotes, pages_seen, docname, model, span, ctx=ctx)
         if scope in ("all", "org"):
             _merge_org(ctx, data, quotes, label, rep)
+            _merge_parties(ctx, data, quotes, label, rep)
             _merge_objects(ctx, data, label, rep)
+        if scope in ("all", "acts", "waste", "passports"):
+            _merge_oos_wastes(ctx, data, label, rep)
         # «waste» — категория «отходы» целиком: ООС/ПНООЛР/паспорта/протоколы/
         # акты (эколог: пункт частично перекрывает прочие — так и задумано)
         if scope in ("all", "acts", "waste"):

@@ -102,7 +102,8 @@ class _Row:
     def src(self, kind: str) -> dict:
         return self.sources.setdefault(kind, {
             "files": set(), "names": set(), "classes": set(),
-            "norm_t": None, "fact_t": None})
+            "norm_t": None, "fact_t": None, "volume_m3": None, "density": None,
+            "stage": ""})
 
     def note(self, kind: str, *, file: str = "", name: str = "", hazard=None,
              raw_kind: str = ""):
@@ -236,6 +237,27 @@ def _rows_from_ctx(ctx, site_dir, rows: dict[str, _Row], kind_cache: dict):
                                         or c.state == candidates.ACCEPTED):
                     s["norm_t"] = val
 
+    # нормативы из таблиц ООС/ПНООЛР (extra.oos_wastes: т, м³, т/м³, стадия) —
+    # это и есть «основа по отходам» (правило эколога 07.09); строительные
+    # главнее эксплуатационных
+    extra = ctx.extra if isinstance(getattr(ctx, "extra", None), dict) else {}
+    for ow in sorted([x for x in (extra.get("oos_wastes") or []) if isinstance(x, dict)],
+                     key=lambda x: 0 if x.get("stage") == "строительство" else 1):
+        r = row(ow.get("fkko", ""))
+        if r is None:
+            continue
+        raw = kind_of(_file_of(ow.get("src"))) if site_dir else ""
+        k = "pnoolr" if raw == "pnoolr" else "oos"
+        r.note(k, file=_file_of(ow.get("src")), raw_kind=raw or "oos",
+               name=ow.get("name", ""), hazard=ow.get("hazard_class"))
+        s_ = r.src(k)
+        if s_["norm_t"] is None and _dec(ow.get("mass_t")) is not None:
+            s_["norm_t"] = _dec(ow.get("mass_t"))
+            s_["stage"] = ow.get("stage", "")
+        if s_["volume_m3"] is None and _dec(ow.get("volume_m3")) is not None:
+            s_["volume_m3"] = _dec(ow.get("volume_m3"))
+        if s_["density"] is None and _dec(ow.get("density")) is not None:
+            s_["density"] = _dec(ow.get("density"))
     # имя/класс для строк, которых нет в ctx.wastes — из любого источника
     for r in rows.values():
         if not r.name:

@@ -14,8 +14,18 @@
 Данные берутся из ReportContext:
   * ctx.wastes — перечень отходов (код ФККО, наименование, класс опасности);
   * ctx.extra['waste_details'][<код>] — состав и реквизиты отхода (ручной ввод);
+  * ctx.extra['lab_results'] — протокол СОСТАВА именно этого отхода
+    (waste_refdata.protocol_matches_waste: вид КХА/морфология и объект —
+    отход, а не воздух/вода/почва);
   * ctx.extra['waste_passports'] — то же, но из ИИ-разбора приложенных паспортов
-    и протоколов КХА (fallback, если waste_details не заполнен).
+    и ООС/ПНООЛР (fallback, если waste_details не заполнен);
+  * происхождение — waste_refdata.origin_for (эталоны ПОО → группа ФККО),
+    адрес места образования — waste_refdata.site_address_for (объект НВОС).
+
+Замечания эколога 07.09.2026 (закрыты здесь): состав только в % и в сумме
+ровно 100 % (normalize_components: мг/кг → %, 95–105 % → к 100, недобор →
+«Прочие компоненты», перебор → не печатать и в gaps); «Происхождение…» не
+плейсхолдер, а формулировка из справочника; адрес площадки обязателен.
 
 Паспорт оформляется только на отходы I–IV класса: для V класса он не нужен —
 требуется подтверждение отнесения к V классу (протокол биотестирования).
@@ -44,8 +54,13 @@ import datetime as _dt
 from pathlib import Path
 
 from ecodoc.core.models import Organization, ReportContext, WasteFlow
+from ecodoc.core.waste_agg import norm_fkko
 
 _AGG = "агрегатное состояние и физическая форма"
+# строка состава, когда протокола ещё нет: не плейсхолдер «‹…›», а указание,
+# откуда состав должен взяться (замечание эколога 07.09.2026)
+_NO_COMP_ROW = ("состав определяется по протоколу КХА / морфологического "
+                "анализа аккредитованной лаборатории (протокол не приложен)")
 _TITLE = "ПАСПОРТ ОТХОДОВ I - IV КЛАССОВ ОПАСНОСТИ,"
 
 # Дата смены формы: п. 3 приказа № 286 — «вступает в силу с 1 сентября
@@ -203,61 +218,181 @@ def _parse_date(value) -> _dt.date | None:
     return None
 
 
+_MORPH_WORDS = ("бумага", "картон", "полиэтилен", "полипропилен", "полистирол",
+                "полиэтилентерефталат", "текстиль", "ткань", "древесина",
+                "стекло", "металл", "резина", "пищевые", "пластик", "пластмасс",
+                "волокно", "раствор", "бетон", "кирпич", "керамика", "прочее",
+                "прочие", "лакокрасочные", "фольга", "тара", "минеральное")
+
+_METHOD_MORPH = "количественный морфологический анализ отхода"
+_METHOD_OOS = ("согласно проектной документации (раздел ООС / ПНООЛР) — до "
+               "получения протокола аккредитованной лаборатории")
+
+
+def _passport_record(extra: dict, code: str) -> dict:
+    for p in extra.get("waste_passports") or []:
+        if (code and isinstance(p, dict)
+                and norm_fkko(str(p.get("fkko") or "")) == code):
+            return p
+    return {}
+
+
 def _details(ctx: ReportContext, w: WasteFlow) -> dict:
-    """Сведения об отходе: ручной ввод главнее, ИИ-разбор — как запасной."""
-    from ecodoc.core.waste_agg import norm_fkko
+    """Сведения об отходе: ручной ввод главнее; затем протокол состава
+    отхода (extra.lab_results) и справочник паспортов (extra.waste_passports);
+    происхождение — из справочника ФККО, адрес — площадки. Состав приводится
+    к % с суммой 100 (waste_refdata.normalize_components)."""
+    from ecodoc.core import waste_refdata as R
 
     extra = ctx.extra if isinstance(ctx.extra, dict) else {}
-    d = dict((extra.get("waste_details") or {}).get(w.fkko_code) or {})
+    details = extra.get("waste_details") or {}
     code = norm_fkko(w.fkko_code or "")
-    # справочник из ИИ-разбора (паспорта, протоколы, ООС/ПНООЛР): состав,
-    # происхождение и агрегатное состояние — дозаполняют только пустое
-    for p in extra.get("waste_passports") or []:
-        if not (code and isinstance(p, dict)
-                and norm_fkko(str(p.get("fkko") or "")) == code):
-            continue
-        if not d.get("components") and p.get("components"):
-            d["components"] = p.get("components") or []
+    d = dict(details.get(w.fkko_code) or {})
+    if not d and code:
+        for k, v in details.items():
+            if norm_fkko(k) == code and isinstance(v, dict):
+                d = dict(v)
+                break
+    gaps: list[str] = []
+
+    # справочник из ИИ-разбора (паспорта, протоколы, ООС/ПНООЛР)
+    p = _passport_record(extra, code)
+    p_kind = passport_kind(p) if p else ""
+    # протокол состава именно этого отхода (не воздуха/воды/почвы)
+    lab = lab_result_for(ctx, w, kinds=("КХА", "хим", "морф", "состав",
+                                         "компонент"))
+    lab_comps = [x for x in (lab.get("substances") or []) if isinstance(x, dict)
+                 and str(x.get("name") or "").strip()] if lab else []
+    comp_source = ""
+    # приоритет источников состава (замечание эколога 07.09.2026): ручной
+    # ввод → протокол состава → паспорт из скана → ООС/ПНООЛР
+    if not d.get("components"):
+        if lab_comps:
+            # как в принятых паспортах ТЕХНОСТРОЙ: состав = результаты протокола
+            d["components"] = [{"name": x.get("name", ""),
+                                "percent": x.get("value", x.get("percent", "")),
+                                "unit": x.get("unit", "")} for x in lab_comps]
+            comp_source = " ".join(x for x in (
+                "протокол", f"№ {lab.get('protocol_no')}" if lab.get("protocol_no") else "",
+                f"от {lab.get('date')}" if lab.get("date") else "",
+                f"({lab.get('_src')})" if lab.get("_src") else "") if x)
+            d["_comp_kind"] = "protocol"
+        elif p.get("components"):
+            d["components"] = list(p.get("components") or [])
+            comp_source = str(p.get("_src") or "справочник паспортов")
+            d["_comp_kind"] = p_kind
+    else:
+        d["_comp_kind"] = "manual"
+    if p:
         if not d.get("origin") and p.get("origin"):
             d["origin"] = str(p["origin"])
         if not d.get(_AGG) and p.get("aggregate_state"):
             d[_AGG] = str(p["aggregate_state"])
-        break
-    lab = lab_result_for(ctx, w, kinds=("КХА", "хим", "морф"))
     if lab:
-        # как в принятых паспортах ТЕХНОСТРОЙ: состав = результаты протокола
-        if not d.get("components") and lab.get("substances"):
-            d["components"] = [{"name": x.get("name", ""),
-                                "percent": x.get("value", "")}
-                               for x in lab["substances"] if isinstance(x, dict)]
         d.setdefault("protocol", {
             "number": lab.get("protocol_no", ""), "date": lab.get("date", ""),
             "lab": lab.get("lab", ""),
             "lab_attestation": lab.get("lab_attestation", ""),
             "method_doc": lab.get("method", "")})
+
+    # происхождение: ручное → из движения отхода → справочник по ФККО
+    if not str(d.get("origin") or "").strip():
+        d["origin"] = (str(getattr(w, "origin", "") or "").strip()
+                       or R.origin_for(code or w.fkko_code, w.name))
+    # адрес места образования: ручной → площадка (объект НВОС) → организация
+    if not d.get("site_address"):
+        d["site_address"] = R.site_address_for(ctx)
+        if not d["site_address"]:
+            gaps.append("не указан адрес площадки (места образования отходов)")
+    # агрегатное состояние: ручное → по 9–10 знакам кода ФККО
+    if not d.get(_AGG):
+        d[_AGG] = aggregate_state(w.fkko_code)
+        if not d[_AGG]:
+            gaps.append("не определено агрегатное состояние — код ФККО не "
+                        "11 знаков или знаки 9–10 вне справочника")
+
+    comps, note = R.normalize_components(d.get("components") or [],
+                                         source=comp_source)
+    d["components"], d["_comp_note"] = comps, note
+    if note and "не сходится" in note:
+        gaps.append(note)
+    if not comps:
+        gaps.append("нет состава — нужен протокол состава отхода (КХА/"
+                    "морфологический) или ООС/ПНООЛР")
+    if not d.get("method"):
+        d["method"] = _method_for(d)
+    d["_gaps"] = gaps
     return d
 
 
+def passport_kind(p: dict) -> str:
+    """Откуда запись справочника паспортов: явный _kind, иначе по имени
+    файла-источника — ООС/ПНООЛР/проект/инвентаризация → «oos», всё прочее
+    (сканы паспортов, протоколы) → «passport»."""
+    kind = str(p.get("_kind") or "").strip().lower()
+    if kind:
+        return kind
+    src = str(p.get("_src") or "").lower()
+    if any(k in src for k in ("оос", "пноолр", "проект", "инвентар", "пмоос",
+                              "охрана окруж", "пд ", "раздел 8")):
+        return "oos"
+    return "passport"
+
+
+def _method_for(d: dict) -> str:
+    """Способ определения состава: по протоколу — морфологический (материалы)
+    или химический (вещества); по ООС/ПНООЛР — «согласно проектной
+    документации»; иначе типовой КХА."""
+    comps = d.get("components") or []
+    kind = str(d.get("_comp_kind") or "")
+    if not comps:
+        return _DEFAULT_METHOD
+    if kind == "oos":
+        return _METHOD_OOS
+    names = [str(c.get("name") or "").lower() for c in comps]
+    morph = sum(1 for n in names if any(k in n for k in _MORPH_WORDS))
+    if morph and morph >= len(names) / 2:
+        return _METHOD_MORPH
+    return _DEFAULT_METHOD
+
+
 def lab_result_for(ctx: ReportContext, w: WasteFlow, kinds=()) -> dict | None:
-    """Протокол из extra['lab_results'] для отхода: по коду ФККО или по
-    наименованию в поле object (ИИ пишет туда «вид отхода» из протокола)."""
-    from ecodoc.core.waste_agg import norm_fkko
+    """Протокол из extra['lab_results'] для отхода: только протокол нужного
+    вида (kinds: состав — КХА/морфология; биотест), объект которого — этот
+    отход (код ФККО или наименование целиком/по основе слов). Протоколы
+    воздуха, воды, почвы с похожим обрывком имени не подходят."""
+    from ecodoc.core.waste_refdata import protocol_matches_waste
 
     extra = ctx.extra if isinstance(ctx.extra, dict) else {}
-    code = norm_fkko(w.fkko_code or "")
-    name = (w.name or "").strip().lower()
+    best = None
     for lab in extra.get("lab_results") or []:
-        if not isinstance(lab, dict):
+        if not protocol_matches_waste(lab, w.fkko_code, w.name,
+                                      kinds=tuple(kinds) or None):
             continue
-        kind = str(lab.get("kind") or "").lower()
-        if kinds and not any(k.lower() in kind for k in kinds):
+        # предпочесть протокол с результатами (веществами)
+        if lab.get("substances") or best is None:
+            best = lab
+            if lab.get("substances"):
+                break
+    return best
+
+
+def gaps(ctx: ReportContext) -> list[str]:
+    """Чего не хватает паспортам отходов I–IV класса."""
+    from ecodoc.core import fkko as _fkko
+
+    out: list[str] = []
+    for w in ctx.wastes:
+        try:
+            hazard = int(w.hazard_class)
+        except (TypeError, ValueError):
             continue
-        target = str(lab.get("object") or "")
-        tcode = norm_fkko(lab.get("fkko") or "")
-        if (code and (tcode == code or code in norm_fkko(target))) or (
-                name and len(name) > 8 and name[:40] in target.lower()):
-            return lab
-    return None
+        if not 1 <= hazard <= 4:
+            continue
+        d = _details(ctx, w)
+        for g in d.get("_gaps") or []:
+            out.append(f"{_fkko.fmt(w.fkko_code)} {w.name or ''}: {g}".replace("  ", " "))
+    return out
 
 
 def generate(ctx: ReportContext, out_dir: str | Path,
@@ -402,13 +537,17 @@ def _build(org: Organization, w: WasteFlow, hazard: int, d: dict,
     if basis and basis not in method:
         method = f"{method} ({basis})"
 
-    # агрегатное состояние: ручной ввод главнее, иначе — по 9–10 знакам кода
-    agg = d.get(_AGG) or aggregate_state(w.fkko_code) or "‹указать по ФККО›"
+    # агрегатное состояние: ручной ввод главнее, иначе — по 9–10 знакам кода;
+    # плейсхолдеров «‹…›» в документе нет — чего не хватает, говорит gaps()
+    agg = d.get(_AGG) or aggregate_state(w.fkko_code) or "—"
+    from ecodoc.core.waste_refdata import origin_for
+    origin = (str(d.get("origin") or "").strip()
+              or origin_for(w.fkko_code, w.name)
+              or "использование по назначению с утратой потребительских свойств")
     rows = [
         (_TEXT["name"][form], w.name or "—"),
         ("Код вида отходов по ФККО", w.fkko_code or "—"),
-        (_TEXT["origin"][form],
-         d.get("origin") or "‹указать технологический процесс›"),
+        (_TEXT["origin"][form], origin),
         ("__COMP__", comps),
         (_TEXT["method"][form], method),
         ("Агрегатное состояние и физическая форма", agg),
@@ -450,8 +589,9 @@ def _protocol_table(doc, proto: dict, comps: list, AL, Cm):
         _set(t.cell(i, 0), k, AL.JUSTIFY)
         _set(t.cell(i, 1), str(v), AL.LEFT)
     if comps:
+        from ecodoc.core.waste_refdata import components_total
         doc.add_paragraph()
-        t2 = doc.add_table(rows=len(comps) + 1, cols=3)
+        t2 = doc.add_table(rows=len(comps) + 2, cols=3)
         t2.style = "Table Grid"
         _fix_widths(t2, (Cm(1.5), Cm(11), Cm(5)))
         for j, h in enumerate(("№", "Наименование компонента (по протоколу)",
@@ -461,6 +601,9 @@ def _protocol_table(doc, proto: dict, comps: list, AL, Cm):
             _set(t2.cell(i, 0), str(i), AL.CENTER)
             _set(t2.cell(i, 1), str(c.get("name", "")), AL.LEFT)
             _set(t2.cell(i, 2), _fmt_pct(c.get("percent", "")), AL.CENTER)
+        _set(t2.cell(len(comps) + 1, 1), "Итого", AL.RIGHT)
+        _set(t2.cell(len(comps) + 1, 2), _fmt_pct(components_total(comps)),
+             AL.CENTER)
 
 
 def _approval_block(doc, org: Organization, AL, Cm, Pt, form: str = FORM_1026,
@@ -526,7 +669,7 @@ def _info_table(doc, caption: str, rows, AL, Cm):
             _set(t.cell(i, 2), "Содержание, %", AL.CENTER)
             i += 1
             if not value:
-                value = [{"name": "‹состав из протокола КХА›", "percent": ""}]
+                value = [{"name": _NO_COMP_ROW, "percent": ""}]
             for c in value:
                 _set(t.cell(i, 1), str(c.get("name", "")), AL.LEFT)
                 _set(t.cell(i, 2), _fmt_pct(c.get("percent", "")), AL.CENTER)
@@ -544,9 +687,9 @@ def _person_table(doc, org: Organization, d: dict, AL, Cm,
                   form: str = FORM_1026):
     # адрес(а) места образования: п. 6 Порядка № 286 допускает один паспорт
     # на несколько адресов (ТКО/ОИТ III–IV кл.) — список печатаем через «; »
-    site = d.get("site_address") or "‹адрес площадки›"
+    site = d.get("site_address") or org.address or "—"
     if isinstance(site, (list, tuple)):
-        site = "; ".join(str(a) for a in site if a) or "‹адрес площадки›"
+        site = "; ".join(str(a) for a in site if a) or org.address or "—"
 
     if form == FORM_286:
         # одна строка «полное и (или) сокращенное наименования»
@@ -633,8 +776,8 @@ def _sorted_components(comps: list) -> list:
 
 
 def _fmt_pct(v) -> str:
-    s = str(v).strip().replace(".", ",")
-    return s
+    from ecodoc.core.waste_refdata import fmt_pct
+    return fmt_pct(v)
 
 
 def _roman(hazard_class) -> str:
