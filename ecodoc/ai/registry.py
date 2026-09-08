@@ -57,10 +57,19 @@ _FREE = [
               "Cerebras Llama 3.3 70B — бесплатный лимит",
               limit="~30 запросов/мин, 1 млн токенов/сутки",
               note="HTTP 403 (Cloudflare 1010) — блокировка региона"),
-    ModelSpec("openrouter", "openai/gpt-oss-20b:free", FREE,
-              "OpenRouter GPT-OSS 20B — бесплатная модель",
-              limit="20 запросов/мин, 50–1000/сутки",
-              sec=91.2, score="19/19", note="работает, но очень медленно"),
+    # список пользователя (08.09.2026): бесплатные Nemotron и Gemma 4 (vision)
+    ModelSpec("openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free", FREE,
+              "OpenRouter Nemotron 3 Ultra 550B — бесплатная",
+              limit="20 запросов/мин, 50–1000/сутки"),
+    ModelSpec("openrouter", "nvidia/nemotron-3-super-120b-a12b:free", FREE,
+              "OpenRouter Nemotron 3 Super 120B — бесплатная",
+              limit="20 запросов/мин, 50–1000/сутки"),
+    ModelSpec("openrouter", "nvidia/nemotron-3.5-lightning:free", FREE,
+              "OpenRouter Nemotron 3.5 Lightning — бесплатная, быстрая",
+              limit="20 запросов/мин, 50–1000/сутки"),
+    ModelSpec("openrouter", "google/gemma-4-31b-it:free", FREE,
+              "OpenRouter Gemma 4 31B — бесплатная, умеет картинки (паспорта-сканы)",
+              limit="20 запросов/мин, 50–1000/сутки"),
     ModelSpec("mistral", "mistral-large-latest", FREE,
               "Mistral Large", sec=25.1, score="19/19",
               note="на бесплатном тарифе доступна не всегда"),
@@ -117,3 +126,20 @@ def ranked(specs: list[ModelSpec] | None = None) -> list[ModelSpec]:
 
 def tier_label(tier: str) -> str:
     return {FREE: "бесплатно", LOCAL: "локально", PAID: "платно"}.get(tier, tier)
+
+
+def all_specs() -> list[ModelSpec]:
+    """Вшитый реестр + бесплатные модели OpenRouter из живого списка (без
+    дублей по id)."""
+    seen = {s.id for s in ALL}
+    out = list(ALL)
+    try:
+        from ecodoc.ai.detect import dynamic_openrouter_specs
+        for s in dynamic_openrouter_specs():
+            if s.id not in seen:
+                out.append(s)
+                seen.add(s.id)
+    except Exception:
+        pass
+    return out
+

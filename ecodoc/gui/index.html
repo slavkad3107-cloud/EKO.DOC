@@ -4971,6 +4971,15 @@ async function runAiTask(scope, apply){
 
 // ── сервис: выбор ИИ ──
 let AICONF = null;
+async function refreshModelList(){
+  const b = $("ai-models-refresh"); if (b){ b.disabled = true; b.textContent = "обновляю…"; }
+  try{
+    const j = await post("models_refresh", {}, 30000);
+    if (j.error) notify(j.error, "warn"); else notify(j.text || "список моделей обновлён", "ok");
+    await loadAiPanel();
+  }catch(e){ notify("Не удалось обновить список моделей: " + errText(e), "err"); }
+  if (b){ b.disabled = false; b.textContent = "↻ Обновить список моделей"; }
+}
 async function loadAiPanel(){
   try{
     AICONF = await get("ai_config", {});
@@ -4996,6 +5005,16 @@ function onProvChange(presetModel){
   const opts = [...new Set([...models, cur].filter(Boolean))];
   $("ai-model").innerHTML = opts.map(m=>`<option value="${esc(m)}"${m===cur?" selected":""}>${esc(m)}</option>`).join("")
     + `<option value="__manual__">✍ ввести вручную…</option>`;
+  // OpenRouter: список моделей живой — обновляется при запуске и раз в сутки,
+  // кнопка обновляет вручную (models_refresh)
+  let rb = $("ai-models-refresh");
+  if (!rb){
+    rb = document.createElement("button"); rb.id = "ai-models-refresh"; rb.className = "b sec sm";
+    rb.textContent = "↻ Обновить список моделей"; rb.title = "спросить OpenRouter, какие бесплатные модели доступны сейчас";
+    rb.onclick = refreshModelList;
+    $("ai-model").insertAdjacentElement("afterend", rb);
+  }
+  rb.style.display = (pid === "openrouter") ? "" : "none";
   // поле ключа — только для облачных без ключа
   $("ai-key-box").style.display = (!p.local && !p.has_key) ? "flex" : "none";
   $("ai-key-note").textContent = p.local ? "локально — ключ не нужен" :

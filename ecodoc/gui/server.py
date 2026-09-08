@@ -275,6 +275,14 @@ def api_intake_run(params, body):
     return {"report": report, "sections": struct}
 
 
+def api_models_refresh(params, body):
+    """Обновить список моделей OpenRouter вручную (Сервис → Выбор ИИ)."""
+    from ecodoc.ai import detect
+    res = detect.refresh_openrouter_models(timeout=int(body.get("timeout") or 15))
+    STARTUP_NOTES["models"] = res
+    return res
+
+
 def api_intake_forget(params, body):
     """Удалить файл из приёма вместе с тем, что из него взято (ЗАГРУЗКА)."""
     from ecodoc.intake import intake
@@ -1208,7 +1216,7 @@ def api_ai_config(params, body):
         providers.append({
             "id": pid, "label": detect.PROVIDER_LABEL[pid],
             "local": local, "has_key": True if local else has_key(pid),
-            "models": detect.KNOWN_MODELS.get(pid, []),
+            "models": detect.known_models(pid),
             "default": detect.CLOUD_DEFAULT_MODEL.get(pid, "")})
     return {"provider": cfg.provider, "model": cfg.model,
             "fallbacks": cfg.fallbacks, "providers": providers,
@@ -1610,7 +1618,8 @@ def api_ai_health(params, body):
     src = body if (body or {}).get("refresh") is not None else params
     refresh = str((src or {}).get("refresh", "")).lower() in ("1", "true", "yes")
     if refresh:
-        results = health.check_all()
+        from ecodoc.ai import registry as _reg
+        results = health.check_all(_reg.all_specs())
         cfg = health.apply_best(results)
     else:
         results = health.fresh()
@@ -1793,6 +1802,7 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "fkko_check": api_fkko_check,
               "forms_registry": api_forms_registry}
 POST_ROUTES = {"intake_forget": api_intake_forget,
+               "models_refresh": api_models_refresh,
                "oos_status": api_oos_status, "feedback": api_feedback,
                "doc_preview": api_doc_preview,
                "waste_forget": api_waste_forget, "waste_restore": api_waste_restore,
@@ -1935,7 +1945,8 @@ def _startup_ai_check():
         from ecodoc.ai import health
         if health.fresh():
             return
-        results = health.check_all()
+        from ecodoc.ai import registry as _reg
+        results = health.check_all(_reg.all_specs())
         cfg = health.apply_best(results)
         working = health.ranked_working(results)
         if working:
@@ -2037,6 +2048,53 @@ def _startup_rates_check():
                                   "text": f"ставки платы за НВОС: проверка не выполнена ({e})"}
 
 
+MAINTENANCE_EVERY = 24 * 3600     # сек: обновление списка моделей, ставок, проверка моделей
+
+
+def _maintenance_once(first: bool = False) -> dict:
+    """Один проход обслуживания (требование пользователя 08.09: «проверять и
+    обновлять автоматом при запуске и периодически»): живой список моделей
+    OpenRouter → проверка ставок платы → проверка «здоровья» моделей, если
+    прошлая устарела. Каждый шаг в своём try — один сбой не гасит остальные."""
+    from datetime import datetime
+    out = {"at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    try:
+        from ecodoc.ai import detect
+        res = detect.refresh_openrouter_models(timeout=10)
+        STARTUP_NOTES["models"] = res
+        out["models"] = res.get("text") or res.get("error")
+        print("Модели OpenRouter: " + str(out["models"]))
+    except Exception as e:
+        STARTUP_NOTES["models"] = {"error": str(e)[:200]}
+    try:
+        _startup_rates_check()
+        out["rates"] = (STARTUP_NOTES.get("rates") or {}).get("text")
+    except Exception as e:
+        out["rates"] = str(e)[:120]
+    if not first:
+        try:
+            from ecodoc.ai import health
+            if not health.fresh():
+                _startup_ai_check()
+                out["health"] = "проверка моделей выполнена"
+        except Exception as e:
+            out["health"] = str(e)[:120]
+    STARTUP_NOTES["maintenance"] = out
+    return out
+
+
+def _maintenance_loop():
+    import time
+    time.sleep(3)                         # окно уже открыто — не мешаем старту
+    _maintenance_once(first=True)
+    while True:
+        time.sleep(MAINTENANCE_EVERY)
+        try:
+            _maintenance_once()
+        except Exception:
+            pass
+
+
 def run(port: int = 8737, open_browser: bool = True):
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}"
@@ -2045,7 +2103,8 @@ def run(port: int = 8737, open_browser: bool = True):
         threading.Timer(0.4, webbrowser.open, args=(url,)).start()
     threading.Thread(target=_startup_ai_check, daemon=True).start()
     threading.Thread(target=_startup_forms_check, daemon=True).start()
-    threading.Thread(target=_startup_rates_check, daemon=True).start()
+    # список моделей + ставки при старте и раз в сутки (ставки — внутри цикла)
+    threading.Thread(target=_maintenance_loop, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

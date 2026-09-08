@@ -49,10 +49,15 @@ KNOWN_MODELS = {
     "moonshot": ["kimi-k2-0905-preview", "moonshot-v1-32k"],
     "cerebras": ["llama-3.3-70b", "qwen-3-32b", "gpt-oss-120b", "llama3.1-8b"],
     "deepseek": ["deepseek-chat", "deepseek-reasoner"],
-    "openrouter": ["openai/gpt-oss-20b:free", "deepseek/deepseek-chat",
+    # список пользователя (08.09.2026): бесплатные Nemotron впереди, Gemma 4
+    # умеет картинки — для паспортов-сканов
+    "openrouter": ["nvidia/nemotron-3-ultra-550b-a55b:free",
+                   "nvidia/nemotron-3-super-120b-a12b:free",
+                   "nvidia/nemotron-3.5-lightning:free",
+                   "google/gemma-4-31b-it:free",          # умеет картинки — для паспортов
+                   "deepseek/deepseek-chat",
                    "meta-llama/llama-3.3-70b-instruct",
-                   "google/gemini-2.0-flash-001", "openai/gpt-4o-mini",
-                   "qwen/qwen-2.5-72b-instruct"],
+                   "openai/gpt-4o-mini"],
     "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant",
              "openai/gpt-oss-120b", "qwen/qwen3-32b"],
     "mistral": ["mistral-large-latest", "mistral-small-latest", "open-mistral-nemo"],
@@ -82,7 +87,7 @@ CLOUD_DEFAULT_MODEL = {
     "moonshot": "kimi-k2-0905-preview",
     "cerebras": "llama-3.3-70b",
     "deepseek": "deepseek-chat",
-    "openrouter": "openai/gpt-oss-20b:free",   # бесплатная модель агрегатора
+    "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free",   # бесплатная модель агрегатора
     "groq": "llama-3.3-70b-versatile",
     "mistral": "mistral-small-latest",         # бесплатный тариф Mistral
     "openai": "gpt-4o-mini",
@@ -291,3 +296,126 @@ def describe(cfg: AIConfig) -> str:
     if cfg.fallbacks:
         lines.append("Fallback: " + ", ".join(f"{f['provider']}" for f in cfg.fallbacks))
     return "\n".join(lines)
+
+
+# ── список моделей OpenRouter: проверять и обновлять автоматически ──────
+# Требование пользователя (08.09.2026): список бесплатных моделей меняется,
+# программа при запуске (и раз в сутки) сама спрашивает OpenRouter, какие
+# модели доступны, держит бесплатные впереди, сохраняя порядок пользователя.
+OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+_FAMILY_PREF = ("nvidia/nemotron", "google/gemma", "meta-llama", "qwen", "deepseek",
+                "mistralai", "openai", "microsoft", "nousresearch")
+_MAX_LIST = 14
+
+
+def fetch_openrouter_models(timeout: int = 10) -> list[dict]:
+    """Сырой список моделей OpenRouter (id, name, pricing, modalities)."""
+    import json
+    import urllib.request
+    req = urllib.request.Request(OPENROUTER_MODELS_URL,
+                                 headers={"User-Agent": "EcoDoc/1.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    return [m for m in (data.get("data") or []) if isinstance(m, dict) and m.get("id")]
+
+
+def _is_free(m: dict) -> bool:
+    mid = str(m.get("id") or "")
+    if mid.endswith(":free"):
+        return True
+    pr = m.get("pricing") or {}
+    try:
+        return float(pr.get("prompt") or 1) == 0 and float(pr.get("completion") or 1) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _has_vision(m: dict) -> bool:
+    arch = m.get("architecture") or {}
+    mods = arch.get("input_modalities") or []
+    return "image" in [str(x).lower() for x in mods]
+
+
+def _family_rank(mid: str) -> int:
+    for i, fam in enumerate(_FAMILY_PREF):
+        if mid.startswith(fam):
+            return i
+    return len(_FAMILY_PREF)
+
+
+def refresh_openrouter_models(timeout: int = 10, save: bool = True) -> dict:
+    """Обновить список: пользовательский порядок (KNOWN_MODELS) — впереди,
+    если модель ещё есть; затем прочие бесплатные по семействам и размеру
+    контекста; платные из пользовательского списка — в конце. Результат
+    сохраняется в конфиг (detected['openrouter_models']) и сразу виден в
+    «Сервис → Выбор ИИ» через known_models('openrouter')."""
+    from datetime import datetime
+    try:
+        models = fetch_openrouter_models(timeout=timeout)
+    except Exception as e:
+        return {"error": f"OpenRouter не ответил: {str(e)[:120]}", "models": known_models("openrouter")}
+    by_id = {m["id"]: m for m in models}
+    user = list(KNOWN_MODELS.get("openrouter") or [])
+    kept = [mid for mid in user if mid in by_id]
+    gone = [mid for mid in user if mid not in by_id]
+    free = [m for m in models if _is_free(m) and m["id"] not in kept]
+    free.sort(key=lambda m: (_family_rank(m["id"]), -int(m.get("context_length") or 0)))
+    free_ids = [m["id"] for m in free]
+    ordered = ([mid for mid in kept if _is_free(by_id[mid])] + free_ids
+               + [mid for mid in kept if not _is_free(by_id[mid])])
+    # не раздувать выпадающий список: бесплатных до _MAX_LIST, платные пользователя — всегда
+    paid_user = [mid for mid in kept if not _is_free(by_id[mid])]
+    free_part = [mid for mid in ordered if mid not in paid_user][:_MAX_LIST]
+    final = free_part + paid_user
+    vision = [mid for mid in final if _has_vision(by_id.get(mid, {}))]
+    res = {"models": final, "free": [mid for mid in final if _is_free(by_id.get(mid, {}))],
+           "vision": vision, "gone": gone,
+           "checked_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+           "text": (f"OpenRouter: моделей {len(final)} (бесплатных "
+                    f"{sum(1 for mid in final if _is_free(by_id.get(mid, {})))}"
+                    + (f", исчезли: {', '.join(gone)}" if gone else "") + ")")}
+    if save:
+        try:
+            from ecodoc.ai.config import load_config, save_config
+            cfg = load_config()
+            det = cfg.detected if isinstance(cfg.detected, dict) else {}
+            det["openrouter_models"] = final
+            det["openrouter_vision"] = vision
+            det["openrouter_models_checked"] = res["checked_at"]
+            cfg.detected = det
+            # модель по умолчанию исчезла — берём первую бесплатную
+            if cfg.provider == "openrouter" and cfg.model and cfg.model not in by_id and final:
+                res["switched_from"] = cfg.model
+                cfg.model = final[0]
+            save_config(cfg)
+        except Exception as e:
+            res["save_error"] = str(e)[:120]
+    return res
+
+
+def known_models(provider: str) -> list[str]:
+    """Список моделей провайдера: для OpenRouter — живой (из конфига после
+    refresh_openrouter_models), иначе вшитый."""
+    if provider == "openrouter":
+        try:
+            from ecodoc.ai.config import load_config
+            det = load_config().detected
+            live = det.get("openrouter_models") if isinstance(det, dict) else None
+            if live:
+                return list(live)
+        except Exception:
+            pass
+    return list(KNOWN_MODELS.get(provider, []))
+
+
+def dynamic_openrouter_specs():
+    """ModelSpec для бесплатных моделей OpenRouter из живого списка — чтобы
+    проверка «здоровья» гоняла и их, а не только вшитые."""
+    from ecodoc.ai.registry import FREE, ModelSpec
+    out = []
+    for mid in known_models("openrouter"):
+        if mid.endswith(":free"):
+            out.append(ModelSpec("openrouter", mid, FREE, f"OpenRouter {mid} — бесплатная",
+                                 limit="20 запросов/мин, 50–1000/сутки"))
+    return out
+
