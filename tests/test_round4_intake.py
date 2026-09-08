@@ -169,8 +169,9 @@ def test_intake_map_reports_batches():
 def test_user_model_choice_survives_health_pick(monkeypatch):
     from ecodoc.ai import detect
     from ecodoc.ai.config import AIConfig
+    # с 08.09.2026 ручной выбор закреплён только при снятой галочке auto_pick
     cfg = AIConfig(provider="cohere", model="command-a",
-                   detected={"picked_by": "user"})
+                   detected={"picked_by": "user", "auto_pick": False})
     monkeypatch.setattr("ecodoc.ai.config.load_config", lambda: cfg)
     monkeypatch.setattr(detect, "_migrate_to_free", lambda c: c)
     calls = []

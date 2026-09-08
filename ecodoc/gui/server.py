@@ -1218,7 +1218,10 @@ def api_ai_config(params, body):
             "local": local, "has_key": True if local else has_key(pid),
             "models": detect.known_models(pid),
             "default": detect.CLOUD_DEFAULT_MODEL.get(pid, "")})
+    det = cfg.detected if isinstance(cfg.detected, dict) else {}
     return {"provider": cfg.provider, "model": cfg.model,
+            "auto_pick": det.get("auto_pick", True) is not False,
+            "picked_by": det.get("picked_by", ""),
             "fallbacks": cfg.fallbacks, "providers": providers,
             "ollama_models": detect._ollama_models(),
             "lmstudio_models": []}
@@ -1246,7 +1249,10 @@ def api_ai_save(params, body):
     # выбор сделан руками — авто-переход на бесплатное облако больше не нужен
     det = cfg.detected if isinstance(cfg.detected, dict) else {}
     det["free_migrated"] = True
-    det["picked_by"] = "user"      # автопроверка моделей этот выбор не перебивает
+    det["picked_by"] = "user"
+    # галочка «выбирать оптимальную автоматически при запуске» (по умолчанию да);
+    # снята — выбор закреплён, автопроверка его не перебивает
+    det["auto_pick"] = bool(body.get("auto_pick", True))
     cfg.detected = det
     save_config(cfg)
     return {"ok": True, "text": detect.describe(load_config())}
@@ -1943,18 +1949,28 @@ def _startup_ai_check():
     открывалось сразу. Если прошлая проверка ещё свежа, ничего не опрашиваем."""
     try:
         from ecodoc.ai import health
-        if health.fresh():
-            return
         from ecodoc.ai import registry as _reg
+        from ecodoc.ai.config import load_config
+        # требование пользователя (08.09.2026): при КАЖДОМ запуске проверить
+        # модели, выбрать оптимальную и применить — кэш свежести не срезает
         results = health.check_all(_reg.all_specs())
-        cfg = health.apply_best(results)
         working = health.ranked_working(results)
-        if working:
-            print(f"ИИ: выбрана {cfg.provider}/{cfg.model} "
-                  f"(рабочих моделей {len(working)} из {len(results)})")
+        cfg0 = load_config()
+        det = cfg0.detected if isinstance(cfg0.detected, dict) else {}
+        pinned = det.get("auto_pick") is False and bool(cfg0.provider)
+        if pinned:
+            cfg = cfg0
+            text = (f"модель закреплена вручную: {cfg.provider}/{cfg.model} "
+                    f"(рабочих моделей {len(working)} из {len(results)})")
         else:
-            print("ИИ: ни одна модель не ответила — Сервис → Модели ИИ")
+            cfg = health.apply_best(results)
+            text = (f"выбрана оптимальная: {cfg.provider}/{cfg.model} "
+                    f"(рабочих моделей {len(working)} из {len(results)})"
+                    if working else "ни одна модель не ответила — Сервис → Модели ИИ")
+        STARTUP_NOTES["ai"] = text
+        print("ИИ: " + text)
     except Exception as e:                      # проверка не должна ломать запуск
+        STARTUP_NOTES["ai"] = f"проверка моделей не выполнена ({e})"
         print(f"ИИ: проверка моделей не выполнена ({e})")
 
 

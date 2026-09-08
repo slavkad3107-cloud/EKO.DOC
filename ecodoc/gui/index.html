@@ -688,6 +688,9 @@ header button.fb:hover{background:rgba(255,255,255,.12)}
             (снять галочку — только на этом)</label></div>
         <div class="fld"><label>Запасной провайдер</label>
           <select id="ai-fb"></select></div>
+      <div class="row"><label title="при каждом запуске программа проверяет модели и выбирает лучшую рабочую (бесплатные → локальные → платные); снимите, чтобы закрепить свой выбор">
+          <input type="checkbox" id="ai-auto" checked> выбирать оптимальную модель автоматически при запуске</label>
+        <span class="hint" id="ai-auto-note"></span></div>
       </div>
       <div class="row" style="margin-top:8px">
         <button class="b" onclick="aiSave()">Сохранить выбор</button>
@@ -4992,6 +4995,12 @@ async function loadAiPanel(){
       AICONF.providers.map(p=>`<option value="${p.id}">${esc(p.label)}</option>`).join("");
     const curFb = (AICONF.fallbacks[0]||{}).provider || "";
     fb.value = curFb;
+    if ($("ai-auto")){
+      $("ai-auto").checked = AICONF.auto_pick !== false;
+      $("ai-auto-note").textContent = AICONF.auto_pick === false
+        ? "выбор закреплён вручную — автопроверка при запуске его не меняет"
+        : "при запуске программа сама проверит модели и применит лучшую";
+    }
     onProvChange(AICONF.model);
   }catch(e){ show("out-ai", "Ошибка: " + errText(e)); }
 }
@@ -5032,7 +5041,8 @@ async function aiSave(){
   spin("sp-ai",1);
   try{
     let model = $("ai-model").value; if(model==="__manual__") model="";
-    const body = {provider:$("ai-prov").value, model, fallback:$("ai-fb").value};
+    const body = {provider:$("ai-prov").value, model, fallback:$("ai-fb").value,
+                  auto_pick: $("ai-auto") ? $("ai-auto").checked : true};
     const key = $("ai-key").value.trim();
     if(key){ body.key = key; body.shared = $("ai-key-shared").checked; }
     const j = await post("ai_save", body, 0);
