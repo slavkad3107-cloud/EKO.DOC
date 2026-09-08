@@ -148,6 +148,7 @@ def collect(ctx: ReportContext) -> list[dict]:
       volume_m3, density, licenses, has_biotest, has_kha.
     """
     from ecodoc.core.waste_agg import act_period, norm_fkko
+    from ecodoc.core.waste_refdata import origin_for
     from ecodoc.development.waste_passport import aggregate_state
 
     extra = ctx.extra if isinstance(ctx.extra, dict) else {}
@@ -209,12 +210,13 @@ def collect(ctx: ReportContext) -> list[dict]:
         r["agg"] = r["agg"] or str(p.get("aggregate_state") or "").strip()
         comps = [c for c in (p.get("components") or []) if isinstance(c, dict)]
         if comps and not r["composition"]:
-            r["composition"] = "; ".join(
-                f"{c.get('name', '')}{(' ' + str(c['percent']) + '%') if c.get('percent') else ''}"
-                for c in comps)
+            r["composition"] = _composition_text(comps)
 
-    # ручные реквизиты отхода (вкладка ОТХОДЫ) — главнее ИИ-разбора
+    # ручные реквизиты отхода (вкладка ОТХОДЫ) — главнее ИИ-разбора; паспорт,
+    # который сформировала сама программа (passport_generated_at), считается
+    # (замечание эколога 08.09.2026) — с пометкой «нужен утверждённый»
     details = extra.get("waste_details") or {}
+    generated_all = str(extra.get("passports_generated_at") or "").strip()
     if isinstance(details, dict):
         for code, d in details.items():
             if not isinstance(d, dict):
@@ -226,8 +228,16 @@ def collect(ctx: ReportContext) -> list[dict]:
                 r["origin"] = str(d["origin"]).strip()
             if d.get("aggregate_state"):
                 r["agg"] = str(d["aggregate_state"]).strip()
+            gen = str(d.get("passport_generated_at") or "").strip()
+            if gen:
+                r["passport_generated"] = gen
+    if generated_all:
+        for r in rows.values():
+            if r["hazard"] in (1, 2, 3, 4) and not r["passport"] and r["fkko"]:
+                r.setdefault("passport_generated", generated_all)
 
-    # нормативы образования из таблиц ООС/ПНООЛР (строительные главнее)
+    # нормативы образования из таблиц ООС/ПНООЛР (строительные главнее);
+    # процесс образования — из графы ООС «источник (процесс)»
     for ow in sorted([x for x in (extra.get("oos_wastes") or []) if isinstance(x, dict)],
                      key=lambda x: 0 if x.get("stage") == "строительство" else 1):
         code = norm_fkko(ow.get("fkko", ""))
@@ -242,6 +252,32 @@ def collect(ctx: ReportContext) -> list[dict]:
             r["volume_m3"] = _num(ow.get("volume_m3")) or 0.0
         if r["density"] is None and _num(ow.get("density")):
             r["density"] = _num(ow.get("density"))
+        proc = str(ow.get("source_process") or ow.get("process") or ow.get("source")
+                   or "").strip()
+        if not r["origin"] and proc:
+            stage = str(ow.get("stage") or "").strip()
+            r["origin"] = proc + (f" (стадия: {stage})" if stage and stage.lower()
+                                  not in proc.lower() else "")
+            r["origin_src"] = "оос"
+
+    # состав — теми же сведениями, что идут в паспорт (протокол состава:
+    # таблица > ИИ-строки; паспорт; ООС), с пометкой неполноты
+    if ctx.wastes:
+        from ecodoc.development import waste_passport as wp
+        for w in ctx.wastes:
+            code = norm_fkko(w.fkko_code)
+            r = rows.get(code or (w.name or "").lower())
+            if r is None or r["composition"]:
+                continue
+            try:
+                d = wp._details(ctx, w)
+            except Exception:
+                continue
+            comps = d.get("components") or []
+            if comps:
+                r["composition"] = _composition_text(comps) + (
+                    f" {d['_comp_mark']}" if d.get("_comp_mark") else "")
+                r["composition_incomplete"] = bool(d.get("_comp_incomplete"))
 
     for lab in extra.get("lab_results", []):
         if not isinstance(lab, dict):
@@ -266,9 +302,16 @@ def collect(ctx: ReportContext) -> list[dict]:
         if not r["agg"]:
             r["agg"] = aggregate_state(r["fkko"])
         if not r["origin"]:
-            t = typical_origin(r["fkko"])
+            # формулировка справочника по коду ФККО (как в паспорте:
+            # waste_refdata.origin_for) — это не пробел; типовая по группе с
+            # пометкой «уточните» — только у позиции без кода
+            t = origin_for(r["fkko"], r["name"]) if r["fkko"] else ""
             if t:
-                r["origin"], r["origin_typical"] = t, True
+                r["origin"], r["origin_src"] = t, "фкко"
+            else:
+                t = typical_origin(r["fkko"]) or origin_for("", r["name"])
+                if t:
+                    r["origin"], r["origin_typical"] = t, True
         # плотность из пары т + м³ актов, если не задана явно
         if r["density"] is None and r["volume_m3"] and r["transferred"]:
             d = r["transferred"] / r["volume_m3"]
@@ -277,8 +320,77 @@ def collect(ctx: ReportContext) -> list[dict]:
     return list(rows.values())
 
 
-def gaps(ctx: ReportContext, rows: list[dict] | None = None) -> list[str]:
-    """Чего не хватает для полноценной инвентаризации."""
+def _composition_text(comps: list) -> str:
+    return "; ".join(
+        f"{c.get('name', '')}{(' ' + str(c['percent']) + '%') if c.get('percent') else ''}"
+        for c in comps if isinstance(c, dict) and str(c.get("name") or "").strip())
+
+
+def _site_dir_of(ctx: ReportContext, site_dir=None):
+    """Папка площадки: явный аргумент → extra.site_dir → по имени организации
+    и площадки (extra.site_name) в рабочем пространстве. None — если не найти."""
+    if site_dir:
+        return Path(site_dir)
+    extra = ctx.extra if isinstance(ctx.extra, dict) else {}
+    if extra.get("site_dir") and Path(str(extra["site_dir"])).is_dir():
+        return Path(str(extra["site_dir"]))
+    site = str(extra.get("site_name") or "").strip()
+    if not site:
+        return None
+    try:
+        import json
+        from ecodoc.core import workspace
+        site_slug = workspace.slug(site)
+        inn = str(ctx.organization.inn or "").strip()
+        for org_folder, sites in workspace.list_tree().items():
+            if site_slug not in sites:
+                continue
+            d = workspace.root() / org_folder / site_slug
+            if inn:
+                try:
+                    org_inn = str(json.loads((workspace.root() / org_folder / "org.json")
+                                             .read_text(encoding="utf-8-sig")).get("inn") or "")
+                except (OSError, ValueError):
+                    org_inn = ""
+                if org_inn and org_inn != inn:
+                    continue
+            return d
+    except Exception:
+        return None
+    return None
+
+
+def stale_oos_files(ctx: ReportContext, site_dir=None) -> list[str]:
+    """ООС/ПНООЛР в реестре источников площадки, из которых нет
+    extra.oos_wastes: разобраны прежней версией программы — нормативы
+    не сняты, нужно «Переразобрать» или загрузить заново."""
+    d = _site_dir_of(ctx, site_dir)
+    if d is None:
+        return []
+    try:
+        from ecodoc.intake import classify, sources
+        docs = sources.load(d)["docs"].values()
+    except Exception:
+        return []
+    out: list[str] = []
+    for rec in docs:
+        file = str(rec.get("file") or "")
+        kind = str(rec.get("doc_type") or "") or classify.classify_name(file).kind
+        if kind in ("oos", "pnoolr") and file and file not in out:
+            out.append(file)
+    return out
+
+
+def gaps(ctx: ReportContext, rows: list[dict] | None = None,
+         site_dir=None) -> list[str]:
+    """Чего не хватает для полноценной инвентаризации.
+
+    Замечание эколога 08.09.2026: «не описаны подразделения/процессы» —
+    не пробел (раздел 2 заполняется из ООС, происхождения позиций и
+    справочника ФККО); пробел — только позиция без кода. Паспорт,
+    сформированный программой, считается («нужен утверждённый»). Состав —
+    те же сведения, что в паспорте. Если ООС в реестре источников есть, а
+    oos_wastes нет — документ разобран прежней версией."""
     rows = rows if rows is not None else collect(ctx)
     out = []
     org = ctx.organization
@@ -293,15 +405,19 @@ def gaps(ctx: ReportContext, rows: list[dict] | None = None) -> list[str]:
     if not (org.name or org.short_name):
         out.append("не указано наименование организации")
     extra = ctx.extra if isinstance(ctx.extra, dict) else {}
-    if not (extra.get("departments") or extra.get("waste_sources")):
-        out.append("не описаны подразделения/процессы, где образуются отходы "
-                   "(вкладка ОБЪЕКТ → подразделения, extra.departments) — "
-                   "раздел 2 заполнен типовыми процессами по группам ФККО")
     if not any(isinstance(x, dict) and x.get("fkko")
                for x in (extra.get("oos_wastes") or [])):
-        out.append("нет нормативов образования отходов из проектной документации "
-                   "— загрузите раздел ООС или ПНООЛР (графа «норматив, т/год» "
-                   "заполняется из их таблиц отходов)")
+        stale = stale_oos_files(ctx, site_dir)
+        if stale:
+            for f in stale:
+                out.append(f"ООС «{f}» разобран прежней версией программы — "
+                           f"переразберите (ЗАГРУЗКА → Переразобрать) или "
+                           f"загрузите заново: нормативы образования и процессы "
+                           f"раздела 2 берутся из его таблиц отходов")
+        else:
+            out.append("нет нормативов образования отходов из проектной документации "
+                       "— загрузите раздел ООС или ПНООЛР (графа «норматив, т/год» "
+                       "заполняется из их таблиц отходов)")
     for r in rows:
         label = r["name"] or r["fkko"] or "отход"
         if not r["fkko"]:
@@ -309,14 +425,22 @@ def gaps(ctx: ReportContext, rows: list[dict] | None = None) -> list[str]:
         if not r["hazard"]:
             out.append(f"{label}: не определён класс опасности")
         if not r["passport"] and r["hazard"] in (1, 2, 3, 4):
-            out.append(f"{label}: нет паспорта отхода (нужен для I–IV класса)")
+            if r.get("passport_generated"):
+                out.append(f"{label}: паспорт сформирован программой "
+                           f"({r['passport_generated']}), нужен утверждённый — "
+                           f"подпишите и загрузите скан паспорта")
+            else:
+                out.append(f"{label}: нет паспорта отхода (нужен для I–IV класса)")
         if r["hazard"] == 5 and not r["has_biotest"]:
             out.append(f"{label}: V класс не подтверждён протоколом биотестирования")
         if not r["composition"]:
             out.append(f"{label}: не указан состав (из паспорта или протокола КХА)")
-        if r["origin_typical"]:
-            out.append(f"{label}: источник образования взят типовой по группе "
-                       f"ФККО — уточните процесс/подразделение")
+        elif r.get("composition_incomplete"):
+            out.append(f"{label}: состав распознан не полностью — см. пометку в "
+                       f"графе «состав», проверьте протокол")
+        if r["origin_typical"] and not r["fkko"]:
+            out.append(f"{label}: источник образования взят типовой — уточните "
+                       f"процесс/подразделение (у позиции нет кода ФККО)")
         if r["norm_t"] is None and not r["generated"] and not r["fact_year"]:
             out.append(f"{label}: нет ни норматива образования (ООС/ПНООЛР), "
                        f"ни фактической массы по актам")
@@ -504,10 +628,11 @@ def op_accusative(op: str) -> str:
 
 
 def _origin_text(r: dict) -> str:
-    """Источник образования для таблиц: типовой — с пометкой, пустой — «—»."""
+    """Источник образования для таблиц: типовой (у позиции без кода) — с
+    пометкой, пустой — «—»; формулировка справочника ФККО/ООС — как есть."""
     if not r.get("origin"):
         return NA
-    return r["origin"] + (" (типовой процесс по группе ФККО)" if r.get("origin_typical") else "")
+    return r["origin"] + (" (типовой процесс — уточните)" if r.get("origin_typical") else "")
 
 
 def _handling(r: dict) -> str:
@@ -905,11 +1030,12 @@ def generate(ctx: ReportContext, out_path: str | Path) -> Path:
     return generate_docx(ctx, out)
 
 
-def generate_all(ctx: ReportContext, out_dir: str | Path, stem: str = "") -> dict:
+def generate_all(ctx: ReportContext, out_dir: str | Path, stem: str = "",
+                 site_dir=None) -> dict:
     """Отчёт .docx + перечень .xlsx; ответ API {path, files, gaps}."""
     out_dir = Path(out_dir)
     stem = stem or f"инвентаризация_отходов{('_' + str(ctx.period.year)) if ctx.period.year else ''}"
     docx_path = generate_docx(ctx, out_dir / f"{stem}.docx")
     xlsx_path = generate_xlsx(ctx, out_dir / f"{stem}.xlsx")
     return {"path": str(docx_path), "files": [str(docx_path), str(xlsx_path)],
-            "gaps": gaps(ctx)}
+            "gaps": gaps(ctx, site_dir=site_dir)}

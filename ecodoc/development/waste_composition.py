@@ -21,8 +21,14 @@
 Данные: ctx.extra['waste_passports'] (состав, происхождение, агрегатное
 состояние из ИИ-разбора ООС/ПНООЛР/паспортов), ctx.wastes (класс,
 наименование), кандидаты площадки (файл и лист-источник строки отхода).
-Состав приводится к % с суммой ровно 100 (waste_refdata.normalize_components);
-если сумма > 105 % — файл не создаётся, отход попадает в gaps.
+
+Источники состава (замечание эколога 08.09.2026), по убыванию: протокол
+состава отхода из extra.lab_results (таблица протокола, разобранная
+parsers/protocol_tables, главнее ИИ-строк) → паспорт из скана → ООС/ПНООЛР
+(стадия строительства). Состав приводится к % (normalize_components): сумма
+99–101 % → к 100; иначе строки печатаются КАК ЕСТЬ с пометкой «[состав
+распознан не полностью: N % — проверьте …]» и отход попадает в gaps — никаких
+«Прочих компонентов» не дописывается.
 Оформление — как в waste_passport (Times New Roman 12, «Table Grid»).
 """
 from __future__ import annotations
@@ -39,6 +45,9 @@ from ecodoc.development.waste_passport import (_AGG, _fix_widths, _set,
 TITLE = "СПРАВКА О КОМПОНЕНТНОМ СОСТАВЕ ОТХОДА"
 SUBTITLE = ("(проект протокола определения состава по данным проектной "
             "документации — раздел ООС / ПНООЛР)")
+SUBTITLE_PROTO = ("(по протоколу исследований (измерений) аккредитованной "
+                  "испытательной лаборатории)")
+COMP_KINDS = ("КХА", "хим", "морф", "состав", "компонент")
 PURPOSE = "Определение количественного состава отхода"
 METHOD_MORPH = ("Морфологический состав (содержание каждого составляющего "
                 "компонента твёрдых отходов производства и потребления), "
@@ -152,14 +161,46 @@ def _targets(ctx: ReportContext) -> list[tuple[str, str, int, dict]]:
 
 def prepared(ctx: ReportContext) -> list[dict]:
     """Состав по каждому отходу после нормализации: {code, name, hazard,
-    passport, components, note} — общий вход для generate() и gaps()."""
+    passport, lab, kind, source, raw, components, note, incomplete, mark} —
+    общий вход для generate() и gaps().
+
+    kind: "protocol" (таблица протокола или ИИ-строки из extra.lab_results),
+    "passport" (скан паспорта), "oos" (ООС/ПНООЛР); mark — пометка неполноты
+    «[состав распознан не полностью: … — проверьте …]» либо пусто."""
+    from ecodoc.core.models import WasteFlow
+    from ecodoc.development.waste_passport import (lab_result_for, passport_kind,
+                                                   protocol_label)
+
     out = []
     for code, name, hazard, p in _targets(ctx):
-        raw = _components(p)
-        comps, note = R.normalize_components(
-            raw, source=str(p.get("_src") or "ООС/ПНООЛР"))
+        raw: list[dict] = []
+        source, kind = "", ""
+        lab = lab_result_for(ctx, WasteFlow(fkko_code=code, name=name),
+                             kinds=COMP_KINDS)
+        if lab and lab.get("substances"):
+            raw = [{"name": str(s.get("name") or ""),
+                    "percent": s.get("value", s.get("percent", "")),
+                    "unit": str(s.get("unit") or "")}
+                   for s in lab["substances"] if isinstance(s, dict)
+                   and str(s.get("name") or "").strip()]
+            source, kind = protocol_label(lab), "protocol"
+        if not raw:
+            lab = None
+            raw = _components(p)
+            source = str(p.get("_src") or "ООС/ПНООЛР")
+            kind = passport_kind(p) if p else ""
+        comps, note = R.normalize_components(raw, source=source)
+        incomplete = R.is_incomplete_note(note)
+        mark = ""
+        if incomplete:
+            m = note.split(";")[0]
+            if lab is not None and lab.get("note"):
+                m = f"{R.INCOMPLETE_MARK}: {lab['note']}"
+            mark = f"[{m}]"
         out.append({"code": code, "name": name, "hazard": hazard, "passport": p,
-                    "raw": raw, "components": comps, "note": note})
+                    "lab": lab, "kind": kind, "source": source, "raw": raw,
+                    "components": comps, "note": note, "incomplete": incomplete,
+                    "mark": mark})
     return out
 
 
@@ -188,8 +229,9 @@ def generate(ctx: ReportContext, out_dir: str | Path,
         code, name, hazard, p = (item["code"], item["name"], item["hazard"],
                                  item["passport"])
         comps = item["components"]
+        lab = item.get("lab")
         if not comps:
-            continue                      # нет состава или сумма не сходится
+            continue                      # нет состава
         if not (1 <= hazard <= 4) and hazard != 5:
             continue
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -235,7 +277,7 @@ def generate(ctx: ReportContext, out_dir: str | Path,
         h.add_run(TITLE).bold = True
         h2 = doc.add_paragraph()
         h2.alignment = AL.CENTER
-        h2.add_run(SUBTITLE)
+        h2.add_run(SUBTITLE_PROTO if lab else SUBTITLE)
         doc.add_paragraph()
 
         agg = (str(p.get("aggregate_state") or "").strip()
@@ -245,6 +287,15 @@ def generate(ctx: ReportContext, out_dir: str | Path,
                   or R.origin_for(code, name)
                   or "использование по назначению с утратой потребительских свойств")
         method = METHOD_MORPH if _is_morph(comps) else METHOD_CHEM
+        if lab:
+            method_doc = str(lab.get("method_doc") or "")
+            if not method_doc and str(lab.get("method") or "") != "table":
+                method_doc = str(lab.get("method") or "")
+            method = (("Морфологический состав (содержание каждого составляющего "
+                       "компонента твёрдых отходов производства и потребления)"
+                       if _is_morph(comps) else "Химический (компонентный) состав")
+                      + f" — по {item['source']}"
+                      + (f", МИ {method_doc}" if method_doc else ""))
         rows = [("Объект исследований", "Отходы"),
                 ("Сведения о заказчике (наименование, адрес, ИНН, ОГРН)",
                  " ".join(x for x in (
@@ -271,28 +322,40 @@ def generate(ctx: ReportContext, out_dir: str | Path,
             _set(t.cell(i, 1), v, AL.LEFT)
         doc.add_paragraph()
 
-        # результаты: компоненты в порядке убывания, итого 100,00
+        # результаты: компоненты в порядке убывания, итого 100,00; неполный
+        # состав — строки как есть + строка-пометка (без «Прочих»)
         cap = doc.add_paragraph()
         cap.add_run("Результаты определения состава").bold = True
-        t2 = doc.add_table(rows=len(comps) + 2, cols=3)
+        body = list(comps)
+        if item["mark"]:
+            body.append({"name": item["mark"], "percent": ""})
+        t2 = doc.add_table(rows=len(body) + 2, cols=3)
         t2.style = "Table Grid"
         _fix_widths(t2, (Cm(1.5), Cm(11), Cm(5)))
         for j, head in enumerate(("№", "Наименование определяемого показателя "
                                        "(компонента)", "Содержание, % масс.")):
             _set(t2.cell(0, j), head, AL.CENTER)
-        for i, c in enumerate(comps, 1):
-            _set(t2.cell(i, 0), str(i), AL.CENTER)
+        for i, c in enumerate(body, 1):
+            _set(t2.cell(i, 0), "" if c.get("percent") == "" else str(i), AL.CENTER)
             _set(t2.cell(i, 1), str(c.get("name", "")), AL.LEFT)
             _set(t2.cell(i, 2), R.fmt_pct(c.get("percent", "")), AL.CENTER)
-        last = len(comps) + 1
+        last = len(body) + 1
         _set(t2.cell(last, 1), "Итого", AL.RIGHT)
         _set(t2.cell(last, 2), R.fmt_pct(R.components_total(comps)), AL.CENTER)
         ctl = doc.add_paragraph()
-        ctl.add_run("Контроль: сумма состава 100 % — сходится"
-                    + (f" ({item['note']})" if item["note"] else ""))
+        if item["incomplete"]:
+            ctl.add_run(f"Контроль: сумма состава {R.fmt_pct(R.components_total(comps))} % "
+                        f"— состав распознан не полностью; строки приведены как "
+                        f"есть, без дописывания «прочих компонентов». "
+                        f"{item['mark'].strip('[]')}.")
+        else:
+            ctl.add_run("Контроль: сумма состава 100 % — сходится"
+                        + (f" ({item['note']})" if item["note"] else ""))
         doc.add_paragraph()
 
         src = _source_lines(ctx, code, p, site_dir)
+        if lab and item["source"] not in src:
+            src.insert(0, item["source"])
         doc.add_paragraph("Источник данных: " + ("; ".join(src) if src
                                                   else "проектная документация "
                                                        "(ООС/ПНООЛР)"))
@@ -315,14 +378,15 @@ def generate(ctx: ReportContext, out_dir: str | Path,
 
 
 def gaps(ctx: ReportContext) -> list[str]:
-    """Отходы I–IV класса без компонентного состава и отходы, чей состав не
-    сходится (сумма > 105 %)."""
+    """Отходы I–IV класса без компонентного состава и отходы, чей состав
+    распознан не полностью (сумма вне 99–101 %) — с файлом и листом."""
     out: list[str] = []
     for item in prepared(ctx):
         code, name, hazard = item["code"], item["name"], item["hazard"]
         label = f"{_fkko.fmt(code)} {name or ''}".strip()
-        if item["note"] and "не сходится" in item["note"]:
-            out.append(f"{label}: {item['note']}")
+        if item["incomplete"] and item["components"]:
+            out.append(f"{label}: {item['mark'].strip('[]')}")
         elif 1 <= hazard <= 4 and not item["components"]:
-            out.append(f"{label}: нет состава — нужен ООС/ПНООЛР или протокол КХА")
+            out.append(f"{label}: нет состава — нужен протокол состава отхода "
+                       f"(КХА/морфологический) или ООС/ПНООЛР")
     return out

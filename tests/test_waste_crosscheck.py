@@ -67,7 +67,8 @@ def test_build_rules_on_synthetic_site(tmp_path):
     # (а) тара: в ООС есть, актов нет
     wood = _row(out, WOOD)
     assert "oos" in wood["sources"] and "act" not in wood["sources"]
-    assert any("справок-актов" in i for i in wood["issues"])
+    # правило (а) снято 08.09.2026: ООС — норматив, факт только из актов
+    assert not any("справок-актов" in i for i in wood["issues"])
     assert wood["sources"]["oos"]["files"] == [OOS]
     assert wood["sources"]["oos"]["norm_t"] == 0.5
     assert wood["name"] == "Тара деревянная" and wood["hazard_class"] == 5
@@ -92,8 +93,7 @@ def test_build_rules_on_synthetic_site(tmp_path):
     # (е) лампы I класса — паспорта нет, (а) актов нет
     lamp = _row(out, LAMP)
     assert any("паспорта отхода нет" in i for i in lamp["issues"])
-    assert any("справок-актов" in i for i in lamp["issues"])
-
+    assert not any("справок-актов" in i for i in lamp["issues"])   # правило (а) снято
     assert out["totals"]["oos_only"] == 2           # лампы и тара
     assert out["totals"]["acts_only"] == 1          # лом бетона
     assert out["totals"]["with_issues"] == 4

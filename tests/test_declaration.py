@@ -323,8 +323,11 @@ def test_rospr_directory():
     assert "Северо-Западное" in rosprirodnadzor_for("40")      # код ТО РПН СПб
     assert "Северо-Западное" in rosprirodnadzor_for("", "40908000")  # по ОКТМО
     assert "Москве и Калужской" in rosprirodnadzor_for("77")
-    assert "Центральное" in rosprirodnadzor_for("50")
-    assert rosprirodnadzor_for("66") == ""
+    # Центральное МУ переименовано (rpn.gov.ru/about/structure/, 2025)
+    assert "Московской и Смоленской" in rosprirodnadzor_for("50")
+    # справочник data/rospr_bodies.json покрывает все субъекты РФ
+    assert "Уральское" in rosprirodnadzor_for("65")    # префикс ОКТМО Свердловской
+    assert rosprirodnadzor_for("") == ""
 
 
 def test_validate_warns_missing_blank_data():

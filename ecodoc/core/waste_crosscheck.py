@@ -285,9 +285,8 @@ def _issues(r: _Row, any_project: bool) -> list[str]:
     ref_names = {_norm_name(n) for k in ("oos", "pnoolr", "passport")
                  for n in r.sources.get(k, {}).get("names", ())}
     act_names = {_norm_name(n) for n in (act or {}).get("names", ())}
-    # (а) в ООС есть, актов нет
-    if in_oos and not has_acts:
-        out.append("в ООС/ПНООЛР предусмотрен, справок-актов за период нет")
+    # (а) в ООС есть, актов нет — НЕ замечание: ООС задаёт норматив, а факт
+    # берётся только из справок-актов приёмки (правило эколога 08.09.2026)
     # (б) акты есть, в ООС нет (только когда ООС вообще загружен)
     if has_acts and not in_oos and any_project:
         out.append("передаётся по актам, но в ООС/ПНООЛР не предусмотрен")

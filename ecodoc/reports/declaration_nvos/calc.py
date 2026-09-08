@@ -166,9 +166,23 @@ def calculate(ctx: ReportContext) -> PaymentResult:
             amount = money(mass * rate * k_here * k_band * k_ot)
             # ставка 0 — это тоже «нет ставки»: раньше нулевая строка
             # справочника считалась найденной и плата обнулялась молча
-            warn = ("" if (entry and rate > 0) else
-                    f"нет ставки для кода {key or p.code} в справочнике — "
-                    f"плата по веществу не начислена")
+            if entry and rate > 0:
+                # ставка взята по другой позиции (пыль древесная → 2902):
+                # скажем об этом, но плату начисляем
+                warn = ""
+                if entry.get("as_code"):
+                    note = (f"{p.name} ({key or p.code}): применена {entry.get('note') or 'ставка позиции ' + entry['as_code']}")
+                    if note not in res.warnings:
+                        res.warnings.append(note)
+            else:
+                # кода нет в перечне ставок: это не «дыра в справочнике», а
+                # вещество, по которому плата не установлена (ст. 16.3 ФЗ-7) —
+                # пояснение из data/rates_nvos.json["unrated"]
+                unrated = rates.get("unrated") or {}
+                warn = (unrated.get(key or p.code) or unrated.get(str(p.code or "").strip())
+                        or unrated.get("default")
+                        or f"нет ставки для кода {key or p.code} в справочнике — "
+                           f"плата по веществу не начислена")
             if p.medium == Medium.AIR:
                 sect = ("Р3" if band == "over" else "Р2") if is_flare else "Р1"
             else:

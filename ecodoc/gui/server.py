@@ -777,26 +777,74 @@ def _hazard_class_from_passport(body):
     return out
 
 
-def _oos_note(ctx, site_dir) -> str:
-    """Почему нет данных ООС: не загружен или разобран прежней версией."""
+def _oos_status(ctx, site_dir) -> dict:
+    """Состояние ООС по площадке: есть ли документ, извлечены ли нормативы,
+    можно ли переразобрать без исходника — и человеческая подсказка."""
     from ecodoc.intake import sources, textcache
     docs = sources.load(site_dir).get("docs") or {}
     oos = [(sha, rec) for sha, rec in docs.items()
            if str(rec.get("doc_type") or "") in ("oos", "pnoolr")
            or any(k in str(rec.get("file") or "").upper() for k in ("ООС", "ПМООС", "ПНООЛР"))]
     have = bool(isinstance(ctx.extra, dict) and ctx.extra.get("oos_wastes"))
+    st = {"has_norms": have, "has_oos_doc": bool(oos), "file": "", "sha": "",
+          "can_reanalyze": False, "note": "",
+          "norms": len(ctx.extra.get("oos_wastes") or []) if isinstance(ctx.extra, dict) else 0}
+    if oos:
+        sha, rec = oos[0]
+        st["file"], st["sha"] = rec.get("file", ""), sha
+        st["can_reanalyze"] = textcache.has(site_dir, sha) or \
+            (Path(site_dir) / "attachments" / rec.get("file", "")).exists()
     if have:
-        return ""
+        st["note"] = (f"нормативы из ООС «{st['file']}»: {st['norms']} отход(ов)"
+                      if st["file"] else f"нормативы ООС: {st['norms']} отход(ов)")
+        return st
     if not oos:
-        return ("ООС/ПНООЛР не загружен — загрузите его в ЗАГРУЗКЕ с категорией "
-                "«отходы: ООС/ПНООЛР/паспорта/протоколы/акты»")
-    sha, rec = oos[0]
-    name = rec.get("file", "")
-    if textcache.has(site_dir, sha):
-        return (f"ООС «{name}» разобран прежней версией программы — таблица отходов "
-                f"из него не извлечена: нажмите «Переразобрать» в ЗАГРУЗКЕ")
-    return (f"ООС «{name}» разобран прежней версией программы, исходник и текст не "
-            f"сохранены — загрузите файл заново (ЗАГРУЗКА, категория «отходы»)")
+        st["note"] = ("ООС/ПНООЛР не загружен — загрузите его в ЗАГРУЗКЕ с категорией "
+                      "«отходы: ООС/ПНООЛР/паспорта/протоколы/акты»")
+    elif st["can_reanalyze"]:
+        st["note"] = (f"ООС «{st['file']}» разобран прежней версией программы — таблица "
+                      f"отходов из него не извлечена: нажмите «Переразобрать ООС»")
+    else:
+        st["note"] = (f"ООС «{st['file']}» был загружен и разобран прежней версией "
+                      f"программы, исходник и текст не сохранены — загрузите файл заново "
+                      f"(ЗАГРУЗКА, категория «отходы»)")
+    return st
+
+
+def _oos_note(ctx, site_dir) -> str:
+    st = _oos_status(ctx, site_dir)
+    return "" if st["has_norms"] else st["note"]
+
+
+def api_oos_status(params, body):
+    org, site = body["org"], body["site"]
+    return _oos_status(workspace.load_context(org, site), workspace.site_dir(org, site))
+
+
+def api_feedback(params, body):
+    """Замечание пользователя из шапки → файл в очереди автозадач."""
+    from ecodoc.core import feedback
+    org, site = str(body.get("org") or ""), str(body.get("site") or "")
+    site_dir = workspace.site_dir(org, site) if (org and site) else None
+    payload = dict(body)
+    payload.setdefault("version", __version__)
+    path = feedback.save(payload, site_dir)
+    return {"ok": True, "path": str(path), "pending": len(feedback.pending())}
+
+
+def api_doc_preview(params, body):
+    """Предпросмотр сформированного документа (docx/xlsx/xml) в интерфейсе."""
+    from ecodoc.gui import preview
+    raw = str(body.get("path") or "")
+    if not raw:
+        return {"error": "не указан файл"}
+    p = Path(raw).resolve()
+    roots = [workspace.results_root().resolve(), workspace.root().resolve()]
+    if not any(str(p).startswith(str(r)) for r in roots):
+        return {"error": "предпросмотр только для файлов из папки результатов"}
+    return preview.render(p)
+
+
 
 
 def api_waste_forget(params, body):
@@ -1660,11 +1708,57 @@ def api_counterparty(params, body):
 
 
 def api_oktmo(params, body):
-    from ecodoc.parsers.oktmo import OktmoError, by_address
+    """ОКТМО по адресу: {result:{oktmo,value,source,level,confidence},
+    candidates:[{oktmo,value,level,confidence}]} — один уверенный вариант
+    GUI подставляет сам, несколько — даёт выбрать; ничего — error."""
+    from ecodoc.parsers.oktmo import OktmoError, by_address, resolve
+    address = (body.get("address") or "").strip()
     try:
-        return {"result": by_address(body["address"])}
+        res = by_address(address)
+        cands = res.get("candidates") or [{"oktmo": res["oktmo"], "value": res.get("value", ""),
+                                           "level": res.get("level", ""),
+                                           "confidence": res.get("confidence", 1.0)}]
+        return {"result": res, "candidates": cands}
     except OktmoError as e:
-        return {"error": str(e)}
+        # не уверены — отдадим кандидатов на выбор (оффлайн + геокодер OSM,
+        # они уже собраны в e.candidates); текст ошибки короткий
+        cands = getattr(e, "candidates", None)
+        try:
+            r = resolve(address)
+        except Exception:
+            r = {}
+        if cands is None:
+            cands = r.get("candidates") or []
+        return {"error": str(e), "candidates": cands,
+                "note": r.get("note", ""), "region": r.get("region_name", "")}
+
+
+def api_rates_check(params, body):
+    """Есть ли в интернете акт о ставках платы за НВОС новее вшитого."""
+    from ecodoc.core import rates_update
+    timeout = float((body or {}).get("timeout") or 10)
+    res = rates_update.check_online(timeout=timeout)
+    STARTUP_NOTES["rates"] = res
+    return res
+
+
+def api_rates_apply(params, body):
+    """Обновить data/rates_nvos.json из документа по ссылке (PDF/HTML/JSON)."""
+    from ecodoc.core import rates_update
+    url = (body or {}).get("url") or ""
+    if not url:
+        note = STARTUP_NOTES.get("rates") or {}
+        url = note.get("url") or ""
+    year = (body or {}).get("year")
+    res = rates_update.apply(url, year=int(year) if year else None,
+                             medium=(body or {}).get("medium") or "air")
+    if res.get("ok"):
+        try:
+            from ecodoc.core import refdata
+            refdata._CACHE.pop("rates_nvos.json", None)
+        except Exception:
+            pass
+    return res
 
 
 def api_open(params, body):
@@ -1699,6 +1793,8 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "fkko_check": api_fkko_check,
               "forms_registry": api_forms_registry}
 POST_ROUTES = {"intake_forget": api_intake_forget,
+               "oos_status": api_oos_status, "feedback": api_feedback,
+               "doc_preview": api_doc_preview,
                "waste_forget": api_waste_forget, "waste_restore": api_waste_restore,
                "waste_compositions": api_waste_compositions,
                "intake_unexclude": api_intake_unexclude,
@@ -1715,6 +1811,7 @@ POST_ROUTES = {"intake_forget": api_intake_forget,
                "dispersion_map": api_dispersion_map,
                "upraza_export": api_upraza_export,
                "counterparty": api_counterparty, "oktmo": api_oktmo,
+               "rates_check": api_rates_check, "rates_apply": api_rates_apply,
                "hazard_class": api_hazard_class,
                "soil_class": api_soil_class,
                "volume": api_volume,
@@ -1923,6 +2020,23 @@ def _startup_forms_check():
         print(f"Формы: проверка при запуске не выполнена ({e})")
 
 
+def _startup_rates_check():
+    """Ставки платы за НВОС: при запуске спросить интернет, нет ли акта новее
+    вшитого (требование эколога «искать ставки в интернете и использовать
+    всегда»). Фоновый поток, таймаут 10 с, старт GUI не ждёт; итог — в
+    STARTUP_NOTES['rates'] (плашка + карточка «Ставки платы» в Сервисе)."""
+    try:
+        from ecodoc.core import rates_update
+        res = rates_update.check_online(timeout=10)
+        STARTUP_NOTES["rates"] = res
+        print("Ставки НВОС: " + res.get("text", ""))
+        if res.get("latest_date") and not res.get("error"):
+            rates_update.mark_checked(res)
+    except Exception as e:                      # проверка не должна ломать запуск
+        STARTUP_NOTES["rates"] = {"error": str(e)[:200], "newer": False,
+                                  "text": f"ставки платы за НВОС: проверка не выполнена ({e})"}
+
+
 def run(port: int = 8737, open_browser: bool = True):
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}"
@@ -1931,6 +2045,7 @@ def run(port: int = 8737, open_browser: bool = True):
         threading.Timer(0.4, webbrowser.open, args=(url,)).start()
     threading.Thread(target=_startup_ai_check, daemon=True).start()
     threading.Thread(target=_startup_forms_check, daemon=True).start()
+    threading.Thread(target=_startup_rates_check, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

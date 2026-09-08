@@ -98,14 +98,62 @@ def test_inventory_docx_structure(ctx, tmp_path):
 
 
 def test_inventory_gaps_are_concrete(ctx, tmp_path):
-    from ecodoc.development.waste_inventory import gaps
+    from ecodoc.development.waste_inventory import collect, gaps
     text = " | ".join(gaps(ctx))
     assert "Мусор офисный: не указан получатель" in text
-    assert "нет паспорта отхода" in text
+    assert "Мусор офисный: нет паспорта отхода" in text
     assert "‹" not in text
+    # замечание эколога 08.09.2026: подразделения/процессы — не пробел
+    # (раздел 2 заполняется из ООС, происхождения и справочника ФККО)
+    assert "не описаны подразделения" not in text
+    assert "типовой" not in text
+    rows = {r["fkko"]: r for r in collect(ctx)}
+    assert rows["81111112495"]["origin"].startswith("земляные работы")   # из ООС
+    assert rows["47110101521"]["origin"] and not rows["47110101521"]["origin_typical"]
+    # состав — теми же сведениями, что в паспорте
+    assert "стекло" in rows["47110101521"]["composition"]
     ctx.extra.pop("oos_wastes")
     text = " | ".join(gaps(ctx))
     assert "загрузите раздел ООС или ПНООЛР" in text
+
+
+def test_inventory_passport_generated_by_program_counts(ctx):
+    """Паспорт, сформированный программой (waste_details[код]
+    .passport_generated_at / extra.passports_generated_at), считается — с
+    формулировкой «нужен утверждённый»; позиция без кода — «уточните процесс»."""
+    from ecodoc.development.waste_inventory import collect, gaps
+    ctx.extra["waste_details"] = {"73310001724": {"passport_generated_at": "2026-09-08"}}
+    text = " | ".join(gaps(ctx))
+    assert ("Мусор офисный: паспорт сформирован программой (2026-09-08), нужен "
+            "утверждённый") in text
+    assert "Мусор офисный: нет паспорта отхода" not in text
+    ctx.extra["waste_details"] = {}
+    ctx.extra["passports_generated_at"] = "2026-09-07"
+    text = " | ".join(gaps(ctx))
+    assert "паспорт сформирован программой (2026-09-07)" in text
+    ctx.wastes.append(WasteFlow(fkko_code="", name="Смёт с территории", hazard_class=4))
+    rows = collect(ctx)
+    text = " | ".join(gaps(ctx, rows))
+    assert "Смёт с территории: не указан код ФККО" in text
+    assert "Смёт с территории: источник образования взят типовой" in text
+
+
+def test_inventory_stale_oos_in_sources(ctx, tmp_path):
+    """ООС есть в реестре источников площадки, а extra.oos_wastes нет —
+    документ разобран прежней версией: переразобрать/загрузить заново."""
+    from ecodoc.development.waste_inventory import gaps, stale_oos_files
+    from ecodoc.intake import sources
+    ctx.extra.pop("oos_wastes")
+    site = tmp_path / "site"
+    site.mkdir()
+    data = sources.load(site)
+    data["docs"]["abc"] = {"file": "Раздел ПД № 8 ООС .pdf", "method": "pdf-text"}
+    data["docs"]["def"] = {"file": "акт.pdf", "doc_type": "act"}
+    sources.save(site, data)
+    assert stale_oos_files(ctx, site) == ["Раздел ПД № 8 ООС .pdf"]
+    text = " | ".join(gaps(ctx, site_dir=site))
+    assert "ООС «Раздел ПД № 8 ООС .pdf» разобран прежней версией" in text
+    assert "загрузите раздел ООС или ПНООЛР" not in text
 
 
 # ── ПНООЛР ───────────────────────────────────────────────────────────────

@@ -328,8 +328,9 @@ def test_passport_no_placeholders_origin_and_site_address(tmp_path):
 
 def test_passport_composition_mg_per_kg_and_sum_rules(tmp_path):
     """«Картон 169000» — мг/кг из протокола: ÷ 10 000 → %, порядок по
-    убыванию, сумма 100; недобор < 95 % → строка «Прочие»; перебор > 105 % —
-    состав не печатается и попадает в gaps()."""
+    убыванию. Замечание эколога 08.09.2026: недобор (90 %) — НИКАКИХ «Прочих»,
+    строки как есть + пометка «[состав распознан не полностью: …]» и gaps;
+    99–101 % → к 100; перебор — тоже как есть с пометкой."""
     ctx = _ctx()
     ctx.wastes = [ctx.wastes[1]]
     ctx.extra["waste_passports"] = [{
@@ -339,21 +340,25 @@ def test_passport_composition_mg_per_kg_and_sum_rules(tmp_path):
                        {"name": "Полиэтилен", "percent": "200000"}]}]
     (path,) = wp.generate(ctx, tmp_path / "a")
     text = _all_text(path)
-    assert "169000" not in text and "16,90" in text and "53,10" in text
-    assert "Прочие компоненты" in text and "10,00" in text   # 90 % → до 100
+    assert "169000" not in text and "16,90" in text and "53,10" in text and "20,00" in text
+    assert "Прочие компоненты" not in text and "неидентифицированные" not in text
+    assert "[состав распознан не полностью: 90.0 % — проверьте п.jpg]" in text
     assert text.index("Бумага") < text.index("Полиэтилен") < text.index("Картон")
-    # 95 % — граница диапазона пропорционального приведения
-    ctx.extra["waste_passports"][0]["components"][2]["percent"] = "250000"
+    assert any("распознан не полностью: 90.0 %" in g and "п.jpg" in g for g in wp.gaps(ctx))
+    # 99,5 % — в допуске, приводится к 100 без пометки
+    ctx.extra["waste_passports"][0]["components"][2]["percent"] = "295000"
     (path,) = wp.generate(ctx, tmp_path / "c")
     text = _all_text(path)
-    assert "55,89" in text and "Прочие компоненты" not in text
-    # перебор
+    assert "53,37" in text and "распознан не полностью" not in text
+    assert not any("распознан не полностью" in g for g in wp.gaps(ctx))
+    # перебор: как есть, с пометкой
     ctx.extra["waste_passports"][0]["components"] = [
         {"name": "Бумага", "percent": "80"}, {"name": "Картон", "percent": "40"}]
     (path,) = wp.generate(ctx, tmp_path / "b")
     text = _all_text(path)
-    assert "80,00" not in text and "КХА" in text
-    assert any("не сходится" in g and "120.00" in g for g in wp.gaps(ctx))
+    assert "80,00" in text and "40,00" in text
+    assert "[состав распознан не полностью: 120.0 % (сумма больше 100" in text
+    assert any("распознан не полностью" in g and "120.0 %" in g for g in wp.gaps(ctx))
 
 
 def test_passport_ignores_air_protocols_but_takes_waste_protocol(tmp_path):

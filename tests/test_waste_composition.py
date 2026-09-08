@@ -52,11 +52,13 @@ def test_generate_creates_docx_with_components_and_control(tmp_path):
     assert "7 33 100 01 72 4" in text and "IV" in text
     assert "уборка офисных помещений" in text
     assert "Смесь твердых материалов" in text
-    # 60+25+10 = 95 % → в диапазоне 95–105 приводится к 100 пропорционально
+    # 60+25+10 = 95 % — вне допуска 99–101: строки как есть, пометка,
+    # никаких «Прочих» (замечание эколога 08.09.2026)
     assert "бумага" in text and "пластик" in text
-    assert "63,16" in text and "26,32" in text and "10,52" in text
-    assert "100,00" in text and "сходится" in text
-    assert "приведена к 100" in text
+    assert "60,00" in text and "25,00" in text and "10,00" in text
+    assert "63,16" not in text and "Прочие компоненты" not in text
+    assert "[состав распознан не полностью: 95.0 % — проверьте ООС.pdf (лист 12)]" in text
+    assert "Итого" in text and "95,00" in text and "сходится" not in text
     assert "≠ 100" not in text and "‹" not in text
     assert "ООС.pdf (лист 12)" in text                     # источник
     assert "Ответственный за обращение с отходами" in text
@@ -74,6 +76,49 @@ def test_generate_sum_ok_no_warning(tmp_path):
     (path,) = wcp.generate(ctx, tmp_path)
     text = _text(path)
     assert "сходится" in text and "≠ 100" not in text
+    assert "100,00" in text and "распознан не полностью" not in text
+    assert not any("распознан не полностью" in g for g in wcp.gaps(ctx))
+
+
+def test_composition_from_protocol_table_beats_passport(tmp_path):
+    """Источники: протокол (таблица > ИИ) → паспорт → ООС. Неполная таблица —
+    как есть с пометкой и в gaps; полная — «сходится», методика и номер."""
+    ctx = _ctx()
+    ctx.extra["lab_results"] = [
+        {"kind": "КХА", "protocol_no": "13208.26-1-Отх", "date": "17.08.2026",
+         "object": "Мусор от офисных помещений", "method": "М-27-2023",
+         "substances": [{"name": "Картон", "value": "169000", "unit": "мг/кг"}],
+         "_src": "п.pdf (листы 1–3)"},
+        {"kind": "состав/КХА", "protocol_no": "13208.26-1-Отх", "date": "17.08.2026",
+         "lab": "ИЦ ООО «ТАСИС»", "object": "Мусор от офисных помещений",
+         "fkko": TBO, "method": "table", "method_doc": "М-27-2023",
+         "substances": [{"name": "Бумага", "value": 26.1, "unit": "%"},
+                        {"name": "Картон", "value": 16.9, "unit": "%"}],
+         "_src": "п.pdf (лист 2)", "page": 2, "total_pct": 43.0, "incomplete": True,
+         "note": "распознано 43.0 % (2 строки) — проверьте протокол № 13208.26-1-Отх "
+                 "(п.pdf, лист 2)"}]
+    items = {i["code"]: i for i in wcp.prepared(ctx)}
+    assert items[TBO]["kind"] == "protocol" and items[TBO]["incomplete"]
+    (path,) = wcp.generate(ctx, tmp_path)
+    text = _text(path)
+    assert "Бумага" in text and "26,10" in text and "16,90" in text
+    assert "бумага 60" not in text and "63,16" not in text and "Прочие" not in text
+    assert ("[состав распознан не полностью: распознано 43.0 % (2 строки) — "
+            "проверьте протокол № 13208.26-1-Отх (п.pdf, лист 2)]") in text
+    assert "43,00" in text and "сходится" not in text
+    assert "№ 13208.26-1-Отх от 17.08.2026" in text and "М-27-2023" in text
+    assert "аккредитованной" in text
+    g = wcp.gaps(ctx)
+    assert any("7 33 100 01 72 4" in x and "п.pdf, лист 2" in x for x in g)
+    # полная таблица — сходится, пометки нет
+    ctx.extra["lab_results"][1]["substances"].append(
+        {"name": "Прочее (неклассифицируемые материалы)", "value": 57.0, "unit": "%"})
+    ctx.extra["lab_results"][1].update(total_pct=100.0, incomplete=False, note="")
+    (path,) = wcp.generate(ctx, tmp_path / "b")
+    text = _text(path)
+    assert "сходится" in text and "распознан не полностью" not in text
+    assert "Прочее (неклассифицируемые материалы)" in text and "57,00" in text
+    assert not any("распознан не полностью" in x for x in wcp.gaps(ctx))
 
 
 def test_generate_skips_without_components_and_v_class_needs_components(tmp_path):
@@ -98,9 +143,11 @@ def test_generate_empty_returns_nothing(tmp_path):
 
 def test_gaps_lists_classes_1_4_without_components():
     g = wcp.gaps(_ctx())
-    assert len(g) == 1
+    assert len(g) == 2
     assert "4 71 101 01 52 1" in g[0] and "нет состава" in g[0]
     assert "ООС/ПНООЛР" in g[0]
+    # 95 % из ООС — состав распознан не полностью, с файлом и листом
+    assert "7 33 100 01 72 4" in g[1] and "95.0 %" in g[1] and "ООС.pdf (лист 12)" in g[1]
 
 
 def test_devdoc_branch_registered_and_reports_error_when_empty(tmp_path):

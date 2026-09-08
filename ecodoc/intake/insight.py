@@ -163,7 +163,16 @@ def data_issues(ctx: ReportContext, site_dir: Path, org: str = "", site: str = "
                                    "doc": d["doc"], "page": 0, "image": "",
                                    "fix": {"type": "tab", "tab": "intake"}})
     # 2) неподтверждённые/спорные кандидаты
+    base_codes = {norm_fkko(w.fkko_code) for w in ctx.wastes} | \
+                 {norm_fkko(a.fkko_code) for a in ctx.waste_acts}
     for g in crosscheck.group(store.items, ctx):
+        # сомнения по отходам, которых нет в базе и нет в каталоге ФККО
+        # (шум распознавания) — не «проблемы исходников» (эколог 08.09)
+        _coll, _sel, _attr = candidates.parse_key(g.key)
+        if _coll in ("wastes", "waste_acts") and _sel.get("fkko"):
+            _code = norm_fkko(_sel["fkko"])
+            if _code not in base_codes and not sanitize.check_waste(_code).ok:
+                continue
         if not g.is_question and g.current:
             continue
         sec = _section_of(g.key)

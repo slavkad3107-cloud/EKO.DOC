@@ -427,6 +427,33 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
     from ecodoc.intake.candidates import Sink
     sink = Sink(workspace.site_dir(org, site) if in_workspace else None)
 
+    # 2.5 таблицы состава отхода из протоколов КХА/морфологии — детерминированно
+    #     (PyMuPDF find_tables / docx / xlsx / OCR строк), ДО ИИ: табличная
+    #     запись в extra.lab_results главнее ИИ-строк того же документа
+    #     (замечание эколога 08.09.2026). В кэш текстов ничего не пишется.
+    if scope in ("all", "acts", "waste", "passports") and docs:
+        from ecodoc.parsers import protocol_tables
+        n_tables = 0
+        table_lines: list[str] = []
+        for doc in docs:
+            try:
+                recs = protocol_tables.extract(doc.path, doc=doc, ocr=ocr)
+                if recs:
+                    n_tables += protocol_tables.merge_into(ctx, recs)["added"]
+                    for r in recs:
+                        table_lines.append(
+                            f"  ▸ {r.get('_src')} — № {r.get('protocol_no') or '—'}, "
+                            f"{len(r.get('substances') or [])} комп., "
+                            f"{r.get('total_pct', 0):.1f} %"
+                            + (f" — {r['note']}" if r.get("incomplete") else ""))
+            except Exception as e:                # разбор таблиц не рушит приём
+                table_lines.append(f"  ✖ {doc.path.name}: {e}")
+        st["protocol_tables"] = n_tables
+        if table_lines:
+            lines.append("── Таблицы состава отходов из протоколов ──")
+            lines.extend(table_lines)
+            lines.append("")
+
     parse_errors = 0
     for doc in docs:
         try:
@@ -451,6 +478,9 @@ def _analyze(stored: list[Path], ctx: ReportContext, org: str, site: str,
                                     "project": bool(getattr(c, "project", False))})
         except Exception as e:
             lines.append(f"✖ распределение не выполнено: {e}")
+    # таблицы отходов ООС/ПНООЛР — детерминированно, без ИИ (ИИ на томе в
+    # сотни страниц упирается в лимиты облака; см. parsers/oos_tables)
+    lines += _oos_tables_pass(docs, ctx, scope)
     lines.append("")
     lines.append(extractor.summary(ctx))
 
@@ -584,6 +614,38 @@ def _finish_candidates(sink, ctx: ReportContext, org: str, site: str,
     if gaps:
         out.append("── Протоколы по классу опасности ──")
         out += [f"  ⚠ {g}" for g in gaps[:5]]
+    return out
+
+
+def _oos_tables_pass(docs, ctx: ReportContext, scope: str) -> list[str]:
+    """Сводные таблицы отходов из ООС/ПНООЛР → extra.oos_wastes (нормативы
+    т/год, м³, плотность по стадиям) — по тексту страниц, без ИИ."""
+    if scope not in ("all", "waste", "acts", "passports", "other"):
+        return []
+    from ecodoc.ai.analyzer import ExtractionReport, _merge_oos_wastes
+    from ecodoc.parsers import oos_tables
+    out: list[str] = []
+    for doc in docs:
+        try:
+            if not oos_tables.is_project_doc(doc):
+                continue
+            rows = oos_tables.extract(doc)
+            if not rows:
+                continue
+            rep = ExtractionReport()
+            _merge_oos_wastes(ctx, {"oos_wastes": rows}, f"{doc.path.name} (таблицы)", rep)
+            st = {}
+            for r in rows:
+                st[r["stage"]] = st.get(r["stage"], 0) + 1
+            out.append(f"  ✓ {doc.path.name}: таблицы отходов ООС — "
+                       + ", ".join(f"{k}: {v}" for k, v in st.items())
+                       + (f"; отклонено {len(rep.rejected)}" if rep.rejected else ""))
+            for r in rep.rejected[:5]:
+                out.append(f"      ✖ {r.value}: {r.reason}")
+        except Exception as e:                       # не рушить приём
+            out.append(f"  ✖ таблицы ООС в {doc.path.name}: {e}")
+    if out:
+        out.insert(0, "── Отходы по таблицам ООС/ПНООЛР ──")
     return out
 
 

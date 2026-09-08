@@ -69,6 +69,7 @@ def build_rows(ctx: ReportContext, year=None) -> list[dict]:
             v = (val or "").strip()
             if v and v not in r[fld]:
                 r[fld].append(v)
+    _fill_oos_density(ctx, rows)
     out = sorted(rows.values(), key=lambda r: (r["hazard_class"] or 9,
                                                r["fkko"], r["name"]))
     for r in out:
@@ -81,6 +82,24 @@ def build_rows(ctx: ReportContext, year=None) -> list[dict]:
         r["mass_y"] = sum(r["mass_m"].values(), Decimal("0")) + r["mass_nodate"]
         r["vol_y"] = sum(r["vol_m"].values(), Decimal("0")) + r["vol_nodate"]
     return out
+
+
+def _fill_oos_density(ctx: ReportContext, rows: dict) -> None:
+    """Строки без плотности получают её из нормативов ООС, и объёмы месяцев
+    досчитываются как масса / плотность (эколог 08.09: «нет м³ из ООС, не
+    высчитана плотность»)."""
+    from ecodoc.core.waste_table import oos_densities
+    dens = oos_densities(ctx)
+    for r in rows.values():
+        if r["density"] or not r.get("fkko") or r["fkko"] not in dens:
+            continue
+        rho = Decimal(str(dens[r["fkko"]]))
+        r["density"] = rho
+        for mon, m in list(r["mass_m"].items()):
+            if not r["vol_m"].get(mon) and m:
+                r["vol_m"][mon] = m / rho
+        if not r["vol_nodate"] and r["mass_nodate"]:
+            r["vol_nodate"] = r["mass_nodate"] / rho
 
 
 def _num(v: Decimal):

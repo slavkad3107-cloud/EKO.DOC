@@ -304,14 +304,16 @@ class DeclarationNVOS(Report):
         if explicit:
             return explicit
         ob = self.ctx.objects[0] if self.ctx.objects else None
-        from ecodoc.core.nvos import subject_code
-        # ТО РПН подбирается по субъекту (78), а в базе префикс ОКТМО (40)
-        region = (subject_code(getattr(ob, "region_code", "") if ob else "")
-                  or subject_code(getattr(ob, "code", "") if ob else ""))
-        if not region and ob and getattr(ob, "code", ""):
-            region = str(ob.code).split("-")[0]   # «40-0178-…» → 40
+        # ТО РПН подбирается по субъекту (78), а в базе префикс ОКТМО (40):
+        # перевод и справочник всех управлений — editions.rosprirodnadzor_for.
+        # Признаки по убыванию надёжности: код объекта НВОС, ОКТМО объекта /
+        # организации, код региона, адрес площадки.
+        nvos_code = str(getattr(ob, "code", "") or "") if ob else ""
+        region = str(getattr(ob, "region_code", "") or "") if ob else ""
         oktmo = (getattr(ob, "oktmo", "") if ob else "") or self.ctx.organization.oktmo
-        return rosprirodnadzor_for(region, oktmo)
+        address = ((getattr(ob, "address", "") if ob else "")
+                   or str(e.get("site_address") or "") or self.ctx.organization.address)
+        return rosprirodnadzor_for(region, oktmo, nvos_code=nvos_code, address=address)
 
     def _kbk(self, kind: str) -> str:
         """КБК вида платы: пользовательский (extra['declaration']['kbk'])

@@ -422,26 +422,53 @@ def detect_unit(comps: list[dict], unit_hint: str = "") -> str:
 
 
 _OTHER = "Прочие компоненты (неидентифицированные)"
+# наши же синтетические строки прошлых версий (дописывались до 100 %) — их
+# надо вычищать из сохранённых составов; «Прочее (неклассифицируемые
+# материалы)» из самого протокола лаборатории — НЕ синтетика, остаётся
+SYNTHETIC_ROWS = (_OTHER.lower(), "прочие компоненты", "прочие (неидентифицированные)")
+INCOMPLETE_MARK = "состав распознан не полностью"
 _DIV = {"%": 1.0, "г/кг": 10.0, "мг/кг": 10_000.0, "доли": 0.01}
+COMPLETE_MIN, COMPLETE_MAX = 99.0, 101.0
+
+
+def is_synthetic_row(name) -> bool:
+    n = str(name or "").strip().lower().replace("ё", "е")
+    return any(n.startswith(s) for s in SYNTHETIC_ROWS)
+
+
+def strip_synthetic(comps: list) -> list:
+    """Убрать строки «Прочие компоненты (неидентифицированные)», которые
+    прежние версии дописывали сами (замечание эколога 08.09.2026)."""
+    return [c for c in (comps or []) if not (isinstance(c, dict)
+                                              and is_synthetic_row(c.get("name")))]
+
+
+def is_incomplete_note(note: str) -> bool:
+    return INCOMPLETE_MARK in str(note or "")
 
 
 def normalize_components(comps: list, unit_hint: str = "",
-                         source: str = "") -> tuple[list[dict], str]:
-    """Состав → проценты, сумма ровно 100,00, порядок по убыванию.
+                         source: str = "", fill_other: bool = False) -> tuple[list[dict], str]:
+    """Состав → проценты, порядок по убыванию.
 
-    Правила (замечание эколога 07.09.2026):
+    Правила (замечания эколога 07.09 и 08.09.2026):
       * мг/кг ÷ 10 000, г/кг ÷ 10, доли × 100, % как есть (unit из
         компонентов, подсказки или по величине суммы: без единицы и сумма
         > 150 — мг/кг);
-      * сумма 95–105 % → пропорционально к 100; < 95 % → строка «Прочие
-        компоненты (неидентифицированные)» до 100; > 105 % → состав не
-        печатается, в примечании «состав не сходится: сумма N %»;
-      * формат «21.14» (в документах точка меняется на запятую), последний
-        компонент корректируется на остаток округления.
+      * сумма 99–101 % → пропорционально к 100,00 (последний компонент
+        корректируется на остаток округления);
+      * иначе состав распознан не полностью (или с перебором): строки
+        печатаются КАК ЕСТЬ, без дописывания «Прочих», примечание
+        «состав распознан не полностью: N % — проверьте <источник>»
+        (is_incomplete_note); строку «Прочие компоненты» можно дописать
+        только явно (fill_other=True — ручной режим), по умолчанию — никогда;
+      * синтетические «Прочие компоненты (неидентифицированные)» прошлых
+        версий из входа вычищаются;
+      * формат «21.14» (в документах точка меняется на запятую).
     Возвращает (список {name, percent, value}, примечание)."""
     items: list[tuple[str, float]] = []
     skipped: list[str] = []
-    raw = [c for c in (comps or []) if isinstance(c, dict)
+    raw = [c for c in strip_synthetic(comps) if isinstance(c, dict)
            and str(c.get("name") or "").strip()]
     if not raw:
         return [], ""
@@ -453,7 +480,10 @@ def normalize_components(comps: list, unit_hint: str = "",
         if val is None:
             skipped.append(name)
             continue
-        val = val / div
+        # у компонента своя единица (в одном протоколе «96,5 %» и «23000
+        # мг/кг») — пересчитывается по ней, общая единица — для строк без неё
+        own = detect_unit([c]) if str(c.get("unit") or "").strip() else unit
+        val = val / _DIV.get(own, div)
         if val <= 0:
             continue
         items.append((name, val))
@@ -467,23 +497,28 @@ def normalize_components(comps: list, unit_hint: str = "",
         notes.append(f"содержание пересчитано из {unit} в %")
     if skipped:
         notes.append("без содержания пропущены: " + ", ".join(skipped))
-    if total > 105.0:
-        return [], (f"состав{src} не сходится: сумма {total:.2f} % — "
-                    f"проверить протокол/ООС")
-    if total < 95.0:
+    complete = COMPLETE_MIN <= total <= COMPLETE_MAX
+    if not complete and fill_other and total < COMPLETE_MIN:
         items.append((_OTHER, 100.0 - total))
         notes.append(f"сумма {total:.2f} % дополнена строкой «{_OTHER}» до 100 %")
-    elif abs(total - 100.0) > 0.005:
-        items = [(n, v * 100.0 / total) for n, v in items]
-        notes.append(f"сумма {total:.2f} % приведена к 100 %")
+        complete, total = True, 100.0
     items.sort(key=lambda x: -x[1])
-    rounded = [round(v, 2) for _, v in items]
-    rest = round(100.0 - sum(rounded), 2)
-    if rest:
-        idx = len(rounded) - 1
-        if rounded[idx] + rest <= 0:
-            idx = 0
-        rounded[idx] = round(rounded[idx] + rest, 2)
+    if complete:
+        if abs(total - 100.0) > 0.005:
+            items = [(n, v * 100.0 / total) for n, v in items]
+            notes.append(f"сумма {total:.2f} % приведена к 100 %")
+        rounded = [round(v, 2) for _, v in items]
+        rest = round(100.0 - sum(rounded), 2)
+        if rest:
+            idx = len(rounded) - 1
+            if rounded[idx] + rest <= 0:
+                idx = 0
+            rounded[idx] = round(rounded[idx] + rest, 2)
+    else:
+        rounded = [round(v, 2) for _, v in items]
+        where = f" — проверьте {source}" if source else " — проверьте протокол/ООС"
+        over = " (сумма больше 100 — лишние строки или единицы)" if total > COMPLETE_MAX else ""
+        notes.insert(0, f"{INCOMPLETE_MARK}: {total:.1f} %{over}{where}")
     out = [{"name": n, "percent": f"{p:.2f}", "value": p}
            for (n, _), p in zip(items, rounded)]
     return out, "; ".join(notes)
@@ -552,6 +587,8 @@ def protocol_matches_waste(lab: dict, fkko, name: str = "",
     tlow = target.lower().replace("ё", "е")
     if code and tcode == code:
         return True
+    if code and tcode and len(code) == 11 and len(tcode) == 11:
+        return False                # у протокола свой код — и он другой
     if code and len(code) == 11 and re.sub(r"\D", "", target).find(code) >= 0:
         return True
     n = (name or "").strip().lower().replace("ё", "е")
@@ -562,6 +599,11 @@ def protocol_matches_waste(lab: dict, fkko, name: str = "",
     if any(k in tlow for k in ("атмосферн", "воздух", "сточн", "почв", "вода ",
                                "воды ", "грунтов", "шум")) and "отход" not in tlow:
         return False
+    # нормализованное сравнение (регистр, ё, скобки/пунктуация, первые 40
+    # символов либо ≥ 70 % общих слов длиннее 3 букв) — как в protocol_tables
+    from ecodoc.parsers.protocol_tables import names_match
+    if names_match(target, n):
+        return True
     nw, tw = _words(n), _words(target)
     if not nw or not tw:
         return False

@@ -63,6 +63,36 @@ def densities(ctx: ReportContext) -> dict[str, float]:
     for code, v in vol_sum.items():
         if code not in out and v > 0:
             out[code] = mass_sum[code] / v
+    # нет плотности в актах — берём норматив ООС (т и м³ из таблицы отходов
+    # проекта: эколог просил «м³ из ООС, плотность высчитывать»)
+    for code, rho in oos_densities(ctx).items():
+        out.setdefault(code, rho)
+    return out
+
+
+def oos_densities(ctx: ReportContext) -> dict[str, float]:
+    """Плотность по коду ФККО из нормативов ООС (extra.oos_wastes)."""
+    from ecodoc.core.waste_agg import norm_fkko
+    out: dict[str, float] = {}
+    extra = ctx.extra if isinstance(ctx.extra, dict) else {}
+    for it in extra.get("oos_wastes") or []:
+        if not isinstance(it, dict):
+            continue
+        code = norm_fkko(it.get("fkko"))
+        if not code or code in out:
+            continue
+
+        def num(v) -> float:
+            try:
+                return float(str(v).replace(",", ".")) if v not in (None, "") else 0.0
+            except (TypeError, ValueError):
+                return 0.0
+        rho = num(it.get("density"))
+        if rho <= 0:
+            m, v = num(it.get("mass_t")), num(it.get("volume_m3"))
+            rho = (m / v) if (m > 0 and v > 0) else 0.0
+        if rho > 0:
+            out[code] = rho
     return out
 
 

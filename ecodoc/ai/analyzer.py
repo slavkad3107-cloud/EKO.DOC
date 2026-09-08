@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+from ecodoc.core.waste_agg import norm_fkko
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
@@ -584,6 +585,7 @@ def _merge_oos_wastes(ctx: ReportContext, data: dict, src: str,
                     and x.get("stage") == stage), None)
         if rec is None:
             rec = {"fkko": fkko, "name": name, "hazard_class": hazard, "stage": stage,
+                   "page": it.get("page") or 0,
                    "mass_t": str(mass) if mass is not None else "",
                    "volume_m3": str(vol) if vol is not None else "",
                    "density": str(dens) if dens is not None else "",
@@ -602,7 +604,7 @@ def _merge_oos_wastes(ctx: ReportContext, data: dict, src: str,
                 if v not in (None, "") and not rec.get(k):
                     rec[k] = str(v).strip()
         # строительные отходы — основа перечня: код заводится в базу сразу
-        if stage == "строительство" and not any(w.fkko_code == fkko for w in ctx.wastes):
+        if stage == "строительство" and not any(norm_fkko(w.fkko_code) == fkko for w in ctx.wastes):
             ctx.wastes.append(WasteFlow(fkko_code=fkko, name=name, hazard_class=hazard))
     if any(x.get("stage") == "эксплуатация" and not x.get("decision")
            for x in store if isinstance(x, dict)):
@@ -745,7 +747,7 @@ def _merge_wastes(ctx: ReportContext, data: dict, quotes: dict, src: str,
             rep.doubts.append(Rejected(
                 "отход", f"{fkko} {str(w.get('name') or '')[:40]}".strip(),
                 chk.reason, src))
-        flow = next((x for x in ctx.wastes if x.fkko_code == fkko), None)
+        flow = next((x for x in ctx.wastes if norm_fkko(x.fkko_code) == fkko), None)
         if flow is None:
             hz = w.get("hazard_class")
             flow = WasteFlow(fkko_code=fkko,
@@ -839,7 +841,14 @@ def _merge_pollutants(ctx: ReportContext, data: dict, medium, src: str,
 
 def _store_extras(ctx: ReportContext, data: dict, src: str,
                   rep: ExtractionReport):
-    """Акты и протоколы целиком складываем в extra — пригодятся формам."""
+    """Акты и протоколы целиком складываем в extra — пригодятся формам.
+
+    Протокол состава, таблицу которого уже разобрал детерминированный
+    извлекатель (parsers/protocol_tables, запись с method == "table" из того
+    же файла про тот же протокол/отход), ИИ-строками не дублируем: таблица
+    главнее (замечание эколога 08.09.2026 — ИИ терял строки таблицы). Дата,
+    лаборатория, аттестат ИИ-записи дописываются в табличную, если там пусто."""
+    from ecodoc.parsers import protocol_tables as PT
     labels = {"disposal_acts": "акт/справка об утилизации",
               "lab_results": "протокол лаборатории"}
     for key, label in labels.items():
@@ -848,6 +857,22 @@ def _store_extras(ctx: ReportContext, data: dict, src: str,
             existing = ctx.extra.setdefault(key, [])
             if item in existing:
                 continue
+            if key == "lab_results" and PT.is_composition_kind(item.get("kind")):
+                table = PT.find_in_file(ctx, src, item.get("fkko"),
+                                        str(item.get("object") or ""),
+                                        str(item.get("protocol_no") or ""))
+                if table is not None:
+                    for k in ("date", "lab", "lab_attestation", "object", "fkko"):
+                        if not table.get(k) and item.get(k):
+                            table[k] = item[k]
+                    if not table.get("method_doc") and item.get("method"):
+                        table["method_doc"] = str(item["method"])
+                    rep.rejected.append(Rejected(
+                        label, f"№ {item.get('protocol_no') or '—'} "
+                               f"{str(item.get('object') or '')[:60]}",
+                        "состав взят из таблицы протокола (детерминированный "
+                        "разбор главнее ИИ-строк)", src))
+                    continue
             existing.append(item)
             brief = ", ".join(f"{k}={v}" for k, v in item.items()
                               if v and not k.startswith("_") and k != "substances")
@@ -892,6 +917,7 @@ def _merge_passports(ctx: ReportContext, data: dict, src: str,
                 "паспорт отхода", f"{p.get('fkko') or '—'} {p.get('name') or ''}",
                 "источник — не паспорт/протокол/ООС/ПНООЛР (состав отсюда не берём)", src))
         return
+    from ecodoc.parsers import protocol_tables as PT
     for p in data.get("waste_passports") or []:
         fkko = norm_fkko(str(p.get("fkko") or ""))
         name = str(p.get("name") or "").strip()
@@ -902,6 +928,15 @@ def _merge_passports(ctx: ReportContext, data: dict, src: str,
                         None)
         comps = [c for c in (p.get("components") or [])
                  if isinstance(c, dict) and c.get("name")]
+        # таблица протокола из этого же файла главнее ИИ-строк состава
+        # (замечание эколога 08.09.2026): состав — из неё, как есть
+        table = PT.find_in_file(ctx, src, fkko, name)
+        if table is not None and table.get("substances"):
+            comps = PT.as_components(table)
+            rep.accepted.append(Accepted(
+                f"состав отхода {fkko or name} — из таблицы протокола",
+                f"№ {table.get('protocol_no') or '—'}: {len(comps)} комп."
+                + (f", {table.get('note')}" if table.get("incomplete") else ""), src))
         origin = str(p.get("origin") or "").strip()
         agg = str(p.get("aggregate_state") or "").strip()
         if existing is None:

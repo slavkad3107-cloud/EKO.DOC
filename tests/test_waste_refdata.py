@@ -36,20 +36,38 @@ def test_normalize_g_per_kg_and_fractions():
     assert [c["percent"] for c in comps] == ["75.00", "25.00"]
 
 
-def test_normalize_95_105_scaled_under_95_other_over_105_rejected():
+def test_normalize_99_101_scaled_otherwise_as_is_with_incomplete_note():
+    """Замечание эколога 08.09.2026: 99–101 % → к 100; иначе строки как есть,
+    пометка «состав распознан не полностью», никаких «Прочих» (только явно,
+    fill_other=True); синтетические «Прочие» прошлых версий вычищаются."""
     comps, note = R.normalize_components([{"name": "a", "percent": "60"},
-                                          {"name": "b", "percent": "42"}])   # 102
-    assert [c["percent"] for c in comps] == ["58.82", "41.18"]
+                                          {"name": "b", "percent": "40.6"}])   # 100.6
+    assert [c["percent"] for c in comps] == ["59.64", "40.36"]
     assert R.components_total(comps) == 100.0 and "приведена к 100" in note
+    assert not R.is_incomplete_note(note)
     comps, note = R.normalize_components([{"name": "a", "percent": "60"},
-                                          {"name": "b", "percent": "20"}])   # 80
+                                          {"name": "b", "percent": "42"}])     # 102
+    assert [c["percent"] for c in comps] == ["60.00", "42.00"]
+    assert R.is_incomplete_note(note) and "102.0 %" in note and "больше 100" in note
+    comps, note = R.normalize_components([{"name": "a", "percent": "60"},
+                                          {"name": "b", "percent": "20"}])     # 80
+    assert [c["name"] for c in comps] == ["a", "b"] and R.components_total(comps) == 80.0
+    assert note.startswith("состав распознан не полностью: 80.0 % — проверьте протокол/ООС")
+    comps, note = R.normalize_components([{"name": "a", "percent": "60"},
+                                          {"name": "b", "percent": "20"}], fill_other=True)
     assert comps[-1]["name"].startswith("Прочие") and comps[-1]["percent"] == "20.00"
-    assert R.components_total(comps) == 100.0
     comps, note = R.normalize_components([{"name": "a", "percent": "80"},
                                           {"name": "b", "percent": "40"}],
                                          source="протокола № 5")
-    assert comps == [] and "не сходится" in note and "120.00" in note
-    assert "№ 5" in note
+    assert [c["percent"] for c in comps] == ["80.00", "40.00"]
+    assert "120.0 %" in note and "№ 5" in note
+    # синтетическая строка прошлой версии вычищается, «Прочее» лаборатории — нет
+    comps, note = R.normalize_components([
+        {"name": "Прочие компоненты (неидентифицированные)", "percent": "38.6"},
+        {"name": "Картон", "percent": "16.9"},
+        {"name": "Прочее (неклассифицируемые материалы)", "percent": "44.5"}])
+    assert [c["name"] for c in comps] == ["Прочее (неклассифицируемые материалы)", "Картон"]
+    assert R.is_incomplete_note(note) and "61.4 %" in note
     assert R.normalize_components([], source="x") == ([], "")
     comps, note = R.normalize_components([{"name": "a", "percent": ""}])
     assert comps == [] and "нет числового содержания" in note

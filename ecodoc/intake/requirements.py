@@ -130,7 +130,46 @@ def check(ctx: ReportContext, form: str) -> tuple[list[str], list[str]]:
         if any(_filled(_get_path(ctx, p)) for p in path.split("|")):
             continue
         missing.append(label)
-    return missing, req["docs"]
+    return missing, docs_needed(ctx, req["docs"])
+
+
+_DOC_EGRUL = "карточка организации / выписка ЕГРЮЛ"
+_DOC_EMISSION_LOG = "данные учёта выбросов/сбросов за год"
+_DOC_INVENTORY = "инвентаризация выбросов / том НДВ"
+
+
+def _requisites_filled(ctx: ReportContext) -> bool:
+    """ИНН, ОГРН(ИП), адрес и руководитель уже в базе — карточку/ЕГРЮЛ не просим."""
+    o = ctx.organization
+    return all(str(getattr(o, f, "") or "").strip()
+               for f in ("inn", "ogrn", "address", "director_name"))
+
+
+def _emissions_from_docs(ctx: ReportContext) -> bool:
+    """Вещества с массами уже извлечены из ООС/инвентаризации/НДВ."""
+    return any(_filled(getattr(p, "mass_norm", None)) or _filled(getattr(p, "mass_fact", None))
+               for p in (ctx.pollutants or []))
+
+
+def docs_needed(ctx: ReportContext, docs: list[str]) -> list[str]:
+    """Список документов «что подготовить» с учётом того, что УЖЕ есть в базе:
+    реквизиты заполнены → карточку/ЕГРЮЛ не требуем; массы выбросов взяты из
+    ООС/инвентаризации → просим не документ, а подтверждение журналом учёта.
+    Замечание эколога 08.09: «не требовать то, что уже заполнено»."""
+    out: list[str] = []
+    for d in docs:
+        if d == _DOC_EGRUL and _requisites_filled(ctx):
+            continue
+        if d in (_DOC_EMISSION_LOG, _DOC_INVENTORY) and _emissions_from_docs(ctx):
+            src = {str(getattr(p, "source", "") or "").strip() for p in ctx.pollutants}
+            src.discard("")
+            where = ", ".join(sorted(src)) if src else "ООС/инвентаризации"
+            d = (f"учёт выбросов: массы взяты из {where} — подтвердите журналом "
+                 f"учёта выбросов (пр. МПР № 871) за отчётный год")
+            if d in out:
+                continue
+        out.append(d)
+    return out
 
 
 def check_all(ctx: ReportContext) -> dict[str, list[str]]:

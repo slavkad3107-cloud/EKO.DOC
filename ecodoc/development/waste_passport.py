@@ -22,10 +22,18 @@
   * происхождение — waste_refdata.origin_for (эталоны ПОО → группа ФККО),
     адрес места образования — waste_refdata.site_address_for (объект НВОС).
 
-Замечания эколога 07.09.2026 (закрыты здесь): состав только в % и в сумме
-ровно 100 % (normalize_components: мг/кг → %, 95–105 % → к 100, недобор →
-«Прочие компоненты», перебор → не печатать и в gaps); «Происхождение…» не
-плейсхолдер, а формулировка из справочника; адрес площадки обязателен.
+Замечания эколога 07.09.2026 (закрыты здесь): состав только в % (мг/кг → %),
+«Происхождение…» не плейсхолдер, а формулировка из справочника; адрес
+площадки обязателен.
+
+Замечание эколога 08.09.2026: строки «Прочие компоненты (неидентифицированные)»
+в паспорте недопустимы — состав берётся из ТАБЛИЦЫ протокола (детерминированный
+разбор parsers/protocol_tables, записи lab_results с method == "table" главнее
+ИИ-строк), сумма 99–101 % приводится к 100; если состав распознан не полностью,
+он печатается КАК ЕСТЬ с пометкой «[состав распознан не полностью: N % —
+проверьте протокол № … лист …]» и попадает в gaps, ничего не дописывается.
+Составы, которые прежние версии сохранили в waste_details со своими «Прочими»,
+вычищаются (waste_refdata.strip_synthetic) и перечитываются из протокола.
 
 Паспорт оформляется только на отходы I–IV класса: для V класса он не нужен —
 требуется подтверждение отнесения к V классу (протокол биотестирования).
@@ -237,11 +245,31 @@ def _passport_record(extra: dict, code: str) -> dict:
     return {}
 
 
+_PROGRAM_SOURCES = ("protocol", "passport", "oos", "pnoolr", "table", "generated",
+                    "inventory_waste", "protocol_kha", "scan")
+# виды протоколов, из которых берётся состав (КХА / морфология / компонентный)
+_COMP_KINDS = ("КХА", "хим", "морф", "состав", "компонент")
+
+
+def protocol_label(lab: dict) -> str:
+    """«протокол № 13208.26-1-Отх от 17.08.2026 (файл.pdf (лист 2))»."""
+    return " ".join(x for x in (
+        "протокол", f"№ {lab.get('protocol_no')}" if lab.get("protocol_no") else "",
+        f"от {lab.get('date')}" if lab.get("date") else "",
+        f"({lab.get('_src')})" if lab.get("_src") else "") if x)
+
+
 def _details(ctx: ReportContext, w: WasteFlow) -> dict:
     """Сведения об отходе: ручной ввод главнее; затем протокол состава
-    отхода (extra.lab_results) и справочник паспортов (extra.waste_passports);
-    происхождение — из справочника ФККО, адрес — площадки. Состав приводится
-    к % с суммой 100 (waste_refdata.normalize_components)."""
+    отхода (extra.lab_results: таблица протокола главнее ИИ-строк) и
+    справочник паспортов (extra.waste_passports); происхождение — из
+    справочника ФККО, адрес — площадки. Состав приводится к %
+    (waste_refdata.normalize_components); неполный — как есть, с пометкой.
+
+    Состав в waste_details, записанный самой программой (composition_source
+    protocol/passport/oos/…), — кэш прежней генерации: если в базе есть
+    протокол или паспорт, состав перечитывается из них (так вычищаются
+    «Прочие компоненты», дописанные прежними версиями)."""
     from ecodoc.core import waste_refdata as R
 
     extra = ctx.extra if isinstance(ctx.extra, dict) else {}
@@ -259,41 +287,55 @@ def _details(ctx: ReportContext, w: WasteFlow) -> dict:
     p = _passport_record(extra, code)
     p_kind = passport_kind(p) if p else ""
     # протокол состава именно этого отхода (не воздуха/воды/почвы)
-    lab = lab_result_for(ctx, w, kinds=("КХА", "хим", "морф", "состав",
-                                         "компонент"))
+    lab = lab_result_for(ctx, w, kinds=_COMP_KINDS)
     lab_comps = [x for x in (lab.get("substances") or []) if isinstance(x, dict)
                  and str(x.get("name") or "").strip()] if lab else []
     comp_source = ""
+    manual = bool(d.get("components")) and (
+        str(d.get("composition_source") or "manual") not in _PROGRAM_SOURCES)
+    if d.get("components") and not manual:
+        # кэш прошлой генерации: годится только если источников больше нет
+        cached = R.strip_synthetic(d.get("components") or [])
+        if lab_comps or p.get("components") or not cached:
+            d.pop("components", None)
+        else:
+            d["components"] = cached
+            d["_comp_kind"] = str(d.get("composition_source") or "passport")
+            comp_source = "сведения, сохранённые при прошлой генерации паспорта"
     # приоритет источников состава (замечание эколога 07.09.2026): ручной
-    # ввод → протокол состава → паспорт из скана → ООС/ПНООЛР
+    # ввод → протокол состава (таблица > ИИ) → паспорт из скана → ООС/ПНООЛР
     if not d.get("components"):
         if lab_comps:
             # как в принятых паспортах ТЕХНОСТРОЙ: состав = результаты протокола
             d["components"] = [{"name": x.get("name", ""),
                                 "percent": x.get("value", x.get("percent", "")),
                                 "unit": x.get("unit", "")} for x in lab_comps]
-            comp_source = " ".join(x for x in (
-                "протокол", f"№ {lab.get('protocol_no')}" if lab.get("protocol_no") else "",
-                f"от {lab.get('date')}" if lab.get("date") else "",
-                f"({lab.get('_src')})" if lab.get("_src") else "") if x)
+            comp_source = protocol_label(lab)
             d["_comp_kind"] = "protocol"
+            d["_comp_method"] = str(lab.get("method") or "ai")
         elif p.get("components"):
             d["components"] = list(p.get("components") or [])
             comp_source = str(p.get("_src") or "справочник паспортов")
             d["_comp_kind"] = p_kind
-    else:
+    elif manual:
         d["_comp_kind"] = "manual"
+        comp_source = "сведения, введённые вручную (вкладка ОТХОДЫ)"
     if p:
         if not d.get("origin") and p.get("origin"):
             d["origin"] = str(p["origin"])
         if not d.get(_AGG) and p.get("aggregate_state"):
             d[_AGG] = str(p["aggregate_state"])
     if lab:
+        # «method» у табличных записей — способ разбора («table»), методика
+        # измерений лежит в method_doc; у ИИ-записей method = сама методика
+        method_doc = str(lab.get("method_doc") or "")
+        if not method_doc and str(lab.get("method") or "") != "table":
+            method_doc = str(lab.get("method") or "")
         d.setdefault("protocol", {
             "number": lab.get("protocol_no", ""), "date": lab.get("date", ""),
             "lab": lab.get("lab", ""),
             "lab_attestation": lab.get("lab_attestation", ""),
-            "method_doc": lab.get("method", "")})
+            "method_doc": method_doc})
 
     # происхождение: ручное → из движения отхода → справочник по ФККО
     if not str(d.get("origin") or "").strip():
@@ -314,8 +356,16 @@ def _details(ctx: ReportContext, w: WasteFlow) -> dict:
     comps, note = R.normalize_components(d.get("components") or [],
                                          source=comp_source)
     d["components"], d["_comp_note"] = comps, note
-    if note and "не сходится" in note:
-        gaps.append(note)
+    d["_comp_incomplete"] = False
+    if R.is_incomplete_note(note):
+        # состав распознан не полностью: печатаем как есть, с пометкой;
+        # у табличной записи точнее её own note (сколько строк, какой лист)
+        mark = note.split(";")[0]
+        if lab and d.get("_comp_kind") == "protocol" and lab.get("note"):
+            mark = f"{R.INCOMPLETE_MARK}: {lab['note']}"
+        d["_comp_incomplete"] = True
+        d["_comp_mark"] = f"[{mark}]"
+        gaps.append(mark)
     if not comps:
         gaps.append("нет состава — нужен протокол состава отхода (КХА/"
                     "морфологический) или ООС/ПНООЛР")
@@ -360,21 +410,26 @@ def lab_result_for(ctx: ReportContext, w: WasteFlow, kinds=()) -> dict | None:
     """Протокол из extra['lab_results'] для отхода: только протокол нужного
     вида (kinds: состав — КХА/морфология; биотест), объект которого — этот
     отход (код ФККО или наименование целиком/по основе слов). Протоколы
-    воздуха, воды, почвы с похожим обрывком имени не подходят."""
+    воздуха, воды, почвы с похожим обрывком имени не подходят.
+
+    Порядок предпочтения: таблица протокола (method == "table") > ИИ-строки;
+    полный состав > неполный; с результатами > без; больше строк > меньше."""
     from ecodoc.core.waste_refdata import protocol_matches_waste
 
     extra = ctx.extra if isinstance(ctx.extra, dict) else {}
-    best = None
-    for lab in extra.get("lab_results") or []:
-        if not protocol_matches_waste(lab, w.fkko_code, w.name,
-                                      kinds=tuple(kinds) or None):
-            continue
-        # предпочесть протокол с результатами (веществами)
-        if lab.get("substances") or best is None:
-            best = lab
-            if lab.get("substances"):
-                break
-    return best
+    cands = [lab for lab in extra.get("lab_results") or []
+             if protocol_matches_waste(lab, w.fkko_code, w.name,
+                                       kinds=tuple(kinds) or None)]
+    if not cands:
+        return None
+
+    def rank(lab: dict):
+        subs = lab.get("substances") or []
+        return (0 if subs else 1,
+                0 if lab.get("method") == "table" else 1,
+                1 if lab.get("incomplete") else 0,
+                -len(subs))
+    return sorted(cands, key=rank)[0]
 
 
 def gaps(ctx: ReportContext) -> list[str]:
@@ -448,12 +503,19 @@ def remember_details(ctx: ReportContext) -> int:
         if not isinstance(rec, dict):
             rec = {}
         comps = d.get("components") or []
-        if comps and not rec.get("components"):
+        # программный состав (кэш) обновляется каждый раз — иначе в базе
+        # остались бы «Прочие компоненты» прежних версий; ручной не трогаем
+        own = str(rec.get("composition_source") or "manual") in _PROGRAM_SOURCES
+        if comps and (not rec.get("components") or own):
             norm, _note = R.normalize_components(comps)
             if norm:
                 rec["components"] = [{"name": c.get("name", ""), "percent": c.get("percent", "")}
                                      for c in norm]
                 rec["composition_source"] = d.get("_comp_kind") or "passport"
+                if d.get("_comp_incomplete"):
+                    rec["composition_note"] = d.get("_comp_mark", "")
+                else:
+                    rec.pop("composition_note", None)
         for key in ("origin", _AGG, "site_address", "protocol"):
             if d.get(key) and not rec.get(key):
                 rec[key] = d[key]
@@ -572,6 +634,10 @@ def _build(org: Organization, w: WasteFlow, hazard: int, d: dict,
     doc.add_paragraph().paragraph_format.space_after = Pt(0)
 
     comps = _sorted_components(d.get("components") or [])
+    if comps and d.get("_comp_mark"):
+        # состав распознан не полностью: строки как есть + явная пометка
+        # (замечание эколога 08.09.2026 — никаких «Прочих» до 100 %)
+        comps = comps + [{"name": d["_comp_mark"], "percent": ""}]
     method = d.get("method") or _DEFAULT_METHOD
     basis = d.get("basis") or ""
     if basis and basis not in method:
@@ -638,7 +704,7 @@ def _protocol_table(doc, proto: dict, comps: list, AL, Cm):
                                "Содержание, %")):
             _set(t2.cell(0, j), h, AL.CENTER)
         for i, c in enumerate(comps, 1):
-            _set(t2.cell(i, 0), str(i), AL.CENTER)
+            _set(t2.cell(i, 0), "" if c.get("percent") == "" else str(i), AL.CENTER)
             _set(t2.cell(i, 1), str(c.get("name", "")), AL.LEFT)
             _set(t2.cell(i, 2), _fmt_pct(c.get("percent", "")), AL.CENTER)
         _set(t2.cell(len(comps) + 1, 1), "Итого", AL.RIGHT)
@@ -806,12 +872,13 @@ def _bottom_border(cell):
 
 
 def _sorted_components(comps: list) -> list:
-    """Форма требует состав в порядке убывания содержания компонентов."""
+    """Форма требует состав в порядке убывания содержания компонентов;
+    строки без числа (пометки) — в конце."""
     def key(c):
         try:
-            return -float(str(c.get("percent", "")).replace(",", ".").strip())
+            return (0, -float(str(c.get("percent", "")).replace(",", ".").strip()))
         except (TypeError, ValueError):
-            return 0.0
+            return (1, 0.0)
     return sorted([c for c in comps if isinstance(c, dict)], key=key)
 
 

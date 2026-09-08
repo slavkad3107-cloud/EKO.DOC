@@ -347,9 +347,50 @@ def _ocr_image(img) -> str:
     try:
         # большой таймаут-предохранитель на страницу (не влияет на качество,
         # только страхует от вечного зависания на битом файле)
-        return pytesseract.image_to_string(img, lang=lang, timeout=300)
+        text = pytesseract.image_to_string(img, lang=lang, timeout=300)
     except RuntimeError:
         return ""
+    # повёрнутые сканы (таблицы ООС/ПНООЛР сканируют «лёжа»): OCR прямого
+    # листа даёт кашу — пробуем повороты и оставляем лучший по доле
+    # кириллических слов (замечание эколога 08.09: «надо всё распознавать»)
+    if _cyr_ratio(text) < 0.35:
+        best, best_score = text, _cyr_ratio(text)
+        for angle in _osd_angles(img) + [90, 270, 180]:
+            try:
+                alt = pytesseract.image_to_string(img.rotate(angle, expand=True),
+                                                  lang=lang, timeout=300)
+            except RuntimeError:
+                continue
+            sc = _cyr_ratio(alt)
+            if sc > best_score + 0.1:
+                best, best_score = alt, sc
+            if best_score >= 0.6:
+                break
+        text = best
+    return text
+
+
+def _cyr_ratio(text: str) -> float:
+    """Доля «нормальных» слов (кириллица/цифры) среди слов текста."""
+    import re
+    words = re.findall(r"\S+", text or "")
+    if len(words) < 8:
+        return 0.0 if not words else 1.0
+    good = sum(1 for w in words if re.fullmatch(r"[А-Яа-яЁё]{2,}[.,;:)»]*|\d[\d.,]*%?", w))
+    return good / len(words)
+
+
+def _osd_angles(img) -> list[int]:
+    """Угол поворота по Tesseract OSD (если получилось), иначе пусто."""
+    try:
+        import pytesseract
+        osd = pytesseract.image_to_osd(img, timeout=60)
+        import re
+        m = re.search(r"Rotate: (\d+)", osd)
+        angle = int(m.group(1)) if m else 0
+        return [angle] if angle in (90, 180, 270) else []
+    except Exception:
+        return []
 
 
 def _ocr_pixmap(pix) -> str:

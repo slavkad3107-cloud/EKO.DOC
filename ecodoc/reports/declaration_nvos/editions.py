@@ -173,32 +173,96 @@ def edition_for_year(year) -> Edition:
     return EDITIONS["182"]
 
 
-# Территориальные органы Росприроднадзора по коду региона. Ключи — и коды
-# субъектов РФ (78, 47, 77, 50), и коды территориальных органов РПН из кода
-# объекта НВОС (40 — СПб, 41/46 — ЛО, 45 — Москва). Небольшой справочник
-# для самых частых регионов; для остальных поле 2 титула остаётся пустым и
-# validate() просит заполнить его вручную (extra['declaration']['rospr']).
-ROSPRIRODNADZOR = {
-    "78": "Северо-Западное межрегиональное управление Федеральной службы "
-          "по надзору в сфере природопользования",
-    "47": "Северо-Западное межрегиональное управление Федеральной службы "
-          "по надзору в сфере природопользования",
-    "77": "Межрегиональное управление Федеральной службы по надзору в сфере "
-          "природопользования по г. Москве и Калужской области",
-    "50": "Центральное межрегиональное управление Федеральной службы "
-          "по надзору в сфере природопользования",
-}
-# коды территориальных органов РПН (первые две цифры кода объекта НВОС) и
-# первые две цифры ОКТМО → код субъекта
-_REGION_ALIASES = {"40": "78", "41": "47", "46": "47", "45": "77"}
+# Территориальные органы Росприроднадзора — справочник data/rospr_bodies.json
+# (все межрегиональные управления с кодами субъектов РФ, структура по
+# rpn.gov.ru/about/structure/). Код субъекта (78 — СПб, 47 — ЛО) и префикс
+# ОКТМО / кода объекта НВОС (40 — СПб, 41 — ЛО) — разные нумерации; перевод —
+# parsers/oktmo.OKTMO_PREFIX_TO_SUBJECT. Явно заданное пользователем имя
+# (extra['declaration']['rospr']) всегда приоритетнее.
+_ROSPR_CACHE: dict = {"mtime": None, "by_subject": {}, "bodies": []}
 
 
-def rosprirodnadzor_for(region_code: str, oktmo: str = "") -> str:
-    """Наименование ТО РПН по коду региона объекта (или по началу ОКТМО)."""
-    code = str(region_code or "").strip()[:2]
-    if not code and oktmo:
-        # ОКТМО: 40… — СПб, 41… — ЛО, 45… — Москва, 46… — МО
-        code = {"40": "78", "41": "47", "45": "77", "46": "50"}.get(
-            str(oktmo).strip()[:2], "")
-    code = _REGION_ALIASES.get(code, code)
-    return ROSPRIRODNADZOR.get(code, "")
+def rospr_bodies() -> list[dict]:
+    """Список ТО РПН из data/rospr_bodies.json (перечитывается по mtime)."""
+    from ecodoc.core.refdata import DATA_DIR
+    import json as _json
+    path = DATA_DIR / "rospr_bodies.json"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return []
+    if _ROSPR_CACHE["mtime"] != mtime:
+        try:
+            with path.open(encoding="utf-8") as f:
+                bodies = _json.load(f).get("bodies") or []
+        except (OSError, ValueError):
+            return _ROSPR_CACHE["bodies"]
+        _ROSPR_CACHE["bodies"] = bodies
+        _ROSPR_CACHE["by_subject"] = {str(s).zfill(2): b for b in bodies
+                                      for s in (b.get("subjects") or [])}
+        _ROSPR_CACHE["mtime"] = mtime
+    return _ROSPR_CACHE["bodies"]
+
+
+def rospr_body(subject_code: str) -> dict:
+    """Запись ТО РПН по коду субъекта РФ («78») или {}."""
+    rospr_bodies()
+    s = str(subject_code or "").strip()
+    return _ROSPR_CACHE["by_subject"].get(s.zfill(2)[:2] if s.isdigit() else s, {})
+
+
+def _subject_from(region_code: str = "", oktmo: str = "", nvos_code: str = "",
+                  address: str = "") -> str:
+    """Код субъекта РФ по любому из признаков: код объекта НВОС («40-0178-…» —
+    первые цифры = префикс ОКТМО), ОКТМО (префикс с учётом 118/718/719),
+    код региона (субъект или префикс — по таблице переводов), адрес."""
+    from ecodoc.parsers import oktmo as _okt
+    code = str(nvos_code or "").strip()
+    if "-" in code:
+        pref = code.split("-")[0].strip()
+        if pref.isdigit():
+            subj = _okt.subject_of_prefix(pref.zfill(2))
+            if subj:
+                return subj
+    okt = str(oktmo or "").strip()
+    if okt.isdigit() and len(okt) >= 8:
+        subj = _okt.subject_of_prefix(_okt.prefix_of_oktmo(okt))
+        if subj:
+            return subj
+    rc = str(region_code or "").strip()
+    if rc and "-" in rc:
+        return _subject_from(nvos_code=rc, address=address)
+    if rc.isdigit():
+        # заглушки вроде «XX» (объект ещё не поставлен на учёт) — не регион,
+        # идём дальше к адресу
+        rc = rc.zfill(2)[:2]
+        # региональный код в базе — это префикс ОКТМО (40 — СПб); но если он
+        # похож на код субъекта, для которого нет префикса (78 — СПб в ОКТМО
+        # это Ярославль!) — доверяем известным парам и справочнику ТО РПН
+        if rc in _okt.OKTMO_PREFIX_TO_SUBJECT and rc not in ("78", "47", "50", "77"):
+            return _okt.OKTMO_PREFIX_TO_SUBJECT[rc]
+        return rc
+    if address:
+        try:
+            res = _okt.resolve(address)
+        except Exception:
+            res = {}
+        if res.get("subject"):
+            return res["subject"]
+    return ""
+
+
+def rosprirodnadzor_for(region_code: str = "", oktmo: str = "", nvos_code: str = "",
+                        address: str = "", full: bool = True) -> str:
+    """Наименование ТО РПН для титула декларации по любому признаку региона:
+    коду субъекта / префиксу ОКТМО, ОКТМО, коду объекта НВОС или адресу.
+    full=True — «… Федеральной службы по надзору в сфере природопользования»."""
+    subj = _subject_from(region_code, oktmo, nvos_code, address)
+    body = rospr_body(subj) if subj else {}
+    if not body:
+        return ""
+    return str(body.get("full" if full else "name") or body.get("name") or "")
+
+
+# совместимость: старый словарь-справочник заменён файлом, но имя оставлено
+ROSPRIRODNADZOR = {s: rosprirodnadzor_for(s) for s in ("78", "47", "77", "50")}
