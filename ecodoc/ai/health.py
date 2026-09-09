@@ -172,7 +172,10 @@ def ranked_working(results: list[Health]) -> list[Health]:
 
     Внутри тарифа — по замеру качества/скорости из реестра, но модель, которая
     только что ответила быстрее, поднимается выше при равных данных реестра."""
-    order = {s.id: i for i, s in enumerate(registry.ranked())}
+    # живые бесплатные модели OpenRouter (registry.all_specs) тоже в порядке,
+    # иначе они получали «999» и проигрывали локальной Ollama (замечание
+    # пользователя 09.09: «выбрана локальная, хотя лучшая — OpenRouter»)
+    order = {s.id: i for i, s in enumerate(registry.ranked(registry.all_specs()))}
     ok = [h for h in results if h.ok]
     return sorted(ok, key=lambda h: (order.get(h.id, order.get(h.provider, 999)),
                                      h.sec or 999))

@@ -137,6 +137,25 @@ details.per{margin:4px 0 4px 10px;border-left:2px solid var(--line);padding-left
   animation:tin .2s ease-out;white-space:pre-wrap}
 .toast.ok{background:var(--acc)} .toast.err{background:var(--err)} .toast.warn{background:var(--warn)}
 @keyframes tin{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+/* плашка «Проверка при запуске» вверху главной области: ИИ, формы/источники,
+   ставки, модели (meta.startup, заполняется сервером в фоне через 10–90 с) */
+#startup-box{margin:0 0 10px;padding:10px 14px;border-radius:10px;font-size:13px;
+  background:#fff7e0;border:1px solid #e5c862}
+#startup-box.ok{background:#eef7f1;border-color:#9fd4b4}
+#startup-box.bad{background:#fdecea;border-color:var(--err)}
+#startup-box h4{margin:10px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.4px;color:var(--mut)}
+#startup-box .big{font-size:17px;font-weight:600}
+#startup-box .alert{background:#fff3c4;border:1px solid #e5c862;border-radius:8px;padding:8px 10px;margin:6px 0}
+#startup-box .alert.red{background:#fdecea;border-color:var(--err)}
+#startup-box ul{margin:4px 0 4px 18px;padding:0}
+#startup-box details>summary{cursor:pointer;color:var(--acc)}
+#startup-box pre{white-space:pre-wrap;font:11px/1.4 Consolas,monospace;background:#fff;
+  border:1px solid var(--line);border-radius:6px;padding:6px;max-height:240px;overflow:auto;margin:4px 0}
+#startup-box .head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+#startup-box .head .sp{flex:1}
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--acc);
+  border-radius:50%;animation:rot .8s linear infinite;vertical-align:-2px;margin-right:6px}
+@keyframes rot{to{transform:rotate(360deg)}}
 /* зона перетаскивания файлов/папок в ЗАГРУЗКЕ */
 .drop{border:2px dashed var(--line);border-radius:10px;padding:14px;text-align:center;color:var(--mut);
   font-size:14px;margin:6px 0 8px;transition:background .15s,border-color .15s}
@@ -215,6 +234,8 @@ header button.fb:hover{background:rgba(255,255,255,.12)}
   <div class="hint" id="wsroot" style="margin-top:10px"></div>
 </aside>
 <main>
+  <!-- плашка «Проверка при запуске»: заполняется renderStartupBox(META.startup) -->
+  <div id="startup-box" hidden></div>
   <div id="worknow" class="dsec" style="margin:0 0 10px;padding:8px 12px;
        border-left:4px solid var(--acc);background:var(--panel)">
     <b id="wn-org">— организация не выбрана —</b>
@@ -666,15 +687,16 @@ header button.fb:hover{background:rgba(255,255,255,.12)}
       </div>
       <div id="health-box"></div>
     </div>
-    <div class="card">
+    <div class="card" id="ai-panel">
       <h2>Выбор ИИ вручную (провайдер и модель)</h2>
-      <div class="hint">По умолчанию — <b>Cohere</b>: ключ бесплатный, без карты
+      <div class="hint">При запуске программа сама проверяет модели и применяет
+        лучшую (бесплатные → локальные → платные, внутри — по скорости);
+        выбранное здесь вручную действует до следующего запуска, снятая галочка
+        закрепляет выбор навсегда. Ключ Cohere бесплатный, без карты
         (получить: <a class="link" href="https://dashboard.cohere.com/api-keys"
-        target="_blank">dashboard.cohere.com/api-keys</a> → вставьте в поле
-        «API-ключ» ниже). Лимит бесплатного ключа — 20 запросов в минуту,
-        программа сама выдерживает паузу. Локальный (Ollama) — приватно и без
-        лимитов, но медленно; остаётся запасным. Запасной провайдер подхватит,
-        если основной недоступен.</div>
+        target="_blank">dashboard.cohere.com/api-keys</a> → поле «API-ключ» ниже).
+        Запасной провайдер подхватит, если основной недоступен.</div>
+      <div class="hint" id="ai-cur-health" style="margin-top:6px"></div>
       <div class="fgrid" style="margin-top:8px">
         <div class="fld"><label>Провайдер</label>
           <select id="ai-prov" onchange="onProvChange()"></select></div>
@@ -693,11 +715,18 @@ header button.fb:hover{background:rgba(255,255,255,.12)}
         <span class="hint" id="ai-auto-note"></span></div>
       </div>
       <div class="row" style="margin-top:8px">
-        <button class="b" onclick="aiSave()">Сохранить выбор</button>
+        <button class="b" onclick="aiSave()">Применить и сохранить</button>
         <button class="b sec" onclick="aiTest()">Проверить ответом</button>
         <button class="b sec" onclick="aiSetup()">Автонастройка</button>
         <span class="spin" id="sp-ai">…</span>
         <span class="hint" id="ai-key-note"></span>
+      </div>
+      <div class="row">
+        <button class="b sec" onclick="aiAutopick(this, $('ai-recheck').checked)"
+          title="взять итоги последней проверки моделей (или проверить заново) и применить лучшую рабочую">
+          Автовыбор по результатам проверки</button>
+        <label class="hint"><input type="checkbox" id="ai-recheck"> проверить заново (до 2 мин)</label>
+        <span class="spin" id="sp-ai-pick">выбираю модель…</span>
       </div>
       <pre class="out" id="out-ai" style="display:none"></pre>
     </div>
@@ -5001,8 +5030,45 @@ async function loadAiPanel(){
         ? "выбор закреплён вручную — автопроверка при запуске его не меняет"
         : "при запуске программа сама проверит модели и применит лучшую";
     }
+    // состояние текущей модели по последней проверке (ai_config.current_health)
+    if ($("ai-cur-health")){
+      const hz = AICONF.current_health || {};
+      const by = AICONF.picked_by === "health" ? " (выбрана автоматически)"
+               : AICONF.picked_by === "user" ? " (выбрана вручную)" : "";
+      const state = !("ok" in hz) ? "не проверялась"
+        : hz.ok ? "работает" + (hz.sec ? `, ${hz.sec} с` : "")
+        : "не отвечает" + (hz.reason ? ": " + hz.reason : "");
+      const when = hz.checked ? " · проверено " + new Date(hz.checked*1000).toLocaleString("ru-RU") : "";
+      $("ai-cur-health").textContent = AICONF.provider
+        ? `Сейчас применена: ${AICONF.provider}/${AICONF.model}${by} — по последней проверке: ${state}${when}`
+        : "ИИ не настроен";
+    }
     onProvChange(AICONF.model);
   }catch(e){ show("out-ai", "Ошибка: " + errText(e)); }
+}
+// «Автовыбор по результатам проверки» (плашка при запуске и панель «Выбор ИИ»):
+// ai_autopick берёт свежие итоги проверки моделей (recheck — опрашивает заново,
+// до 2 мин), применяет лучшую и возвращает подтверждение той же формы, что
+// meta.startup.ai. После — перечитать meta (шапка) и панель, чтобы везде была одна модель.
+async function aiAutopick(btn, recheck){
+  const label = btn ? btn.textContent : "";
+  if (btn){ btn.disabled = true; btn.textContent = recheck ? "проверяю модели… (до 2 мин)" : "выбираю…"; }
+  if ($("sp-ai-pick")) spin("sp-ai-pick", 1);
+  try{
+    const j = await post("ai_autopick", {recheck: !!recheck}, 0);
+    if (META){ META.startup = META.startup || {}; META.startup.ai = j; }
+    const good = j.applied && j.works;
+    notify((good ? "✓ " : "⚠ ") + (j.text || `применено: ${j.provider}/${j.model}`), good ? "ok" : "warn", 9000);
+    await refreshMeta();
+    if (AICONF) await loadAiPanel();
+  }catch(e){ notify("Автовыбор не выполнен: " + errText(e), "err", 9000); }
+  if ($("sp-ai-pick")) spin("sp-ai-pick", 0);
+  if (btn){ btn.disabled = false; btn.textContent = label; }
+}
+// кнопка «Выбор ИИ» в плашке: Сервис → прокрутка к панели
+function gotoAiPanel(){
+  showTab("svc");
+  setTimeout(()=>{ const p = $("ai-panel"); if (p) p.scrollIntoView({behavior:"smooth", block:"start"}); }, 60);
 }
 function onProvChange(presetModel){
   if(!AICONF) return;
@@ -5047,8 +5113,14 @@ async function aiSave(){
     if(key){ body.key = key; body.shared = $("ai-key-shared").checked; }
     const j = await post("ai_save", body, 0);
     show("out-ai", "Сохранено:\n" + j.text); $("ai-key").value="";
-    refreshMeta(); loadAiPanel();
-  }catch(e){ show("out-ai", "Ошибка: " + errText(e)); } spin("sp-ai",0);
+    const shown = body.model || "(модель по умолчанию)";
+    notify(`применено: ${body.provider}/${shown} (вручную` +
+      (body.auto_pick ? ", до следующего запуска — при запуске выбор автоматический, если стоит галочка)"
+                      : "; выбор закреплён — автопроверка при запуске его не меняет)"), "ok", 9000);
+    // ai_config не перевыбирает модель — панель покажет именно сохранённое
+    await refreshMeta(); await loadAiPanel();
+  }catch(e){ show("out-ai", "Ошибка: " + errText(e)); notify("Не сохранено: " + errText(e), "err"); }
+  spin("sp-ai",0);
 }
 async function aiSetup(){ spin("sp-ai",1);
   try{ const j = await post("ai_setup", {}, 0); show("out-ai", j.text); refreshMeta(); loadAiPanel(); }
@@ -5360,25 +5432,139 @@ async function doCleanup(){
 }
 
 // ── старт ──
-function showStartupNotes(st){
+// Плашка «Проверка при запуске» вверху главной области (замечание эколога 09.09:
+// итог выбора ИИ и проверки форм/ставок/источников — сразу на экране, не в Сервисе).
+// meta.startup: ai {text,provider,model,applied,works,pinned,working,total,best,at}
+// (или строка при сбое), sources {changed,errors,same,new,summary,text,checked_at,auto},
+// rates {text,newer,latest_act,our_act,url}, models {text}, fkko (строка), forms [строки].
+// Плашка не исчезает сама: «Прочитал, скрыть» прячет до следующего запуска сервера
+// (ключ = ai.at + sources.checked_at в sessionStorage); новые данные — показать снова.
+const STARTUP_HIDE_KEY = "ecodoc.startup.hidden";
+function startupKey(st){
+  const ai = (st && typeof st.ai === "object" && st.ai) || {};
+  const src = (st && st.sources) || {};
+  return (ai.at || (typeof (st||{}).ai === "string" ? st.ai : "")) + "|" + (src.checked_at || src.summary || "");
+}
+function startupDone(st){ return !!(st && st.ai && st.sources); }
+function startupHidden(key){
+  try{ return !!key && sessionStorage.getItem(STARTUP_HIDE_KEY) === key; }catch(_){ return false; }
+}
+function startupHide(){
+  try{ sessionStorage.setItem(STARTUP_HIDE_KEY, startupKey(META && META.startup)); }catch(_){}
+  const box = $("startup-box"); if (box) box.hidden = true;
+}
+function renderStartupBox(st){
+  const box = $("startup-box"); if (!box) return;
+  st = st || {};
   renderRatesCard(st);            // Сервис → «Ставки платы» (meta.startup.rates)
-  // плашка «что нашла проверка при запуске»: свежий ФККО, новые/пропавшие бланки
-  if (!st || (!st.fkko && !(st.forms||[]).length)) return;
-  let box = $("startup-notes");
-  if (!box){
-    box = document.createElement("div");
-    box.id = "startup-notes"; box.className = "dsec";
-    box.style.cssText = "margin:0 0 10px;padding:8px 12px;background:#fff7e0;"+
-      "border:1px solid #e5c862;border-radius:8px;font-size:13px";
-    const main = document.querySelector("main");
-    main.insertBefore(box, main.firstChild);
+  const done = startupDone(st);
+  if (done && startupHidden(startupKey(st))){ box.hidden = true; return; }
+  box.hidden = false;
+  const h = [];
+  let tone = "";                   // ok / bad / "" (жёлтая — ждём или есть замечания)
+  const waiting = [];
+  if (!st.ai) waiting.push("модели ИИ");
+  if (!st.sources) waiting.push("формы и источники");
+  if (!st.rates) waiting.push("ставки");
+  h.push(`<div class="head"><b>Проверка при запуске</b>` +
+    (waiting.length ? `<span class="hint"><span class="spinner"></span>${esc(waiting.join(", "))}… (идёт)</span>` : "") +
+    `<span class="sp"></span>` +
+    (done ? `<button class="b sec sm" onclick="startupHide()" title="спрятать до следующего запуска программы">Прочитал, скрыть</button>` : "") +
+    `</div>`);
+  // ── ИИ ──
+  const ai = st.ai;
+  if (typeof ai === "string"){
+    h.push(`<h4>ИИ</h4><div class="issue error">⚠ ${esc(ai)}</div>`);
+    tone = "bad";
+  } else if (ai){
+    const good = !!(ai.applied && ai.works);
+    if (!good) tone = "bad";
+    h.push(`<h4>ИИ</h4>`);
+    h.push(`<div><span class="big" style="color:${good ? "var(--acc)" : "var(--err)"}">${good ? "✓" : "⚠"} ` +
+      `${esc(ai.provider || "—")}${ai.model ? "/" + esc(ai.model) : ""}</span>` +
+      ` <span class="hint">${ai.pinned ? "закреплена вручную" : "автовыбор"}` +
+      (ai.total != null ? ` · рабочих моделей ${ai.working ?? "?"} из ${ai.total}` : "") +
+      (ai.at ? ` · ${esc(ai.at)}` : "") + `</span></div>`);
+    if (ai.text) h.push(`<div>${esc(ai.text)}</div>`);
+    if ((ai.best || []).length)
+      h.push(`<div class="hint">лучшие по проверке: ${ai.best.map(esc).join(" · ")}</div>`);
+    h.push(`<div class="row"><button class="b sm" onclick="aiAutopick(this,false)">Автовыбор по результатам проверки</button>` +
+      `<button class="b sec sm" onclick="gotoAiPanel()">Выбор ИИ</button></div>`);
   }
-  const lines = [];
-  if (st.fkko) lines.push("✓ " + st.fkko);
-  for (const f of st.forms || []) lines.push("• " + f);
-  box.innerHTML = "<b>Проверка при запуске:</b> " +
-    lines.map(esc).join("<br>") +
-    ` <button class="delrow" style="float:right" onclick="this.parentNode.remove()">✕</button>`;
+  // ── формы и источники ──
+  const s = st.sources;
+  if (s){
+    h.push(`<h4>Формы и источники</h4>`);
+    const ch = s.changed || [];
+    if (ch.length){
+      tone = "bad";
+      h.push(`<div class="alert red"><b>⚠ Обнаружены изменения — сверьте формы перед сдачей!</b><ul>` +
+        ch.map(c => `<li><b>${esc(c.name)}</b>${c.detail ? " — " + esc(c.detail) : ""}` +
+          ((c.forms || []).length ? `<br>затрагивает формы: ${esc(c.forms.join(", "))}` : "") +
+          (c.url ? ` — <a class="link" href="${esc(c.url)}" target="_blank" rel="noopener">проверьте</a>` : "") +
+          `</li>`).join("") + `</ul></div>`);
+    } else if (s.error && !s.summary) {
+      h.push(`<div class="issue error">✖ ${esc(s.error)}</div>`);
+    } else {
+      h.push(`<div>${s.error ? "✖" : "✓"} ${esc(s.summary || "изменений нет")}</div>`);
+    }
+    if ((s.auto || []).length)
+      h.push(`<div><b>Автокоррекция:</b><ul>${s.auto.map(a => `<li>${esc(a)}</li>`).join("")}</ul></div>`);
+    if ((s.errors || []).length)
+      h.push(`<div><b>Недоступно:</b><ul>${s.errors.map(e => `<li>${esc(e.name)}${e.detail ? " — " + esc(e.detail) : ""}</li>`).join("")}</ul></div>`);
+    if ((s.new || []).length)
+      h.push(`<div class="hint">новые источники (снимок создан): ${s.new.map(esc).join(", ")}</div>`);
+    if ((s.same || []).length)
+      h.push(`<details><summary>без изменений (${s.same.length})</summary><div class="hint">${s.same.map(esc).join(", ")}</div></details>`);
+    if (s.text) h.push(`<details><summary>Текст отчёта</summary><pre>${esc(s.text)}</pre></details>`);
+    if (s.checked_at) h.push(`<div class="hint">проверено: ${esc(s.checked_at)}</div>`);
+  }
+  // ── ставки, модели, ФККО, бланки ──
+  const misc = [];
+  const r = st.rates;
+  if (r){
+    const rt = typeof r === "string" ? r
+      : (r.text || (r.error ? "проверка не выполнена (" + r.error + ")"
+         : r.newer ? `найден более новый акт: ${r.latest_act || "?"} (у нас: ${r.our_act || "?"})`
+         : `актуальны (наш акт: ${r.our_act || "?"}${r.latest_act ? ", в интернете: " + r.latest_act : ""})`));
+    misc.push(`<div>${r.newer ? "⚠" : "✓"} Ставки платы: ${esc(rt)}` +
+      (r.url ? ` <a class="link" href="${esc(r.url)}" target="_blank" rel="noopener">источник</a>` : "") +
+      (r.newer ? ` <button class="b sm" onclick="ratesUpdate(this)" title="rates_check → rates_apply">Обновить ставки</button>` : "") +
+      `</div>`);
+  }
+  const m = st.models;
+  if (m) misc.push(`<div>${m.error ? "⚠" : "✓"} Модели OpenRouter: ${esc(typeof m === "string" ? m : (m.text || m.error || ""))}</div>`);
+  if (st.fkko) misc.push(`<div>✓ ${esc(st.fkko)}</div>`);
+  for (const f of st.forms || []) misc.push(`<div>• ${esc(f)}</div>`);
+  if (misc.length) h.push(`<h4>Ставки, справочники, бланки</h4>` + misc.join(""));
+  if (done && !tone && !waiting.length && !(r && r.newer)) tone = "ok";
+  box.className = tone;
+  box.innerHTML = h.join("");
+}
+// шапка: применённая модель + «(авто)»/«(вручную)» по meta.ai.picked_by —
+// обязана совпадать с панелью «Выбор ИИ» (перечитывается после каждого события ИИ)
+function renderAiHeader(ai){
+  ai = ai || {};
+  const by = ai.picked_by === "health" ? " (авто)" : ai.picked_by === "user" ? " (вручную)" : "";
+  $("aibox").textContent = ai.provider
+    ? `ИИ: ${ai.provider}/${ai.model}${by}` : "ИИ: не настроен (Сервис → Найти ИИ)";
+  $("aibox").title = ai.picked_by === "health" ? "выбрана автоматически по проверке моделей"
+    : ai.picked_by === "user" ? "выбрана вручную (Сервис → Выбор ИИ)" : "";
+}
+// опрос meta каждые 4 с до 3 минут после загрузки, пока не придут итоги
+// фоновых проверок (ИИ 10–90 с, источники/ставки/модели — обслуживание)
+const STARTUP_POLL_T0 = Date.now();
+async function pollStartup(){
+  if (Date.now() - STARTUP_POLL_T0 > 180000) return;
+  let complete = false;
+  try{
+    const mm = await get("meta", {});
+    if (META){ META.startup = mm.startup; META.ai = mm.ai; }
+    const st = mm.startup || {};
+    renderStartupBox(st); renderAiHeader(mm.ai);
+    complete = !!(st.ai && st.sources && st.rates && st.models);
+  }catch(_){}
+  if (!complete) setTimeout(pollStartup, 4000);
 }
 // страница устарела: сервер подставил свою версию в <meta name="ecodoc-version">,
 // API отдаёт meta.version — расходятся, значит браузер держит старый HTML/JS
@@ -5404,9 +5590,8 @@ async function refreshMeta(){
   META = await get("meta", {});
   $("ver").textContent = "v" + META.version;
   checkPageVersion(META.version);
-  showStartupNotes(META.startup);
-  $("aibox").textContent = META.ai.provider
-    ? `ИИ: ${META.ai.provider}/${META.ai.model}` : "ИИ: не настроен (Сервис → Найти ИИ)";
+  renderStartupBox(META.startup);
+  renderAiHeader(META.ai);
   const shared = /onedrive/i.test(META.workspace);
   $("wsroot").textContent = "База данных: " + META.workspace +
     (shared ? "  ☁ общая (OneDrive) — доступна со всех ваших компьютеров; "+
@@ -5423,8 +5608,9 @@ async function refreshMeta(){
 $("calyear").value = new Date().getFullYear();
 get("reference", {}).then(r=>{ REF=r; buildDatalists(); }).catch(()=>{});
 refreshMeta().then(loadTree).catch(e => $("selinfo").textContent = "Ошибка: " + e.message);
-// фоновая проверка форм на старте занимает пару секунд — доспросим её итог
-setTimeout(()=>get("meta",{}).then(m=>showStartupNotes(m.startup)).catch(()=>{}), 5000);
+// фоновые проверки старта (ИИ, источники, ставки, модели) приходят через 10–90 с —
+// доспрашиваем meta каждые 4 с до 3 минут (плашка + шапка)
+setTimeout(pollStartup, 4000);
 </script>
 </body>
 </html>

@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 import ssl
+import urllib.parse
 import urllib.request
 from datetime import date
 from pathlib import Path
@@ -40,8 +41,11 @@ def _fetch_text(url: str, timeout: int = 20,
             raw = r.read()
     except urllib.error.URLError as e:
         # госсайты РФ с сертификатами Минцифры: без проверки сертификата —
-        # только если источник явно помечен "allow_insecure": true
-        if not allow_insecure or "SSL" not in str(e):
+        # если источник помечен "allow_insecure" или это домен gov.ru/gov.spb.ru
+        # (замечание 09.09: Росстат падал с CERTIFICATE_VERIFY_FAILED)
+        host = urllib.parse.urlparse(url).netloc.lower()
+        gov = host.endswith((".gov.ru", "gov.spb.ru", ".lenobl.ru", "rosstat.gov.ru"))
+        if "SSL" not in str(e) or not (allow_insecure or gov):
             raise
         ctx = ssl._create_unverified_context()
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as r:
@@ -111,6 +115,61 @@ def check_xsd_dir(xsd_dir: Path) -> list[str]:
     reg_file.write_text(json.dumps(cur, ensure_ascii=False, indent=2),
                         encoding="utf-8")
     return changes
+
+
+def _friendly(detail: str) -> str:
+    d = str(detail or "")
+    if "502" in d or "503" in d or "504" in d:
+        return "сайт временно недоступен (" + d.split(":")[-1].strip()[:40] + ") — проверим при следующем запуске"
+    if "CERTIFICATE_VERIFY_FAILED" in d:
+        return "сертификат сайта не проверяется (госсайт) — прочитан без проверки"
+    if "timed out" in d:
+        return "сайт не ответил вовремя — проверим при следующем запуске"
+    return d
+
+
+def run_check_struct(xsd_dir: str | None = None) -> dict:
+    """То же, что run_check, но структурой для плашки на экране:
+    {changed:[{id,name,forms,url,detail}], errors:[{id,name,detail}],
+     same:[name], new:[name], summary, text, checked_at}."""
+    from datetime import datetime
+    res = {"changed": [], "errors": [], "same": [], "new": []}
+    for src in load_sources():
+        r = check_source(src)
+        item = {"id": src.get("id", ""), "name": r["name"], "url": src.get("url", ""),
+                "forms": list(src.get("forms", [])), "detail": _friendly(r.get("detail", ""))}
+        if r["status"] == "changed":
+            res["changed"].append(item)
+        elif r["status"] == "error":
+            res["errors"].append(item)
+        elif r["status"] == "new":
+            res["new"].append(r["name"])
+        else:
+            res["same"].append(r["name"])
+    n_ch, n_err = len(res["changed"]), len(res["errors"])
+    res["summary"] = (f"изменилось: {n_ch}" if n_ch else "изменений нет") + \
+        (f"; недоступно: {n_err}" if n_err else "") + \
+        f"; без изменений: {len(res['same'])}"
+    res["text"] = run_check_text(res)
+    res["checked_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    return res
+
+
+def run_check_text(res: dict) -> str:
+    lines = ["── Проверка изменений форм и источников ──"]
+    for c in res.get("changed") or []:
+        lines.append(f"  ⚠ ИЗМЕНИЛОСЬ     {c['name']}" + (f" — {c['detail']}" if c.get("detail") else ""))
+        if c.get("forms"):
+            lines.append(f"      затрагивает формы: {', '.join(c['forms'])}")
+        lines.append(f"      проверьте: {c.get('url', '')}")
+    for e in res.get("errors") or []:
+        lines.append(f"  ✖                {e['name']} — {e.get('detail', '')}")
+    for n in res.get("same") or []:
+        lines.append(f"  =                {n}")
+    lines.append("")
+    lines.append("⚠ Обнаружены изменения — сверьте формы перед сдачей!"
+                 if res.get("changed") else "Изменений не обнаружено.")
+    return "\n".join(lines)
 
 
 def run_check(xsd_dir: str | None = None) -> str:

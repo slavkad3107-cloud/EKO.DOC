@@ -58,7 +58,11 @@ def api_meta(params, body):
             "results": str(workspace.results_root()),
             "startup": dict(STARTUP_NOTES),
             "ai": {"provider": cfg.provider, "model": cfg.model,
-                   "fallbacks": cfg.fallbacks}}
+                   "fallbacks": cfg.fallbacks,
+                   "picked_by": (cfg.detected or {}).get("picked_by", "")
+                   if isinstance(cfg.detected, dict) else "",
+                   "auto_pick": (cfg.detected or {}).get("auto_pick", True) is not False
+                   if isinstance(cfg.detected, dict) else True}}
 
 
 def api_orgs(params, body):
@@ -281,6 +285,29 @@ def api_models_refresh(params, body):
     res = detect.refresh_openrouter_models(timeout=int(body.get("timeout") or 15))
     STARTUP_NOTES["models"] = res
     return res
+
+
+def api_ai_autopick(params, body):
+    """Кнопка «Автовыбор по результатам проверки»: взять свежие результаты
+    (или проверить заново), применить лучшую и подтвердить."""
+    from ecodoc.ai import health
+    from ecodoc.ai import registry as _reg
+    from ecodoc.ai.config import load_config, save_config
+    results = health.fresh() if not body.get("recheck") else []
+    if not results:
+        results = health.check_all(_reg.all_specs())
+    cfg = health.apply_best(results)
+    working = health.ranked_working(results)
+    note = _ai_note(cfg, results, f"выбрана оптимальная: {cfg.provider}/{cfg.model} "
+                    f"(рабочих моделей {len(working)} из {len(results)})", False)
+    STARTUP_NOTES["ai"] = note
+    # автовыбор по кнопке — снова «авто» (галочку не трогаем)
+    c2 = load_config()
+    det = c2.detected if isinstance(c2.detected, dict) else {}
+    det["picked_by"] = "health"
+    c2.detected = det
+    save_config(c2)
+    return note
 
 
 def api_intake_forget(params, body):
@@ -1206,10 +1233,13 @@ def api_ai_setup(params, body):
 def api_ai_config(params, body):
     """Всё для панели выбора ИИ: провайдеры, модели, наличие ключей, текущий выбор."""
     from ecodoc.ai import detect
-    from ecodoc.ai.config import has_key
-    # заодно приводим конфиг к рабочему виду: не настроен — настроить,
-    # локальный при наличии бесплатного ключа — перевести на облако (1 раз)
-    cfg = detect.ensure_configured()
+    from ecodoc.ai.config import has_key, load_config
+    # панель только ПОКАЗЫВАЕТ конфиг: раньше здесь звался ensure_configured,
+    # который заново выбирал «лучшую» модель и молча затирал ручной выбор
+    # (замечание 09.09: «сохранить выбор возвращает модель, выбранную автоматом»)
+    cfg = load_config()
+    if not cfg.provider:
+        cfg = detect.ensure_configured()
     providers = []
     for pid in detect.PROVIDER_LABEL:
         local = pid in ("ollama", "lmstudio")
@@ -1222,6 +1252,7 @@ def api_ai_config(params, body):
     return {"provider": cfg.provider, "model": cfg.model,
             "auto_pick": det.get("auto_pick", True) is not False,
             "picked_by": det.get("picked_by", ""),
+            "current_health": _model_health(cfg.provider, cfg.model),
             "fallbacks": cfg.fallbacks, "providers": providers,
             "ollama_models": detect._ollama_models(),
             "lmstudio_models": []}
@@ -1808,6 +1839,7 @@ GET_ROUTES = {"meta": api_meta, "orgs": api_orgs,
               "fkko_check": api_fkko_check,
               "forms_registry": api_forms_registry}
 POST_ROUTES = {"intake_forget": api_intake_forget,
+               "ai_autopick": api_ai_autopick,
                "models_refresh": api_models_refresh,
                "oos_status": api_oos_status, "feedback": api_feedback,
                "doc_preview": api_doc_preview,
@@ -1967,8 +1999,8 @@ def _startup_ai_check():
             text = (f"выбрана оптимальная: {cfg.provider}/{cfg.model} "
                     f"(рабочих моделей {len(working)} из {len(results)})"
                     if working else "ни одна модель не ответила — Сервис → Модели ИИ")
-        STARTUP_NOTES["ai"] = text
-        print("ИИ: " + text)
+        STARTUP_NOTES["ai"] = _ai_note(cfg, results, text, pinned)
+        print("ИИ: " + STARTUP_NOTES["ai"]["text"])
     except Exception as e:                      # проверка не должна ломать запуск
         STARTUP_NOTES["ai"] = f"проверка моделей не выполнена ({e})"
         print(f"ИИ: проверка моделей не выполнена ({e})")
@@ -1976,6 +2008,105 @@ def _startup_ai_check():
 
 # что нашла фоновая проверка старта — GUI показывает это плашкой (api_meta)
 STARTUP_NOTES: dict = {}
+
+
+def _model_health(provider: str, model: str) -> dict:
+    """Что известно о модели по последней проверке (кэш health)."""
+    try:
+        from ecodoc.ai import health
+        checked, items = health.load_cache()
+        for h in items:
+            if h.provider == provider and h.model == model:
+                return {"ok": bool(h.ok), "sec": h.sec, "reason": h.reason or h.error[:120],
+                        "checked": checked}
+    except Exception:
+        pass
+    return {}
+
+
+def _ai_note(cfg, results, text: str, pinned: bool) -> dict:
+    """Итог автовыбора с ПОДТВЕРЖДЕНИЕМ: перечитать настройки с диска и
+    убедиться, что применена именно эта модель и что по проверке она
+    работает (требование 09.09: «перепроверка, действительно ли выбрана»)."""
+    from datetime import datetime
+    from ecodoc.ai import health
+    from ecodoc.ai.config import load_config
+    saved = load_config()
+    applied = (saved.provider, saved.model) == (cfg.provider, cfg.model)
+    hz = next((h for h in results if h.provider == cfg.provider and h.model == cfg.model), None)
+    works = bool(hz and hz.ok)
+    working = health.ranked_working(results)
+    verdict = ("подтверждено: настройки перечитаны, модель применена и по проверке работает"
+               if applied and works else
+               "⚠ применено, но проверка модели не прошла — смотрите «Сервис → Выбор ИИ»"
+               if applied else "⚠ НЕ применено: в настройках другая модель — нажмите «Автовыбор»")
+    return {"text": text + " — " + verdict, "provider": cfg.provider, "model": cfg.model,
+            "applied": applied, "works": works, "pinned": pinned,
+            "working": len(working), "total": len(results),
+            "best": [f"{h.provider}/{h.model} ({h.sec} с)" for h in working[:5]],
+            "at": datetime.now().strftime("%H:%M:%S")}
+
+
+
+
+def _auto_correct(sources: dict) -> list[str]:
+    """Автокоррекция по итогам проверки источников (требование 09.09):
+    ставки — подтянуть новый акт, если он машиночитаем; формы — редакции
+    выбираются по дате из реестра НПА; ФККО — из папки «Формы»."""
+    out: list[str] = []
+    changed = {c.get("id", ""): c for c in sources.get("changed") or []}
+    if any("став" in (c.get("name") or "").lower() for c in changed.values()):
+        try:
+            from ecodoc.core import rates_update
+            res = rates_update.check_online(timeout=10)
+            STARTUP_NOTES["rates"] = res
+            if res.get("newer") and res.get("url"):
+                try:
+                    ap = rates_update.apply(res["url"])
+                    out.append("ставки платы: найден новый акт, справочник обновлён автоматически"
+                               + (f" ({ap.get('updated')} значений)" if isinstance(ap, dict) else ""))
+                except Exception as e:
+                    out.append(f"ставки платы: новый акт найден ({res.get('latest_act')}), "
+                               f"автообновление не удалось — нажмите «Обновить ставки» ({str(e)[:80]})")
+            else:
+                out.append("ставки платы: страница изменилась, но акта новее вшитого нет — "
+                           "справочник актуален")
+        except Exception as e:
+            out.append(f"ставки платы: проверка не выполнена ({str(e)[:80]})")
+    if any("фкко" in (c.get("name") or "").lower() for c in changed.values()):
+        try:
+            from ecodoc.core import fkko
+            out.append(f"ФККО: сайт каталога изменился — программа работает по каталогу от "
+                       f"{fkko.updated() or '?'} ({len(fkko.codes())} кодов); положите свежую "
+                       f"выгрузку в папку «Формы» — подхватится при запуске")
+        except Exception:
+            pass
+    forms = sorted({f for c in changed.values() for f in (c.get("forms") or [])})
+    if forms:
+        try:
+            from ecodoc.core import forms_norms
+            for code in forms:
+                cur = forms_norms.current(code) if hasattr(forms_norms, "current") else None
+                if cur:
+                    out.append(f"форма {code}: редакция выбирается по дате автоматически — "
+                               f"сейчас {cur}")
+        except Exception:
+            pass
+    return out
+
+
+def _startup_sources_check():
+    """Проверка изменений форм и источников (watch) — при запуске, в фоне;
+    итог структурой в STARTUP_NOTES['sources'] для плашки на экране."""
+    try:
+        from ecodoc.watch import watcher
+        res = watcher.run_check_struct()
+        res["auto"] = _auto_correct(res)
+        STARTUP_NOTES["sources"] = res
+        print("Источники: " + res.get("summary", ""))
+    except Exception as e:
+        STARTUP_NOTES["sources"] = {"error": str(e)[:200],
+                                    "summary": f"проверка источников не выполнена ({e})"}
 
 
 def _startup_code_check():
@@ -2087,6 +2218,11 @@ def _maintenance_once(first: bool = False) -> dict:
         out["rates"] = (STARTUP_NOTES.get("rates") or {}).get("text")
     except Exception as e:
         out["rates"] = str(e)[:120]
+    try:
+        _startup_sources_check()
+        out["sources"] = (STARTUP_NOTES.get("sources") or {}).get("summary")
+    except Exception as e:
+        out["sources"] = str(e)[:120]
     if not first:
         try:
             from ecodoc.ai import health
