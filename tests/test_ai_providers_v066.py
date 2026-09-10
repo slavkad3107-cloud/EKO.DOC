@@ -210,3 +210,83 @@ def test_key_entered_in_program_beats_env_and_foreign_key_env(monkeypatch, tmp_p
     # сохранённого ключа нет — чужой key_env всё равно не берём, берём свою env
     assert config.api_key(AIConfig(provider="groq", key_env="OPENROUTER_API_KEY")) \
         == "groq-from-env"
+
+
+def _fake_chat_post(seen):
+    def fake_post(url, payload, headers, timeout=300, **kw):
+        seen.update(url=url, payload=payload, auth=headers.get("Authorization"))
+        return {"choices": [{"message": {"content": "работает"}}]}
+    return fake_post
+
+
+def test_zai_disables_thinking(monkeypatch, tmp_path):
+    """У GLM «размышления» включены по умолчанию: 11 с вместо 2,7 с при том же
+    качестве извлечения (замер 10.09.2026) — выключаем."""
+    monkeypatch.setenv("ECODOC_HOME", str(tmp_path))
+    monkeypatch.setenv("ECODOC_WORKSPACE", str(tmp_path / "ws"))
+    config.save_key("zai", "z-key")
+    seen = {}
+    monkeypatch.setattr(providers, "_post", _fake_chat_post(seen))
+    p = providers.get_provider(AIConfig(provider="zai", model="glm-4.7-flash"))
+    assert p.chat("s", "u") == "работает"
+    assert seen["url"] == "https://api.z.ai/api/paas/v4/chat/completions"
+    assert seen["payload"]["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.parametrize("key, saved_acc, expect_acc", [
+    ("acc123:tok", "", "acc123"),        # ключ вида «ID_аккаунта:токен»
+    ("tok", "acc456", "acc456"),         # токен + отдельно сохранённый ID
+])
+def test_cloudflare_builds_account_url(monkeypatch, tmp_path, key, saved_acc, expect_acc):
+    monkeypatch.setenv("ECODOC_HOME", str(tmp_path))
+    monkeypatch.setenv("ECODOC_WORKSPACE", str(tmp_path / "ws"))
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    config.save_key("cloudflare", key)
+    if saved_acc:
+        config.save_key("cloudflare_account", saved_acc)
+    seen = {}
+    monkeypatch.setattr(providers, "_post", _fake_chat_post(seen))
+    p = providers.get_provider(AIConfig(provider="cloudflare", model="@cf/openai/gpt-oss-120b"))
+    assert p.chat("s", "u") == "работает"
+    assert seen["url"] == ("https://api.cloudflare.com/client/v4/accounts/"
+                           f"{expect_acc}/ai/v1/chat/completions")
+    assert seen["auth"] == "Bearer tok"
+
+
+def test_cloudflare_without_account_explains(monkeypatch, tmp_path):
+    monkeypatch.setenv("ECODOC_HOME", str(tmp_path))
+    monkeypatch.setenv("ECODOC_WORKSPACE", str(tmp_path / "ws"))
+    monkeypatch.delenv("CLOUDFLARE_ACCOUNT_ID", raising=False)
+    config.save_key("cloudflare", "tok")
+    p = providers.get_provider(AIConfig(provider="cloudflare", model="@cf/openai/gpt-oss-120b"))
+    with pytest.raises(providers.AIError, match="ID аккаунта"):
+        p.chat("s", "u")
+
+
+def test_zero_rate_limit_means_plan_not_activated(monkeypatch):
+    """Mistral без активированного бесплатного тарифа отвечает обычным 429;
+    отличает его только заголовок «лимит 0 запросов в минуту»."""
+    import io
+    import urllib.error
+
+    def fake_urlopen(req, timeout=None, context=None):
+        raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests",
+                                     {"x-ratelimit-limit-req-minute": "0"},
+                                     io.BytesIO(b'{"message":"Rate limit exceeded"}'))
+
+    monkeypatch.setattr(providers.urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(providers.AIError) as err:
+        providers._post("https://api.mistral.ai/v1/chat/completions", {}, {})
+    assert "не активирован" in health._reason(str(err.value))[1]
+
+
+def test_reason_model_not_in_tier_is_not_bad_key():
+    err = ('HTTP 403: {"object":"error","message":"This model is not available in '
+           'your subscription tier","type":"tier_not_allowed"}')
+    assert health._reason(err)[1] == "модель недоступна на вашем тарифе"
+
+
+def test_reason_cloudflare_token_without_workers_ai_rights():
+    err = ('HTTP 401: {"success":false,"errors":[{"code":10000,'
+           '"message":"Authentication error"}]}')
+    assert "Workers AI" in health._reason(err)[1]

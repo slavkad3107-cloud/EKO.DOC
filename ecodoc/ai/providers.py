@@ -19,7 +19,7 @@ import uuid
 from contextlib import contextmanager
 
 from ecodoc import __version__
-from ecodoc.ai.config import AIConfig, api_key
+from ecodoc.ai.config import AIConfig, _saved_keys, api_key
 from ecodoc.ai.registry import is_ollama_cloud
 
 
@@ -68,8 +68,12 @@ def _post(url: str, payload: dict, headers: dict, timeout: int = 300,
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        raise AIError(f"{_mask(url)}: HTTP {e.code}: "
-                      f"{e.read().decode('utf-8', 'replace')[:500]}")
+        body = e.read().decode("utf-8", "replace")[:500]
+        # у Mistral неактивированный бесплатный тариф выглядит как обычный 429 —
+        # отличает его только заголовок «лимит 0 запросов в минуту»
+        if (e.headers or {}).get("x-ratelimit-limit-req-minute") == "0":
+            body += " [лимит тарифа: 0 запросов/мин]"
+        raise AIError(f"{_mask(url)}: HTTP {e.code}: {body}")
     except urllib.error.URLError as e:
         raise AIError(f"{_mask(url)}: недоступен ({e.reason})")
     except OSError as e:  # таймауты, обрывы соединения
@@ -163,18 +167,25 @@ class OpenAICompatProvider(Provider):
     """OpenAI-совместимый /v1/chat/completions — покрывает большинство API."""
     name = "openai"
     base_url = "https://api.openai.com/v1"
+    extra: dict = {}             # доп. поля запроса у конкретного провайдера
+
+    def _key(self) -> str:
+        return api_key(self.cfg)
+
+    def _base(self) -> str:
+        return (self.cfg.base_url or self.base_url).rstrip("/")
 
     def chat(self, system: str, user: str) -> str:
-        key = api_key(self.cfg)
+        key = self._key()
         if not key and self.name not in ("lmstudio",):
             raise AIError(f"{self.name}: не задан API-ключ "
                           f"(переменная окружения, см. `ecodoc ai setup`)")
-        base = (self.cfg.base_url or self.base_url).rstrip("/")
-        out = _post(f"{base}/chat/completions", {
+        out = _post(f"{self._base()}/chat/completions", {
             "model": self.model,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
             "temperature": 0,
+            **self.extra,
         }, {"Authorization": f"Bearer {key}"} if key else {})
         return out["choices"][0]["message"]["content"]
 
@@ -193,8 +204,43 @@ VseGPTProvider = _compat("vsegpt", "https://api.vsegpt.ru/v1")
 ProxyAPIProvider = _compat("proxyapi", "https://api.proxyapi.ru/openai/v1")
 CerebrasProvider = _compat("cerebras", "https://api.cerebras.ai/v1")
 MoonshotProvider = _compat("moonshot", "https://api.moonshot.ai/v1")
-# Z.ai (Zhipu) GLM: бесплатные glm-4.7-flash / glm-4.5-flash; из РФ без VPN
-ZaiProvider = _compat("zai", "https://api.z.ai/api/paas/v4")
+
+
+class ZaiProvider(OpenAICompatProvider):
+    """Z.ai (Zhipu) GLM: бесплатные glm-4.7-flash / glm-4.5-flash, из РФ без VPN.
+
+    «Размышления» у GLM включены по умолчанию — выключаем: замер 10.09.2026 на
+    извлечении из справки дал 2,7 с вместо 11,4 с при том же результате."""
+    name = "zai"
+    base_url = "https://api.z.ai/api/paas/v4"
+    extra = {"thinking": {"type": "disabled"}}
+
+
+class CloudflareProvider(OpenAICompatProvider):
+    """Cloudflare Workers AI: 10 000 «нейронов» в сутки бесплатно.
+
+    Нужны токен с правами Workers AI и ID аккаунта (он входит в адрес).
+    Ключ — либо «ID_аккаунта:токен», либо только токен, а ID отдельно:
+    сохранённый `cloudflare_account` или переменная CLOUDFLARE_ACCOUNT_ID."""
+    name = "cloudflare"
+
+    def _key(self) -> str:
+        raw = api_key(self.cfg)
+        acc, sep, token = raw.partition(":")
+        if not sep:
+            acc, token = "", raw
+        self._account = (acc or _saved_keys().get("cloudflare_account", "")
+                         or os.environ.get("CLOUDFLARE_ACCOUNT_ID", ""))
+        return token
+
+    def _base(self) -> str:
+        if not getattr(self, "_account", ""):
+            raise AIError("cloudflare: не задан ID аккаунта (ключ вида "
+                          "«ID_аккаунта:токен» или CLOUDFLARE_ACCOUNT_ID)")
+        return ("https://api.cloudflare.com/client/v4/accounts/"
+                f"{self._account}/ai/v1")
+
+
 LMStudioProvider = _compat("lmstudio", "http://localhost:1234/v1")
 
 
@@ -345,7 +391,7 @@ PROVIDERS: dict[str, type] = {p.name: p for p in (
     DeepSeekProvider, GeminiProvider, GroqProvider, MistralProvider,
     XAIProvider, TogetherProvider, VseGPTProvider, ProxyAPIProvider,
     GigaChatProvider, YandexGPTProvider, CohereProvider, CerebrasProvider,
-    MoonshotProvider, OllamaCloudProvider, ZaiProvider,
+    MoonshotProvider, OllamaCloudProvider, ZaiProvider, CloudflareProvider,
 )}
 
 

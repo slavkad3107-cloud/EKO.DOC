@@ -38,6 +38,7 @@ DEFAULT_KEY_ENV = {
     "groq": "GROQ_API_KEY",
     "mistral": "MISTRAL_API_KEY",
     "zai": "ZAI_API_KEY",             # Z.ai GLM: бесплатные flash-модели
+    "cloudflare": "CLOUDFLARE_API_TOKEN",  # + ID аккаунта: CLOUDFLARE_ACCOUNT_ID
     "xai": "XAI_API_KEY",
     "together": "TOGETHER_API_KEY",
     "vsegpt": "VSEGPT_API_KEY",       # российский агрегатор

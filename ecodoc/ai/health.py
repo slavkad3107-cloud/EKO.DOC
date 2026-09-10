@@ -74,6 +74,16 @@ def _reason(err: str) -> tuple[int, str]:
         return code, "срок ключа истёк"
     if code == 402 or "payment required" in low:
         return code, "нужна оплата (бесплатный доступ закрыт)"
+    # Mistral с неактивированным бесплатным тарифом: 429 с лимитом «0 запросов
+    # в минуту» (отметку ставит _post по заголовку) — ждать бесполезно
+    if "лимит тарифа: 0" in low:
+        return code, "бесплатный тариф не активирован (лимит 0 запросов)"
+    # Mistral Large на бесплатном тарифе: 403, но ключ при этом рабочий
+    if "tier_not_allowed" in low or "not available in your subscription" in low:
+        return code, "модель недоступна на вашем тарифе"
+    # Cloudflare: токен действующий, но без прав на Workers AI
+    if "authentication error" in low and "10000" in err:
+        return code, "у токена нет прав Workers AI (Cloudflare)"
     if (code == 429 or "rate limit" in low or "quota" in low
             or "usage limit" in low or "too large" in low):
         return code, "лимит или квота исчерпана"

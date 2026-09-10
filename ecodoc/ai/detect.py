@@ -30,6 +30,7 @@ PROVIDER_LABEL = {
     "openrouter": "OpenRouter (облако, много моделей)",
     "groq": "Groq (облако, бесплатно, очень быстро; только через VPN)",
     "zai": "Z.ai GLM (облако, бесплатно; нужен ключ z.ai)",
+    "cloudflare": "Cloudflare Workers AI (облако, бесплатно ~60 запросов/сутки; токен + ID аккаунта)",
     "gemini": "Google Gemini (облако, бесплатный лимит)",
     "openai": "OpenAI / GPT (облако)",
     "anthropic": "Anthropic / Claude (облако)",
@@ -75,6 +76,8 @@ KNOWN_MODELS = {
     "gigachat": ["GigaChat", "GigaChat-Pro", "GigaChat-Max"],
     "yandexgpt": ["yandexgpt-lite/latest", "yandexgpt/latest"],
     "zai": ["glm-4.7-flash", "glm-4.5-flash", "glm-4.6v-flash"],
+    "cloudflare": ["@cf/openai/gpt-oss-120b", "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+                   "@cf/moonshotai/kimi-k2.7-code", "@cf/openai/gpt-oss-20b"],
     # бесплатные облачные модели тарифа пользователя (ollama.com, 10.09.2026)
     "ollama_cloud": ["gpt-oss:120b-cloud", "gemma4:31b-cloud",
                      "nemotron-3-super:cloud", "nemotron-3-nano:30b-cloud",
@@ -87,7 +90,7 @@ KNOWN_MODELS = {
 # gemini flash ~13 с. Cohere первым: бесплатный ключ без карты и без
 # ограничения по дням (лимит — 20 запросов/мин, обрабатывается ретраем).
 FREE_PREFERENCE = ("mistral", "gemini", "cohere", "groq", "zai", "openrouter",
-                   "cerebras")
+                   "cloudflare", "cerebras")
 
 # дефолтные модели для облачных провайдеров (быстрые и пригодные для
 # извлечения структурных данных из русскоязычных документов)
@@ -109,6 +112,7 @@ CLOUD_DEFAULT_MODEL = {
     "yandexgpt": "yandexgpt-lite/latest",
     "gigachat": "GigaChat",
     "zai": "glm-4.7-flash",
+    "cloudflare": "@cf/openai/gpt-oss-120b",
     "ollama_cloud": "gpt-oss:120b-cloud",
 }
 
