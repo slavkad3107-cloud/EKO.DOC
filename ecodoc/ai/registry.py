@@ -18,6 +18,13 @@ FREE, LOCAL, PAID = "free", "local", "paid"
 _TIER_ORDER = {FREE: 0, LOCAL: 1, PAID: 2}
 
 
+def is_ollama_cloud(model: str) -> bool:
+    """Облачная модель ollama.com (ярлык `…-cloud` или `…:cloud`): считается на
+    сервере, данные уходят в облако — выдавать её за локальную нельзя."""
+    m = (model or "").lower()
+    return m.endswith("-cloud") or m.endswith(":cloud")
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     provider: str
@@ -35,6 +42,11 @@ class ModelSpec:
 
 
 # ── бесплатные облачные (первый эшелон) ──────────────────────────────────────
+_OLLAMA_CLOUD_LIMIT = "1 запрос одновременно, объём сбрасывается раз в неделю"
+_OLLAMA_CLOUD_NOTE = ("облако ollama.com: данные уходят на сервер (обещают не "
+                      "логировать и не обучаться); нужна Ollama, вошедшая в "
+                      "аккаунт ollama.com")
+
 _FREE = [
     ModelSpec("mistral", "mistral-small-latest", FREE,
               "Mistral Small — бесплатный тариф",
@@ -49,14 +61,43 @@ _FREE = [
               "Cohere Command A — бесплатный ключ",
               limit="20 запросов/мин, 1000/мес",
               sec=26.9, score="19/19", note="лимит обрабатывается паузой и повтором"),
-    ModelSpec("groq", "llama-3.3-70b-versatile", FREE,
-              "Groq Llama 3.3 70B — бесплатный лимит",
-              limit="~30 запросов/мин",
-              note="HTTP 403 (Cloudflare 1010) — блокировка региона"),
-    ModelSpec("cerebras", "llama-3.3-70b", FREE,
-              "Cerebras Llama 3.3 70B — бесплатный лимит",
-              limit="~30 запросов/мин, 1 млн токенов/сутки",
-              note="HTTP 403 (Cloudflare 1010) — блокировка региона"),
+    # Ollama Cloud: облачные модели ollama.com через установленную Ollama
+    # (вход в аккаунт — `ollama signin`). Бесплатный тариф пользователя на
+    # 10.09.2026: gemma4:31b, gpt-oss:120b/20b, nemotron-3-nano/super/ultra.
+    # Мини-замер 10.09 (3 поля из справки): все 3/3; gpt-oss:120b 1,0 с,
+    # gemma4 0,7 с, nano 1,9 с, super 11 с, gpt-oss:20b 4,7 с, ultra 62 с.
+    # В автопроверку не включены ultra (медленная, дорогая для недельного
+    # объёма) и gpt-oss:20b (слабее 120b при той же скорости) — они есть в
+    # списке ручного выбора.
+    ModelSpec("ollama_cloud", "gpt-oss:120b-cloud", FREE,
+              "Ollama Cloud GPT-OSS 120B — бесплатный недельный объём",
+              limit=_OLLAMA_CLOUD_LIMIT, note=_OLLAMA_CLOUD_NOTE),
+    ModelSpec("ollama_cloud", "gemma4:31b-cloud", FREE,
+              "Ollama Cloud Gemma 4 31B — бесплатно, самая быстрая",
+              limit=_OLLAMA_CLOUD_LIMIT, note=_OLLAMA_CLOUD_NOTE),
+    # Groq: живые модели на 10.09.2026 — gpt-oss-120b/20b, qwen3.6/3.8-27b
+    # (последние на бесплатном тарифе упираются в лимит токенов); Llama 3.3
+    # у Groq больше нет. Лимиты — из заголовков ответа Groq.
+    ModelSpec("groq", "openai/gpt-oss-120b", FREE,
+              "Groq GPT-OSS 120B — бесплатный лимит, очень быстро",
+              limit="1000 запросов/сутки, 8000 токенов/мин",
+              note="8000 токенов/мин — примерно один кусок документа (14 тыс. "
+                   "символов) в минуту; работает только через VPN (из РФ — 403)"),
+    ModelSpec("ollama_cloud", "nemotron-3-super:cloud", FREE,
+              "Ollama Cloud Nemotron 3 Super — бесплатный недельный объём",
+              limit=_OLLAMA_CLOUD_LIMIT, note=_OLLAMA_CLOUD_NOTE),
+    ModelSpec("ollama_cloud", "nemotron-3-nano:30b-cloud", FREE,
+              "Ollama Cloud Nemotron 3 Nano 30B — бесплатный недельный объём",
+              limit=_OLLAMA_CLOUD_LIMIT, note=_OLLAMA_CLOUD_NOTE),
+    ModelSpec("zai", "glm-4.7-flash", FREE,
+              "Z.ai GLM-4.7-Flash — бесплатная модель",
+              limit="1 запрос одновременно",
+              note="нужен ключ z.ai (без карты); из РФ доступен без VPN; "
+                   "условия коммерческого использования явно не прописаны"),
+    ModelSpec("cerebras", "gpt-oss-120b", FREE,
+              "Cerebras GPT-OSS 120B",
+              note="10.09.2026: HTTP 402 «Payment required» — бесплатный "
+                   "доступ закрыт, нужна оплата в кабинете Cerebras"),
     # список пользователя (08.09.2026): бесплатные Nemotron и Gemma 4 (vision)
     ModelSpec("openrouter", "nvidia/nemotron-3-ultra-550b-a55b:free", FREE,
               "OpenRouter Nemotron 3 Ultra 550B — бесплатная",

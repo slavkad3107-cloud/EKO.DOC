@@ -5017,7 +5017,7 @@ async function loadAiPanel(){
     AICONF = await get("ai_config", {});
     const prov = $("ai-prov"), fb = $("ai-fb");
     prov.innerHTML = AICONF.providers.map(p=>{
-      const mark = p.local ? "" : (p.has_key ? " ✓ключ" : " (нет ключа)");
+      const mark = (p.local || p.keyless) ? "" : (p.has_key ? " ✓ключ" : " (нет ключа)");
       return `<option value="${p.id}"${p.id===AICONF.provider?" selected":""}>${esc(p.label)}${mark}</option>`;
     }).join("");
     fb.innerHTML = `<option value="">— без запасного —</option>` +
@@ -5091,8 +5091,10 @@ function onProvChange(presetModel){
   }
   rb.style.display = (pid === "openrouter") ? "" : "none";
   // поле ключа — только для облачных без ключа
-  $("ai-key-box").style.display = (!p.local && !p.has_key) ? "flex" : "none";
+  const keyless = p.local || p.keyless;
+  $("ai-key-box").style.display = (!keyless && !p.has_key) ? "flex" : "none";
   $("ai-key-note").textContent = p.local ? "локально — ключ не нужен" :
+    p.keyless ? "облако через Ollama — ключ не нужен (Ollama должна войти в аккаунт ollama.com)" :
     (p.has_key ? "ключ найден" : "нужен API-ключ");
 }
 $("ai-model") && $("ai-model").addEventListener("change", e=>{

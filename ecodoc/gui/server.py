@@ -1243,9 +1243,12 @@ def api_ai_config(params, body):
     providers = []
     for pid in detect.PROVIDER_LABEL:
         local = pid in ("ollama", "lmstudio")
+        # облако Ollama: ключ не нужен — в аккаунт ollama.com входит сама Ollama
+        keyless = local or pid == "ollama_cloud"
         providers.append({
             "id": pid, "label": detect.PROVIDER_LABEL[pid],
-            "local": local, "has_key": True if local else has_key(pid),
+            "local": local, "keyless": keyless,
+            "has_key": True if keyless else has_key(pid),
             "models": detect.known_models(pid),
             "default": detect.CLOUD_DEFAULT_MODEL.get(pid, "")})
     det = cfg.detected if isinstance(cfg.detected, dict) else {}

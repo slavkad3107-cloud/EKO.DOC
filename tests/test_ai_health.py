@@ -31,10 +31,11 @@ def test_ranked_order_free_then_local_then_paid():
 
 
 def test_reason_recognises_region_block_not_bad_key():
-    """403 с телом Cloudflare 1010 и «location is not supported» — это регион,
-    а не «ключ не действует» (иначе пользователь зря меняет ключ)."""
+    """«location is not supported» — это регион, а не «ключ не действует»
+    (иначе пользователь зря меняет ключ). Cloudflare 1010 — НЕ регион, а
+    подпись клиента: см. test_ai_providers_v066."""
     code, why = health._reason("https://api.groq.com/...: HTTP 403: error code: 1010")
-    assert code == 403 and "регион" in why
+    assert code == 403 and "регион" not in why and "1010" in why
     code, why = health._reason('HTTP 400: {"message": "User location is not '
                                'supported for the API use."}')
     assert "регион" in why and "VPN" in why
@@ -55,7 +56,7 @@ def test_pick_best_prefers_free_over_local_and_paid(monkeypatch, tmp_path):
         ("deepseek", "deepseek-chat", PAID, True, 1.0),      # платный и быстрый
         ("ollama", "qwen2.5:7b", LOCAL, True, 20.0),
         ("mistral", "mistral-small-latest", FREE, True, 9.0),
-        ("groq", "llama-3.3-70b-versatile", FREE, False, 0.5),
+        ("groq", "openai/gpt-oss-120b", FREE, False, 0.5),
     ])
     cfg, _ = health.pick_best(results)
     assert (cfg.provider, cfg.model) == ("mistral", "mistral-small-latest")

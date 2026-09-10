@@ -2,19 +2,25 @@
 
 Контракт один: Provider.chat(system, user) -> str (текст ответа).
 Локальные: ollama, lmstudio (и любой OpenAI-совместимый сервер через base_url).
+Облако через локальную Ollama: ollama_cloud (модели ollama.com).
 Внешние: anthropic, openai, openrouter, deepseek, gemini, groq, mistral,
-xai, together, vsegpt, proxyapi, gigachat, yandexgpt.
+xai, together, vsegpt, proxyapi, gigachat, yandexgpt, cohere, cerebras,
+moonshot, zai.
 """
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import ssl
 import time
 import urllib.request
 import uuid
+from contextlib import contextmanager
 
+from ecodoc import __version__
 from ecodoc.ai.config import AIConfig, api_key
+from ecodoc.ai.registry import is_ollama_cloud
 
 
 class AIError(RuntimeError):
@@ -26,11 +32,37 @@ def _mask(url: str) -> str:
     return url.split("?", 1)[0]
 
 
+# Groq и Cerebras стоят за Cloudflare, который отбивает подпись urllib по
+# умолчанию («Python-urllib/3.x») ошибкой 403 «error code: 1010». Это бан по
+# подписи клиента, а не по стране: 10.09.2026 тот же запрос по тому же каналу
+# с этой подписью давал 403, со своей — 200. Поэтому подпись ставим всегда.
+USER_AGENT = f"EcoDoc/{__version__}"
+
+# потолок ожидания ответа для текущего потока: проверка моделей при запуске
+# не должна висеть по 5 минут на одной медленной модели
+_TIMEOUT_CAP: contextvars.ContextVar = contextvars.ContextVar(
+    "ecodoc_ai_timeout_cap", default=None)
+
+
+@contextmanager
+def timeout_cap(seconds: float):
+    """Ограничить ожидание каждого запроса к ИИ в этом потоке."""
+    token = _TIMEOUT_CAP.set(seconds)
+    try:
+        yield
+    finally:
+        _TIMEOUT_CAP.reset(token)
+
+
 def _post(url: str, payload: dict, headers: dict, timeout: int = 300,
           insecure: bool = False, ssl_ctx: ssl.SSLContext | None = None) -> dict:
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", **headers}, method="POST")
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT,
+                 **headers}, method="POST")
+    cap = _TIMEOUT_CAP.get()
+    if cap:
+        timeout = min(timeout, cap)
     ctx = ssl_ctx or (ssl._create_unverified_context() if insecure else None)
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
@@ -60,6 +92,7 @@ class Provider:
 class OllamaProvider(Provider):
     name = "ollama"
     default_url = "http://localhost:11434"
+    cloud = False            # облачные ярлыки (…-cloud) — у OllamaCloudProvider
 
     @property
     def base(self) -> str:
@@ -81,9 +114,49 @@ class OllamaProvider(Provider):
         try:
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
-            return [m["name"] for m in data.get("models", [])]
         except Exception:
             return []
+        # облачные ярлыки лежат в том же списке Ollama, но они НЕ локальные
+        return [m["name"] for m in data.get("models", [])
+                if is_ollama_cloud(m["name"]) == self.cloud]
+
+
+class OllamaCloudProvider(OllamaProvider):
+    """Облачные модели ollama.com через установленную Ollama.
+
+    Ollama, вошедшая в аккаунт ollama.com (`ollama signin`), отдаёт облачные
+    модели (`gpt-oss:120b-cloud`, `nemotron-3-super:cloud` …) тем же /api/chat,
+    что и локальные, но считаются они на сервере ollama.com — поэтому это
+    отдельный провайдер, а не «Ollama (локально, приватно)»: данные уходят в
+    облако. Чтобы модель заработала, её ярлык надо один раз скачать (это
+    килобайты) — делаем сами, если Ollama ответила «модель не найдена».
+    """
+    name = "ollama_cloud"
+    cloud = True
+
+    def _pull(self) -> None:
+        _post(f"{self.base}/api/pull", {"model": self.model, "stream": False},
+              {}, timeout=120)
+
+    def chat(self, system: str, user: str) -> str:
+        try:
+            return super().chat(system, user)
+        except AIError as e:
+            if "HTTP 404" not in str(e):
+                raise self._explain(e)
+        try:                                    # ярлыка нет — скачать и повторить
+            self._pull()
+            return super().chat(system, user)
+        except AIError as e:
+            raise self._explain(e)
+
+    @staticmethod
+    def _explain(e: AIError) -> AIError:
+        low = str(e).lower()
+        if any(w in low for w in ("http 401", "unauthorized", "sign in", "signin")):
+            return AIError("ollama_cloud: Ollama на этом компьютере не вошла в "
+                           f"аккаунт ollama.com — выполните «ollama signin» ({e})")
+        return e
 
 
 class OpenAICompatProvider(Provider):
@@ -120,6 +193,8 @@ VseGPTProvider = _compat("vsegpt", "https://api.vsegpt.ru/v1")
 ProxyAPIProvider = _compat("proxyapi", "https://api.proxyapi.ru/openai/v1")
 CerebrasProvider = _compat("cerebras", "https://api.cerebras.ai/v1")
 MoonshotProvider = _compat("moonshot", "https://api.moonshot.ai/v1")
+# Z.ai (Zhipu) GLM: бесплатные glm-4.7-flash / glm-4.5-flash; из РФ без VPN
+ZaiProvider = _compat("zai", "https://api.z.ai/api/paas/v4")
 LMStudioProvider = _compat("lmstudio", "http://localhost:1234/v1")
 
 
@@ -192,6 +267,7 @@ class GigaChatProvider(Provider):
             data=b"scope=GIGACHAT_API_PERS",
             headers={"Authorization": f"Basic {auth}",
                      "RqUID": str(uuid.uuid4()),
+                     "User-Agent": USER_AGENT,
                      "Content-Type": "application/x-www-form-urlencoded"},
             method="POST")
         try:
@@ -269,7 +345,7 @@ PROVIDERS: dict[str, type] = {p.name: p for p in (
     DeepSeekProvider, GeminiProvider, GroqProvider, MistralProvider,
     XAIProvider, TogetherProvider, VseGPTProvider, ProxyAPIProvider,
     GigaChatProvider, YandexGPTProvider, CohereProvider, CerebrasProvider,
-    MoonshotProvider,
+    MoonshotProvider, OllamaCloudProvider, ZaiProvider,
 )}
 
 

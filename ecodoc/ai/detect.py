@@ -12,6 +12,7 @@ import shutil
 import urllib.request
 
 from ecodoc.ai.config import AIConfig, DEFAULT_KEY_ENV, save_config
+from ecodoc.ai.registry import is_ollama_cloud
 
 # порядок предпочтения локальных моделей для извлечения структурированных
 # данных из русскоязычных документов (по убыванию качества на этой задаче)
@@ -23,11 +24,12 @@ _EMBED_MARKERS = ("bge", "embed", "nomic", "mxbai", "e5")
 PROVIDER_LABEL = {
     "mistral": "Mistral (облако, БЕСПЛАТНЫЙ тариф — лучший по замеру)",
     "cohere": "Cohere (облако, бесплатный ключ)",
-    "cerebras": "Cerebras (облако, бесплатный тариф, очень быстро)",
+    "cerebras": "Cerebras (облако; бесплатный доступ закрыт — нужна оплата)",
     "moonshot": "Moonshot / Kimi (облако)",
     "deepseek": "DeepSeek (облако, быстро)",
     "openrouter": "OpenRouter (облако, много моделей)",
-    "groq": "Groq (облако, очень быстро)",
+    "groq": "Groq (облако, бесплатно, очень быстро; только через VPN)",
+    "zai": "Z.ai GLM (облако, бесплатно; нужен ключ z.ai)",
     "gemini": "Google Gemini (облако, бесплатный лимит)",
     "openai": "OpenAI / GPT (облако)",
     "anthropic": "Anthropic / Claude (облако)",
@@ -37,6 +39,7 @@ PROVIDER_LABEL = {
     "proxyapi": "ProxyAPI (облако, РФ-прокси)",
     "gigachat": "GigaChat (Сбер, облако)",
     "yandexgpt": "YandexGPT (облако)",
+    "ollama_cloud": "Ollama Cloud (облако ollama.com, бесплатный объём; ключ не нужен)",
     "ollama": "Ollama (локально, приватно)",
     "lmstudio": "LM Studio (локально)",
 }
@@ -47,7 +50,7 @@ KNOWN_MODELS = {
     "cohere": ["command-a-03-2025", "command-r7b-12-2024", "command-r-08-2024",
                "command-a-plus-05-2026", "command-r-plus-08-2024"],
     "moonshot": ["kimi-k2-0905-preview", "moonshot-v1-32k"],
-    "cerebras": ["llama-3.3-70b", "qwen-3-32b", "gpt-oss-120b", "llama3.1-8b"],
+    "cerebras": ["gpt-oss-120b", "qwen-3.8-27b", "gemma-4-31b"],
     "deepseek": ["deepseek-chat", "deepseek-reasoner"],
     # список пользователя (08.09.2026): бесплатные Nemotron впереди, Gemma 4
     # умеет картинки — для паспортов-сканов
@@ -58,8 +61,8 @@ KNOWN_MODELS = {
                    "deepseek/deepseek-chat",
                    "meta-llama/llama-3.3-70b-instruct",
                    "openai/gpt-4o-mini"],
-    "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant",
-             "openai/gpt-oss-120b", "qwen/qwen3-32b"],
+    "groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b",
+             "qwen/qwen3.8-27b", "qwen/qwen3.6-27b"],
     "mistral": ["mistral-large-latest", "mistral-small-latest", "open-mistral-nemo"],
     "gemini": ["gemini-flash-latest", "gemini-2.0-flash", "gemini-2.5-flash"],
     "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o3-mini"],
@@ -71,6 +74,11 @@ KNOWN_MODELS = {
     "proxyapi": ["gpt-4o-mini", "gpt-4o"],
     "gigachat": ["GigaChat", "GigaChat-Pro", "GigaChat-Max"],
     "yandexgpt": ["yandexgpt-lite/latest", "yandexgpt/latest"],
+    "zai": ["glm-4.7-flash", "glm-4.5-flash", "glm-4.6v-flash"],
+    # бесплатные облачные модели тарифа пользователя (ollama.com, 10.09.2026)
+    "ollama_cloud": ["gpt-oss:120b-cloud", "gemma4:31b-cloud",
+                     "nemotron-3-super:cloud", "nemotron-3-nano:30b-cloud",
+                     "gpt-oss:20b-cloud", "nemotron-3-ultra:cloud"],
 }
 
 # провайдеры с БЕСПЛАТНЫМ тарифом — порядок предпочтения при автонастройке.
@@ -78,17 +86,18 @@ KNOWN_MODELS = {
 # cohere command-a ~3 с/документ, mistral small ~1 с, openrouter :free ~6 с,
 # gemini flash ~13 с. Cohere первым: бесплатный ключ без карты и без
 # ограничения по дням (лимит — 20 запросов/мин, обрабатывается ретраем).
-FREE_PREFERENCE = ("mistral", "gemini", "cohere", "groq", "cerebras", "openrouter")
+FREE_PREFERENCE = ("mistral", "gemini", "cohere", "groq", "zai", "openrouter",
+                   "cerebras")
 
 # дефолтные модели для облачных провайдеров (быстрые и пригодные для
 # извлечения структурных данных из русскоязычных документов)
 CLOUD_DEFAULT_MODEL = {
     "cohere": "command-a-03-2025",
     "moonshot": "kimi-k2-0905-preview",
-    "cerebras": "llama-3.3-70b",
+    "cerebras": "gpt-oss-120b",
     "deepseek": "deepseek-chat",
     "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free",   # бесплатная модель агрегатора
-    "groq": "llama-3.3-70b-versatile",
+    "groq": "openai/gpt-oss-120b",
     "mistral": "mistral-small-latest",         # бесплатный тариф Mistral
     "openai": "gpt-4o-mini",
     "anthropic": "claude-sonnet-5",
@@ -99,22 +108,52 @@ CLOUD_DEFAULT_MODEL = {
     "proxyapi": "gpt-4o-mini",
     "yandexgpt": "yandexgpt-lite/latest",
     "gigachat": "GigaChat",
+    "zai": "glm-4.7-flash",
+    "ollama_cloud": "gpt-oss:120b-cloud",
 }
 
 
-def _ollama_models() -> list[str]:
-    for base in (os.environ.get("OLLAMA_HOST_URL", ""),
-                 "http://localhost:11434"):
-        if not base:
-            continue
+def _ollama_bases() -> list[str]:
+    return [b.rstrip("/") for b in (os.environ.get("OLLAMA_HOST_URL", ""),
+                                     "http://localhost:11434") if b]
+
+
+def _ollama_tags() -> list[str]:
+    """Все модели, которые знает Ollama: локальные и облачные ярлыки."""
+    for base in _ollama_bases():
         try:
-            with urllib.request.urlopen(f"{base.rstrip('/')}/api/tags",
-                                        timeout=4) as r:
+            with urllib.request.urlopen(f"{base}/api/tags", timeout=4) as r:
                 data = json.loads(r.read().decode("utf-8"))
             return [m["name"] for m in data.get("models", [])]
         except Exception:
             continue
     return []
+
+
+def _ollama_models() -> list[str]:
+    """ЛОКАЛЬНЫЕ модели Ollama.
+
+    Облачные ярлыки (`…-cloud`, `…:cloud`) Ollama показывает в том же списке,
+    но считаются они на ollama.com. 10.09.2026 после подключения облака первой
+    в списке стояла облачная модель, и проверка «Ollama (локально, приватно)»
+    ушла бы в облако — поэтому здесь только локальные."""
+    return [m for m in _ollama_tags() if not is_ollama_cloud(m)]
+
+
+def _ollama_cloud_models() -> list[str]:
+    """Облачные модели ollama.com, уже подключённые в Ollama этого компьютера."""
+    return [m for m in _ollama_tags() if is_ollama_cloud(m)]
+
+
+def _ollama_running() -> bool:
+    """Отвечает ли Ollama (даже если в ней нет ни одной модели)."""
+    for base in _ollama_bases():
+        try:
+            with urllib.request.urlopen(f"{base}/api/version", timeout=4):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _lmstudio_models() -> list[str]:

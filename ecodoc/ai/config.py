@@ -37,6 +37,7 @@ DEFAULT_KEY_ENV = {
     "gemini": "GEMINI_API_KEY",
     "groq": "GROQ_API_KEY",
     "mistral": "MISTRAL_API_KEY",
+    "zai": "ZAI_API_KEY",             # Z.ai GLM: бесплатные flash-модели
     "xai": "XAI_API_KEY",
     "together": "TOGETHER_API_KEY",
     "vsegpt": "VSEGPT_API_KEY",       # российский агрегатор
@@ -135,12 +136,18 @@ def has_key(provider: str) -> bool:
 
 
 def api_key(cfg: AIConfig) -> str:
-    # приоритет: явная env-переменная в конфиге → сохранённый ключ провайдера
-    # → стандартная env-переменная провайдера
-    if cfg.key_env and os.environ.get(cfg.key_env):
-        return os.environ[cfg.key_env]
+    # приоритет: сохранённый ключ провайдера (его ввёл пользователь — в окне
+    # или из ТЗ) → явная env-переменная в конфиге → стандартная env-переменная.
+    # Раньше env шла первой, и старый ключ из переменной окружения молча
+    # перекрывал новый, введённый в программе. key_env ЧУЖОГО провайдера не
+    # берём: автовыбор меняет провайдера, а key_env остаётся от прошлого
+    # (10.09.2026 в конфиге стояло cohere + OPENROUTER_API_KEY — запросы к
+    # Cohere ушли бы с ключом OpenRouter).
     saved = _saved_keys().get(cfg.provider, "")
     if saved:
         return saved
+    foreign = {v for p, v in DEFAULT_KEY_ENV.items() if p != cfg.provider}
+    if cfg.key_env and cfg.key_env not in foreign and os.environ.get(cfg.key_env):
+        return os.environ[cfg.key_env]
     env = DEFAULT_KEY_ENV.get(cfg.provider, "")
     return os.environ.get(env, "") if env else ""

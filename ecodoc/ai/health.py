@@ -23,7 +23,7 @@ from ecodoc.ai.config import AIConfig, config_dir, has_key, load_config, save_co
 from ecodoc.ai.registry import FREE, LOCAL, PAID, ModelSpec
 
 _TTL = 6 * 3600          # сколько секунд доверять кэшу проверки
-_PING_TIMEOUT = 45       # на одну модель
+_PING_TIMEOUT = 90       # на одну модель: Nemotron Ultra (OpenRouter) отвечает ~46 с
 _SYSTEM = "Отвечай одним словом, без пояснений."
 _USER = "Ответь словом: работает"
 
@@ -56,14 +56,26 @@ def _reason(err: str) -> tuple[int, str]:
     m = re.search(r"HTTP (\d{3})", err)
     code = int(m.group(1)) if m else 0
     low = err.lower()
-    # региональные блокировки проверяем ДО кодов: у Google это 400, у Groq и
-    # Cerebras — 403 с телом «error code: 1010» (заглушка Cloudflare), и то и
-    # другое легко спутать с «неверным ключом»
-    if "location is not supported" in low or "unsupported_country" in low:
-        return code, "регион не поддерживается (нужен VPN)"
-    if code == 403 and "1010" in err:
+    # блок по стране проверяем ДО кодов: у Google это 400 «location is not
+    # supported», у OpenRouter — 403 «Access denied by security policy», у Groq
+    # без VPN — 403 {"message":"Forbidden"}, у Cloudflare — «error code: 1009»;
+    # всё это легко спутать с «неверным ключом»
+    if ("location is not supported" in low or "unsupported_country" in low
+            or "security policy" in low or "error code: 1009" in low
+            or (code == 403 and '"forbidden"' in low)):
         return code, "заблокировано по региону (нужен VPN)"
-    if code == 429 or "rate limit" in low or "quota" in low:
+    # 1010 — Cloudflare отбил ПОДПИСЬ клиента («Python-urllib»), а не страну
+    # (проверено 10.09.2026); с v0.66 подпись своя, и ошибки быть не должно
+    if code == 403 and "1010" in err:
+        return code, "Cloudflare отклонил запрос (1010, подпись клиента)"
+    if "ollama signin" in low:
+        return code, "Ollama не вошла в аккаунт ollama.com (ollama signin)"
+    if "expired" in low:
+        return code, "срок ключа истёк"
+    if code == 402 or "payment required" in low:
+        return code, "нужна оплата (бесплатный доступ закрыт)"
+    if (code == 429 or "rate limit" in low or "quota" in low
+            or "usage limit" in low or "too large" in low):
         return code, "лимит или квота исчерпана"
     if code in (401, 403):
         return code, "ключ не действует"
@@ -87,14 +99,25 @@ def _ollama_models() -> list[str]:
     return det()
 
 
+def _ollama_up() -> bool:
+    from ecodoc.ai.detect import _ollama_running
+    return _ollama_running()
+
+
 def check_one(spec: ModelSpec) -> Health:
     """Один короткий запрос к модели. Никогда не бросает исключение."""
-    from ecodoc.ai.providers import AIError, get_provider
+    from ecodoc.ai.providers import AIError, get_provider, timeout_cap
 
     h = Health(provider=spec.provider, model=spec.model, tier=spec.tier,
                checked=time.time())
     model = spec.model
-    if spec.tier == LOCAL:
+    if spec.provider == "ollama_cloud":
+        # ключ не нужен: в аккаунт ollama.com входит сама Ollama (ollama signin)
+        if not _ollama_up():
+            h.reason = "сервер недоступен"
+            h.error = "Ollama не запущена — облачные модели идут через неё"
+            return h
+    elif spec.tier == LOCAL:
         installed = _ollama_models() if spec.provider == "ollama" else []
         if spec.provider == "ollama":
             if not installed:
@@ -114,7 +137,8 @@ def check_one(spec: ModelSpec) -> Health:
     cfg = AIConfig(provider=spec.provider, model=model)
     t0 = time.time()
     try:
-        get_provider(cfg).chat(_SYSTEM, _USER)
+        with timeout_cap(_PING_TIMEOUT):
+            get_provider(cfg).chat(_SYSTEM, _USER)
         h.ok = True
         h.sec = round(time.time() - t0, 1)
         h.reason = "работает"
@@ -127,10 +151,22 @@ def check_one(spec: ModelSpec) -> Health:
 
 def check_all(specs: list[ModelSpec] | None = None,
               workers: int = 8) -> list[Health]:
-    """Проверить все модели параллельно и сохранить результат в кэш."""
-    specs = specs if specs is not None else registry.ALL
+    """Проверить все модели параллельно и сохранить результат в кэш.
+
+    Облачные модели Ollama — по очереди, одним потоком: бесплатный тариф
+    ollama.com пускает 1 запрос одновременно, и параллельные проверки ложно
+    получали бы «лимит». Порядок результатов совпадает с порядком `specs`."""
+    specs = list(specs if specs is not None else registry.ALL)
+    queued = [i for i, s in enumerate(specs) if s.provider == "ollama_cloud"]
+    in_queue = set(queued)
+    rest = [i for i in range(len(specs)) if i not in in_queue]
+    results: list = [None] * len(specs)
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        results = list(ex.map(check_one, specs))
+        one_by_one = ex.submit(lambda: [check_one(specs[i]) for i in queued])
+        for i, h in zip(rest, ex.map(check_one, [specs[i] for i in rest])):
+            results[i] = h
+        for i, h in zip(queued, one_by_one.result()):
+            results[i] = h
     save_cache(results)
     return results
 
