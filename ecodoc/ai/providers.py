@@ -69,8 +69,9 @@ def _post(url: str, payload: dict, headers: dict, timeout: int = 300,
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", "replace")[:500]
-        # у Mistral неактивированный бесплатный тариф выглядит как обычный 429 —
-        # отличает его только заголовок «лимит 0 запросов в минуту»
+        # у Mistral модель, не входящая в бесплатный тариф (small/medium/
+        # magistral), отвечает обычным 429 — отличает её только заголовок
+        # «лимит 0 запросов в минуту» (проверено 10.09.2026 по всем 27 моделям)
         if (e.headers or {}).get("x-ratelimit-limit-req-minute") == "0":
             body += " [лимит тарифа: 0 запросов/мин]"
         raise AIError(f"{_mask(url)}: HTTP {e.code}: {body}")

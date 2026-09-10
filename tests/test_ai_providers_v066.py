@@ -263,9 +263,9 @@ def test_cloudflare_without_account_explains(monkeypatch, tmp_path):
         p.chat("s", "u")
 
 
-def test_zero_rate_limit_means_plan_not_activated(monkeypatch):
-    """Mistral без активированного бесплатного тарифа отвечает обычным 429;
-    отличает его только заголовок «лимит 0 запросов в минуту»."""
+def test_zero_rate_limit_means_model_not_in_free_plan(monkeypatch):
+    """Mistral на модель вне бесплатного тарифа (small/medium) отвечает обычным
+    429; отличает его только заголовок «лимит 0 запросов в минуту»."""
     import io
     import urllib.error
 
@@ -277,7 +277,16 @@ def test_zero_rate_limit_means_plan_not_activated(monkeypatch):
     monkeypatch.setattr(providers.urllib.request, "urlopen", fake_urlopen)
     with pytest.raises(providers.AIError) as err:
         providers._post("https://api.mistral.ai/v1/chat/completions", {}, {})
-    assert "не активирован" in health._reason(str(err.value))[1]
+    assert "не входит в бесплатный тариф" in health._reason(str(err.value))[1]
+
+
+def test_mistral_default_is_a_free_plan_model():
+    """10.09.2026: в бесплатный тариф Mistral входят ministral и codestral, а
+    mistral-small — нет (лимит 0) — по умолчанию нельзя ставить small."""
+    assert detect.CLOUD_DEFAULT_MODEL["mistral"] == "ministral-14b-latest"
+    spec = registry.by_id("mistral/ministral-14b-latest")
+    assert spec is not None and spec.tier == FREE
+    assert detect.KNOWN_MODELS["mistral"][0] == "ministral-14b-latest"
 
 
 def test_reason_model_not_in_tier_is_not_bad_key():

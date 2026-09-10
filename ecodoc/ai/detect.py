@@ -22,7 +22,7 @@ _EMBED_MARKERS = ("bge", "embed", "nomic", "mxbai", "e5")
 
 # человекочитаемые метки провайдеров (для выпадающего списка в GUI)
 PROVIDER_LABEL = {
-    "mistral": "Mistral (облако, БЕСПЛАТНЫЙ тариф — лучший по замеру)",
+    "mistral": "Mistral (облако; бесплатно — ministral и codestral, из РФ без VPN)",
     "cohere": "Cohere (облако, бесплатный ключ)",
     "cerebras": "Cerebras (облако; бесплатный доступ закрыт — нужна оплата)",
     "moonshot": "Moonshot / Kimi (облако)",
@@ -64,7 +64,9 @@ KNOWN_MODELS = {
                    "openai/gpt-4o-mini"],
     "groq": ["openai/gpt-oss-120b", "openai/gpt-oss-20b",
              "qwen/qwen3.8-27b", "qwen/qwen3.6-27b"],
-    "mistral": ["mistral-large-latest", "mistral-small-latest", "open-mistral-nemo"],
+    # бесплатный тариф: ministral-14b/8b/3b и codestral; small/large — платно
+    "mistral": ["ministral-14b-latest", "codestral-latest", "ministral-8b-latest",
+                "ministral-3b-latest", "mistral-small-latest", "mistral-large-latest"],
     "gemini": ["gemini-flash-latest", "gemini-2.0-flash", "gemini-2.5-flash"],
     "openai": ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini", "o3-mini"],
     "anthropic": ["claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-opus-4-8"],
@@ -101,7 +103,7 @@ CLOUD_DEFAULT_MODEL = {
     "deepseek": "deepseek-chat",
     "openrouter": "nvidia/nemotron-3-ultra-550b-a55b:free",   # бесплатная модель агрегатора
     "groq": "openai/gpt-oss-120b",
-    "mistral": "mistral-small-latest",         # бесплатный тариф Mistral
+    "mistral": "ministral-14b-latest",         # входит в бесплатный тариф Mistral
     "openai": "gpt-4o-mini",
     "anthropic": "claude-sonnet-5",
     "gemini": "gemini-flash-latest",

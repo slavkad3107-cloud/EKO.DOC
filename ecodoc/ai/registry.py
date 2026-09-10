@@ -49,9 +49,10 @@ _OLLAMA_CLOUD_NOTE = ("облако ollama.com: данные уходят на �
 
 _FREE = [
     ModelSpec("mistral", "mistral-small-latest", FREE,
-              "Mistral Small — бесплатный тариф",
-              limit="1 запрос/с, ~1 млрд токенов/мес",
-              sec=9.1, score="19/19", note="лучшее сочетание качества и скорости"),
+              "Mistral Small — только на платном тарифе Mistral",
+              sec=9.1, score="19/19",
+              note="10.09.2026: в бесплатный тариф Mistral не входит (лимит "
+                   "0 запросов/мин); бесплатные — ministral-14b/8b/3b, codestral"),
     ModelSpec("gemini", "gemini-flash-latest", FREE,
               "Google Gemini Flash — бесплатный лимит",
               limit="~15 запросов/мин, 1500/сутки",
@@ -75,6 +76,16 @@ _FREE = [
     ModelSpec("ollama_cloud", "gemma4:31b-cloud", FREE,
               "Ollama Cloud Gemma 4 31B — бесплатно, самая быстрая",
               limit=_OLLAMA_CLOUD_LIMIT, note=_OLLAMA_CLOUD_NOTE),
+    # Mistral на бесплатном тарифе (10.09.2026, по заголовкам лимитов): входят
+    # ministral-14b (30 запр/мин), ministral-8b (188), ministral-3b (750),
+    # codestral (125); small/medium/magistral — 0 запросов/мин. Протокол КХА:
+    # все четыре извлекли данные верно; 14b/8b перестраивают JSON по-своему,
+    # 3b и codestral держат заданную схему (codestral — 15 с). Из РФ без VPN.
+    ModelSpec("mistral", "ministral-14b-latest", FREE,
+              "Mistral Ministral 14B — бесплатный тариф",
+              limit="30 запросов/мин, 937 тыс. токенов/мин",
+              note="из РФ без VPN; на бесплатном тарифе запросы могут идти в "
+                   "обучение моделей Mistral — см. Admin → Privacy"),
     # Groq: живые модели на 10.09.2026 — gpt-oss-120b/20b, qwen3.6/3.8-27b
     # (последние на бесплатном тарифе упираются в лимит токенов); Llama 3.3
     # у Groq больше нет. Лимиты — из заголовков ответа Groq.
